@@ -12,20 +12,26 @@ Usage:
     rtl_tree -d ./rtl_dir --depth 3
     rtl_tree -d ./rtl_dir --json
     rtl_tree -d ./rtl_dir --stats
+    rtl_tree -d ./rtl_dir --write-filelist rtl.f
+    rtl_tree --filelist rtl.f --top top_module
 
 Install dependency:
     pip install pyslang
 """
 
 import argparse
+import fnmatch
 import json
 import os
+import re
+import shlex
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
 try:
+    import pyslang
     import pyslang.ast as ast
     from pyslang.syntax import SyntaxTree
 except ImportError:
@@ -74,21 +80,347 @@ class InstanceNode:
     children: list = field(default_factory=list)
 
 
+@dataclass
+class FileList:
+    """Normalized VCS-style filelist content."""
+    sources: list[str] = field(default_factory=list)
+    include_dirs: list[str] = field(default_factory=list)
+    defines: list[str] = field(default_factory=list)
+
+
+SOURCE_EXTENSIONS = {'.v', '.sv'}
+INCLUDE_EXTENSIONS = {'.svh', '.vh', '.svi'}
+ALL_EXTENSIONS = SOURCE_EXTENSIONS | INCLUDE_EXTENSIONS
+TOP_LEVEL_RE = re.compile(
+    r'(?m)^\s*(?:\(\*.*?\*\)\s*)*'
+    r'(module|interface|package|program|primitive)\b'
+)
+OPTIONS_WITH_VALUE = {
+    '-cm_dir',
+    '-cm_hier',
+    '-f',
+    '-F',
+    '-l',
+    '-Mdir',
+    '-o',
+    '-top',
+    '-v',
+    '-xprop',
+    '-y',
+}
+
+
 # ── Core: Parse & Build Hierarchy ────────────────────────────────────
-def collect_files(paths: list[str], recursive: bool = True) -> list[str]:
-    """Gather all .v / .sv / .svh files from the given paths."""
-    extensions = {'.v', '.sv', '.svh', '.vh'}
+def _norm_abs(path: Path | str) -> str:
+    return str(Path(path).expanduser().resolve())
+
+
+def _dedupe(items: list[str]) -> list[str]:
     result = []
+    seen = set()
+    for item in items:
+        if item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
+
+
+def _strip_sv_comments(text: str) -> str:
+    """Remove comments well enough for declaration sniffing."""
+    text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+    return re.sub(r'//.*', '', text)
+
+
+def has_top_level_declaration(path: str) -> bool:
+    """Return True if a .v/.sv file defines a compilation-unit item."""
+    try:
+        text = Path(path).read_text(errors='ignore')
+    except OSError:
+        return False
+    return bool(TOP_LEVEL_RE.search(_strip_sv_comments(text)))
+
+
+def is_excluded(path: Path | str, patterns: list[str], root: Path) -> bool:
+    if not patterns:
+        return False
+
+    path = Path(path).expanduser()
+    try:
+        rel = path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        rel = path.as_posix()
+
+    abs_posix = path.resolve().as_posix()
+    name = path.name
+    for pattern in patterns:
+        p = pattern.replace(os.sep, '/')
+        if fnmatch.fnmatch(rel, p) or fnmatch.fnmatch(abs_posix, p):
+            return True
+        if '/' not in p and fnmatch.fnmatch(name, p):
+            return True
+    return False
+
+
+def classify_hdl_file(path: str) -> str:
+    """Classify a file as source, include, or unsupported."""
+    suffix = Path(path).suffix
+    if suffix in INCLUDE_EXTENSIONS:
+        return 'include'
+    if suffix in SOURCE_EXTENSIONS:
+        return 'source' if has_top_level_declaration(path) else 'include'
+    return 'unsupported'
+
+
+def collect_filelist(
+    paths: list[str],
+    recursive: bool = True,
+    excludes: list[str] = None,
+    root: Path = None,
+) -> FileList:
+    """Gather HDL sources and include dirs from paths."""
+    excludes = excludes or []
+    root = (root or Path.cwd()).resolve()
+    candidates = []
     for p in paths:
-        path = Path(p)
-        if path.is_file() and path.suffix in extensions:
-            result.append(str(path))
+        path = Path(p).expanduser()
+        if path.is_file() and path.suffix in ALL_EXTENSIONS:
+            if not is_excluded(path, excludes, root):
+                candidates.append(_norm_abs(path))
         elif path.is_dir():
             glob_fn = path.rglob if recursive else path.glob
-            for ext in extensions:
-                result.extend(str(f) for f in glob_fn(f'*{ext}'))
-    result.sort()
+            for ext in ALL_EXTENSIONS:
+                for f in glob_fn(f'*{ext}'):
+                    if not is_excluded(f, excludes, root):
+                        candidates.append(_norm_abs(f))
+
+    filelist = FileList()
+    for path in sorted(_dedupe(candidates)):
+        kind = classify_hdl_file(path)
+        if kind == 'source':
+            filelist.sources.append(path)
+        elif kind == 'include':
+            filelist.include_dirs.append(_norm_abs(Path(path).parent))
+
+    filelist.include_dirs = _dedupe(sorted(filelist.include_dirs))
+    return filelist
+
+
+def collect_files(paths: list[str], recursive: bool = True) -> list[str]:
+    """Backward-compatible helper that returns source files only."""
+    return collect_filelist(paths, recursive=recursive).sources
+
+
+def resolve_filelist_path(
+    token: str,
+    root: Path,
+    current_dir: Path,
+    prefix: str = None,
+) -> Path:
+    token = os.path.expandvars(token)
+    token = os.path.expanduser(token)
+
+    if prefix and token.startswith(prefix):
+        suffix = token[len(prefix):].lstrip('/\\')
+        return root / suffix
+
+    path = Path(token)
+    if path.is_absolute():
+        return path
+
+    root_candidate = root / path
+    if root_candidate.exists():
+        return root_candidate
+    return current_dir / path
+
+
+def parse_filelist(
+    path: str,
+    root: Path,
+    prefix: str = None,
+    seen: set[str] = None,
+) -> FileList:
+    """Parse a VCS-style .f file into normalized sources, dirs, and defines."""
+    root = root.resolve()
+    seen = seen or set()
+    filelist_path = resolve_filelist_path(path, root, root, prefix).resolve()
+    if str(filelist_path) in seen:
+        return FileList()
+    seen.add(str(filelist_path))
+
+    if not filelist_path.exists():
+        raise FileNotFoundError(f"filelist not found: {path}")
+
+    result = FileList()
+    logical_lines = []
+    pending = ''
+    for raw in filelist_path.read_text(errors='ignore').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('//') or line.startswith('#'):
+            continue
+        line = line.split('//', 1)[0].split('#', 1)[0].strip()
+        if not line:
+            continue
+        if line.endswith('\\'):
+            pending += line[:-1] + ' '
+            continue
+        logical_lines.append(pending + line)
+        pending = ''
+    if pending:
+        logical_lines.append(pending)
+
+    current_dir = filelist_path.parent
+    skip_next = False
+    for line in logical_lines:
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            tokens = line.split()
+
+        i = 0
+        while i < len(tokens):
+            token = tokens[i]
+            if skip_next:
+                skip_next = False
+                i += 1
+                continue
+
+            if token in ('-f', '-F'):
+                if i + 1 < len(tokens):
+                    nested = parse_filelist(tokens[i + 1], root, prefix, seen)
+                    result.include_dirs.extend(nested.include_dirs)
+                    result.defines.extend(nested.defines)
+                    result.sources.extend(nested.sources)
+                    i += 2
+                    continue
+            elif token.startswith('-f') and len(token) > 2:
+                nested = parse_filelist(token[2:], root, prefix, seen)
+                result.include_dirs.extend(nested.include_dirs)
+                result.defines.extend(nested.defines)
+                result.sources.extend(nested.sources)
+                i += 1
+                continue
+            elif token.startswith('+incdir+'):
+                inc = token[len('+incdir+'):]
+                if inc:
+                    inc_path = resolve_filelist_path(inc, root, current_dir, prefix)
+                    result.include_dirs.append(_norm_abs(inc_path))
+                i += 1
+                continue
+            elif token.startswith('+define+'):
+                defines = token[len('+define+'):]
+                if defines:
+                    result.defines.extend(d for d in defines.split('+') if d)
+                i += 1
+                continue
+            elif token in OPTIONS_WITH_VALUE:
+                skip_next = True
+                i += 1
+                continue
+            elif token.startswith('-') or token.startswith('+'):
+                i += 1
+                continue
+
+            path_token = resolve_filelist_path(token, root, current_dir, prefix)
+            if path_token.suffix in ALL_EXTENSIONS and path_token.exists():
+                path_abs = _norm_abs(path_token)
+                kind = classify_hdl_file(path_abs)
+                if kind == 'source':
+                    result.sources.append(path_abs)
+                elif kind == 'include':
+                    result.include_dirs.append(_norm_abs(Path(path_abs).parent))
+            elif path_token.suffix in INCLUDE_EXTENSIONS:
+                result.include_dirs.append(_norm_abs(path_token.parent))
+            elif path_token.suffix in SOURCE_EXTENSIONS:
+                print(f"Warning: filelist source not found: {token}", file=sys.stderr)
+
+            i += 1
+
+    result.sources = _dedupe(result.sources)
+    result.include_dirs = _dedupe(result.include_dirs)
+    result.defines = _dedupe(result.defines)
     return result
+
+
+def merge_filelists(*filelists: FileList) -> FileList:
+    merged = FileList()
+    for fl in filelists:
+        merged.sources.extend(fl.sources)
+        merged.include_dirs.extend(fl.include_dirs)
+        merged.defines.extend(fl.defines)
+    merged.sources = _dedupe(merged.sources)
+    merged.include_dirs = _dedupe(merged.include_dirs)
+    merged.defines = _dedupe(merged.defines)
+    return merged
+
+
+def filter_filelist(filelist: FileList, excludes: list[str], root: Path) -> FileList:
+    if not excludes:
+        return filelist
+    return FileList(
+        sources=[s for s in filelist.sources if not is_excluded(s, excludes, root)],
+        include_dirs=[d for d in filelist.include_dirs if not is_excluded(d, excludes, root)],
+        defines=list(filelist.defines),
+    )
+
+
+def format_filelist_path(path: str, root: Path, mode: str, prefix: str) -> str:
+    path = Path(path).resolve()
+    root = root.resolve()
+    if mode == 'abs':
+        return path.as_posix()
+
+    rel = Path(os.path.relpath(path, root)).as_posix()
+    if mode == 'prefix':
+        base = (prefix or '${PROJPATH}').rstrip('/\\')
+        return f"{base}/{rel}" if rel != '.' else base
+    return rel
+
+
+def render_filelist(filelist: FileList, root: Path, path_mode: str, prefix: str) -> str:
+    lines = [
+        "# Generated by rtl_tree.py",
+        f"# sources: {len(filelist.sources)}",
+        f"# include_dirs: {len(filelist.include_dirs)}",
+        "",
+    ]
+    for inc in sorted(filelist.include_dirs):
+        lines.append(f"+incdir+{format_filelist_path(inc, root, path_mode, prefix)}")
+    if filelist.include_dirs and (filelist.defines or filelist.sources):
+        lines.append("")
+    for define in filelist.defines:
+        lines.append(f"+define+{define}")
+    if filelist.defines and filelist.sources:
+        lines.append("")
+    for source in filelist.sources:
+        lines.append(format_filelist_path(source, root, path_mode, prefix))
+    return "\n".join(lines) + "\n"
+
+
+def write_filelist_file(
+    path: str,
+    filelist: FileList,
+    root: Path,
+    path_mode: str,
+    prefix: str,
+):
+    text = render_filelist(filelist, root, path_mode, prefix)
+    if path == '-':
+        print(text, end='')
+        return
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text)
+
+
+def sv_string_literal(text: str) -> str:
+    return text.replace('\\', '/').replace('"', '\\"')
+
+
+def define_to_directive(define: str) -> str:
+    if '=' in define:
+        name, value = define.split('=', 1)
+        return f"`define {name} {value}"
+    return f"`define {define}"
 
 
 def build_hierarchy(
@@ -102,13 +434,27 @@ def build_hierarchy(
     instance hierarchy tree(s) plus any diagnostic messages.
     """
     comp = ast.Compilation()
+    source_manager = pyslang.SourceManager()
 
-    for f in files:
+    all_include_dirs = list(include_dirs or [])
+    all_include_dirs.extend(str(Path(f).resolve().parent) for f in files)
+    for inc in _dedupe(all_include_dirs):
         try:
-            tree = SyntaxTree.fromFile(f)
-            comp.addSyntaxTree(tree)
+            source_manager.addUserDirectories(inc)
         except Exception as e:
-            print(f"Warning: could not parse {f}: {e}", file=sys.stderr)
+            print(f"Warning: could not add include dir {inc}: {e}", file=sys.stderr)
+
+    preamble = []
+    for define in defines or []:
+        preamble.append(define_to_directive(define))
+    for f in files:
+        preamble.append(f'`include "{sv_string_literal(_norm_abs(f))}"')
+
+    try:
+        tree = SyntaxTree.fromText('\n'.join(preamble) + '\n', source_manager)
+        comp.addSyntaxTree(tree)
+    except Exception as e:
+        print(f"Warning: could not parse virtual filelist unit: {e}", file=sys.stderr)
 
     # Collect diagnostics
     diag_messages = []
@@ -382,11 +728,29 @@ Examples:
   rtl_tree -d ./rtl --json        Output as JSON
   rtl_tree -d ./rtl --no-color    Disable colored output
   rtl_tree -d ./rtl --path        Show hierarchical paths
+  rtl_tree -d ./rtl --write-filelist rtl.f
+  rtl_tree --filelist rtl.f --top cpu
 """)
 
     parser.add_argument('files', nargs='*', help='Verilog/SV source files')
     parser.add_argument('-d', '--dir', action='append', default=[],
                         help='Directory to scan for .v/.sv files (recursive)')
+    parser.add_argument('--filelist', action='append', default=[],
+                        help='Read a VCS-style .f file (can be repeated)')
+    parser.add_argument('--write-filelist', type=str, default=None,
+                        help='Write the normalized VCS-style filelist to FILE')
+    parser.add_argument('--filelist-only', action='store_true',
+                        help='Only generate/write the filelist; do not elaborate')
+    parser.add_argument('--filelist-root', '--projpath', dest='filelist_root',
+                        default='.',
+                        help='Base path for relative and prefixed filelist paths')
+    parser.add_argument('--filelist-path', choices=('rel', 'abs', 'prefix'),
+                        default='rel',
+                        help='Path style when writing a filelist')
+    parser.add_argument('--filelist-prefix', default='${PROJPATH}',
+                        help='Prefix used with --filelist-path prefix')
+    parser.add_argument('--exclude', action='append', default=[],
+                        help='Exclude files or dirs matching a glob (can be repeated)')
     parser.add_argument('--top', type=str, default=None,
                         help='Specify top module name (auto-detected if omitted)')
     parser.add_argument('--depth', type=int, default=-1,
@@ -412,19 +776,60 @@ Examples:
     if args.no_color or not sys.stdout.isatty() or args.json:
         Color.disable()
 
-    # ── Collect files ──
+    # ── Collect sources and filelist metadata ──
     all_paths = list(args.files) + list(args.dir)
-    if not all_paths:
+    if not all_paths and not args.filelist:
         parser.print_help()
         sys.exit(1)
 
-    files = collect_files(all_paths)
+    filelist_root = Path(args.filelist_root).expanduser().resolve()
+    parsed_filelists = []
+    for fl in args.filelist:
+        try:
+            parsed_filelists.append(
+                parse_filelist(fl, filelist_root, prefix=args.filelist_prefix)
+            )
+        except FileNotFoundError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    scanned_filelist = collect_filelist(
+        all_paths,
+        excludes=args.exclude,
+        root=filelist_root,
+    ) if all_paths else FileList()
+    filelist = merge_filelists(*parsed_filelists, scanned_filelist)
+    filelist = filter_filelist(filelist, args.exclude, filelist_root)
+
+    if args.write_filelist:
+        write_filelist_file(
+            args.write_filelist,
+            filelist,
+            filelist_root,
+            args.filelist_path,
+            args.filelist_prefix,
+        )
+        if args.write_filelist != '-':
+            print(f"Wrote filelist: {args.write_filelist}", file=sys.stderr)
+
+    if args.filelist_only:
+        if not args.write_filelist:
+            print("Error: --filelist-only requires --write-filelist FILE", file=sys.stderr)
+            sys.exit(1)
+        return
+
+    files = filelist.sources
     if not files:
-        print(f"Error: no .v/.sv/.svh files found in: {all_paths}", file=sys.stderr)
+        print(f"Error: no .v/.sv source files found in: {all_paths or args.filelist}", file=sys.stderr)
         sys.exit(1)
 
     # ── Parse & elaborate ──
-    tops, diags = build_hierarchy(files, top_module=args.top)
+    tops, diags = build_hierarchy(
+        files,
+        top_module=args.top,
+        include_dirs=filelist.include_dirs,
+        defines=filelist.defines,
+    )
 
     if args.diag and diags:
         print(f"\n{Color.red('Parser diagnostics:')}", file=sys.stderr)
