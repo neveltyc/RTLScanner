@@ -19,3 +19,4 @@ rtl-lint = "rtl_lint:main"
 
 [tool.setuptools]
 py-modules = ["rtl_tree", "rtl_common", "signal_trace", "rtl_lint"]
+package-dir = {"" = "src"}
