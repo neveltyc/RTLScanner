@@ -38,6 +38,9 @@ from rtl_common import (
     build_compilation,
 )
 
+import agent_json
+from agent_json import AgentError, Envelope, filter_command, emit
+
 
 # ── Data Structures ──────────────────────────────────────────────────
 @dataclass
@@ -205,6 +208,72 @@ def _walk(nodes):
         yield n; yield from _walk(n.children)
 
 
+# ── Agent-mode helpers ───────────────────────────────────────────────
+def _filelist_to_dict(fl: FileList) -> dict:
+    return {
+        'sources':      list(fl.sources),
+        'include_dirs': list(fl.include_dirs),
+        'defines':      dict(getattr(fl, 'defines', {}) or {}),
+    }
+
+
+def _hierarchy_summary(tops, files_parsed: int) -> dict:
+    st = {'total': 0, 'modules': set(), 'counts': {}, 'leaf': 0}
+    md = 0
+    for t in tops:
+        _collect_stats(t, st); md = max(md, _depth(t))
+    return {
+        'instances':      st['total'],
+        'unique_modules': len(st['modules']),
+        'max_depth':      md,
+        'files_parsed':   files_parsed,
+        'module_counts':  dict(st['counts']),
+    }
+
+
+def _emit_trace_envelope(env: 'Envelope', tracer, scope,
+                         trace_signal, trace_list, trace_all,
+                         cross, load_filter) -> int:
+    if trace_list:
+        sigs = tracer.list_signals(scope)
+        if not sigs:
+            return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
+                                 f"scope '{scope}' not found or empty"))
+        data = {'mode': 'list', 'scope': scope, 'signals': sigs}
+        summary = {'mode': 'list', 'results': 0, 'signals': len(sigs)}
+        return emit(env.ok(data, summary))
+
+    if trace_all:
+        results = tracer.trace_all(scope, cross)
+        if not results:
+            return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
+                                 f"no signals in scope '{scope}'"))
+        rdicts = [r.to_dict(load_filter) for r in results]
+        data = {'mode': 'all', 'scope': scope, 'results': rdicts}
+        summary = {
+            'mode':    'all',
+            'results': len(rdicts),
+            'drivers': sum(1 for d in rdicts if d.get('driver')),
+            'loads':   sum(int(d.get('load_count', 0)) for d in rdicts),
+        }
+        return emit(env.ok(data, summary))
+
+    # single signal
+    r = tracer.trace(trace_signal, scope, cross)
+    if r is None:
+        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
+                             f"signal '{trace_signal}' not found in scope '{scope}'"))
+    rd = r.to_dict(load_filter)
+    data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
+    summary = {
+        'mode':    'signal',
+        'results': 1,
+        'drivers': 1 if rd.get('driver') else 0,
+        'loads':   int(rd.get('load_count', 0)),
+    }
+    return emit(env.ok(data, summary))
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
@@ -258,6 +327,8 @@ Signal tracing:
                    help='Show full hierarchical path next to each node')
     h.add_argument('--json', action='store_true',
                    help='Emit the hierarchy as JSON')
+    h.add_argument('--schema', action='store_true',
+                   help='Print the JSON Schema for --json output and exit')
     h.add_argument('--stats', action='store_true',
                    help='Print module usage statistics')
     h.add_argument('--flat', action='store_true',
@@ -283,19 +354,33 @@ Signal tracing:
                    help='Print parser/elaboration diagnostics to stderr')
     a = p.parse_args()
 
+    if a.schema:
+        sys.exit(agent_json.print_schema('rtl-tree'))
+
     if a.no_color or not sys.stdout.isatty() or a.json:
         Color.disable()
+
+    env: Optional[Envelope] = Envelope('rtl-tree', filter_command(a)) if a.json else None
+
+    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=1):
+        if a.json:
+            sys.exit(emit(env.fail(code, msg)))
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(exit_code)
 
     # ── sources ──
     all_paths = list(a.files) + list(a.dir)
     if not all_paths and not a.filelist:
+        if a.json:
+            die('no input: pass files, --dir, or --filelist', agent_json.ERR_INPUT_NOT_FOUND, 1)
         p.print_help(); sys.exit(1)
 
     fl_root = Path(a.filelist_root).expanduser().resolve()
     parsed = []
     for f in a.filelist:
         try: parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
-        except FileNotFoundError as e: print(f"Error: {e}", file=sys.stderr); sys.exit(1)
+        except FileNotFoundError as e:
+            die(str(e), agent_json.ERR_BAD_FILELIST)
     scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
     filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
 
@@ -305,31 +390,42 @@ Signal tracing:
             print(f"Wrote filelist: {a.write_filelist}", file=sys.stderr)
     if a.filelist_only:
         if not a.write_filelist:
-            print("Error: --filelist-only requires --write-filelist", file=sys.stderr); sys.exit(1)
+            die('--filelist-only requires --write-filelist', agent_json.ERR_INPUT_NOT_FOUND)
+        if a.json:
+            sys.exit(emit(env.ok({'filelist': _filelist_to_dict(filelist)},
+                                 {'instances': 0, 'unique_modules': 0,
+                                  'max_depth': 0, 'files_parsed': len(filelist.sources),
+                                  'module_counts': {}})))
         return
 
     files = filelist.sources
     if not files:
-        print("Error: no .v/.sv source files found", file=sys.stderr); sys.exit(1)
+        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
 
     # ── elaborate ──
     is_trace = a.trace or a.trace_list or a.trace_all
-    res = build_hierarchy(files, a.top, filelist.include_dirs, filelist.defines,
-                          return_compilation=is_trace)
+    try:
+        res = build_hierarchy(files, a.top, filelist.include_dirs, filelist.defines,
+                              return_compilation=is_trace)
+    except Exception as e:
+        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
     if is_trace:
         tops, diags, comp = res
     else:
         tops, diags = res
 
-    if a.diag and diags:
+    if env is not None:
+        for d in diags[:50]:
+            env.add_diagnostic('warning', '', 0, 0, str(d))
+    elif a.diag and diags:
         print(f"\n{Color.red('Parser diagnostics:')}", file=sys.stderr)
         for d in diags[:20]: print(f"  {d}", file=sys.stderr)
         if len(diags) > 20: print(f"  ... and {len(diags)-20} more", file=sys.stderr)
 
     if not tops:
-        print(f"Error: no top-level modules found" +
-              (f" (--top {a.top})" if a.top else ""), file=sys.stderr)
-        sys.exit(1)
+        msg = "no top-level modules found"
+        if a.top: msg += f" (--top {a.top})"
+        die(msg, agent_json.ERR_NO_TOP)
 
     # ── signal tracing ──
     if is_trace:
@@ -340,9 +436,16 @@ Signal tracing:
             tp = tracer.get_top_paths()
             if len(tp) == 1: scope = tp[0]
             elif tp:
+                if a.json:
+                    die('multiple tops — specify --scope: ' + ', '.join(tp),
+                        agent_json.ERR_SCOPE_NOT_FOUND)
                 print("Multiple tops — specify --scope:", file=sys.stderr)
                 for x in tp: print(f"  {x}", file=sys.stderr)
                 sys.exit(1)
+        if a.json:
+            sys.exit(_emit_trace_envelope(env, tracer, scope,
+                                          a.trace, a.trace_list, a.trace_all,
+                                          a.cross, a.filter))
         if a.trace_list:   tracer.cmd_list(scope, a.json)
         elif a.trace_all:  tracer.cmd_trace_all(scope, a.cross, a.filter, a.json)
         elif a.trace:      tracer.cmd_trace(a.trace, scope, a.cross, a.filter, a.json)
@@ -350,8 +453,11 @@ Signal tracing:
 
     # ── hierarchy output ──
     if a.json:
-        data = [node_to_dict(t, a.depth) for t in tops]
-        print(json.dumps(data[0] if len(data) == 1 else data, indent=2, ensure_ascii=False))
+        hier = [node_to_dict(t, a.depth) for t in tops]
+        sys.exit(emit(env.ok(
+            {'hierarchy': hier, 'filelist': _filelist_to_dict(filelist)},
+            _hierarchy_summary(tops, len(files)),
+        )))
     elif a.flat:
         for t in _walk(tops): print(f"{t.hier_path}  ({t.module_name})")
     else:
@@ -360,7 +466,7 @@ Signal tracing:
             print_tree(t, is_root=True, max_depth=a.depth,
                        show_params=not a.no_params, show_path=a.path)
     if a.stats: print_stats(tops)
-    if not a.json and not a.flat:
+    if not a.flat:
         total = sum(1 for _ in _walk(tops))
         mods = len(set(n.module_name for n in _walk(tops)))
         print(f"\n{Color.dim(f'{total} instances, {mods} unique modules, {len(files)} files parsed')}")

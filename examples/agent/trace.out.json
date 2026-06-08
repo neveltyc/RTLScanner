@@ -1,0 +1,65 @@
+{
+  "tool": "signal-trace",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "filelist_root": ".",
+    "filelist_prefix": "${PROJPATH}",
+    "exclude": [],
+    "signal": "q",
+    "scope": "top.u_dp0",
+    "cross": false,
+    "filter": null,
+    "list": false,
+    "all": false
+  },
+  "data": {
+    "mode": "signal",
+    "scope": "top.u_dp0",
+    "results": [
+      {
+        "signal": "q",
+        "type": "logic[7:0]",
+        "kind": "Variable",
+        "scope": "top.u_dp0",
+        "module": "datapath",
+        "driver": {
+          "kind": "continuous",
+          "source": "output_port",
+          "description": "output port of instance u_reg",
+          "symbol": "u_reg",
+          "symbol_kind": "Instance",
+          "scope_path": "top.u_dp0.u_reg",
+          "file": "examples/basic/top.sv",
+          "line": 42
+        },
+        "loads": [
+          {
+            "kind": "port_connection",
+            "description": "u_alu.a (input)",
+            "scope_path": "top.u_dp0.u_alu",
+            "instance": "u_alu",
+            "port": "a",
+            "direction": "In",
+            "file": "examples/basic/top.sv",
+            "line": 45
+          }
+        ],
+        "load_count": 1
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "signal",
+    "results": 1,
+    "drivers": 1,
+    "loads": 1
+  }
+}

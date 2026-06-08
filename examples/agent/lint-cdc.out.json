@@ -1,0 +1,68 @@
+{
+  "tool": "rtl-lint",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "files": [
+      "examples/lint/cdc_demo.sv"
+    ],
+    "dir": [],
+    "filelist": [],
+    "filelist_root": ".",
+    "filelist_prefix": "${PROJPATH}",
+    "exclude": [],
+    "no_unused": false,
+    "shadow": false,
+    "cdc": true,
+    "cdc_reset": [],
+    "weverything": false,
+    "disable": [],
+    "rule": [],
+    "error": [],
+    "werror": false,
+    "min_severity": null,
+    "config": null,
+    "no_config": false
+  },
+  "data": {
+    "findings": [
+      {
+        "file": "examples/lint/cdc_demo.sv",
+        "line": 26,
+        "col": 26,
+        "severity": "warning",
+        "rule": "cdc-crossing",
+        "message": "signal 'src_data' crosses clock domains: written in 'clka' domain, read in 'clkb' domain (written at examples/lint/cdc_demo.sv:20)",
+        "check": "cdc"
+      },
+      {
+        "file": "examples/lint/cdc_demo.sv",
+        "line": 48,
+        "col": 21,
+        "severity": "warning",
+        "rule": "cdc-crossing",
+        "message": "signal 'src_data' crosses clock domains: written in 'clka' domain, read in 'clkb' domain (written at examples/lint/cdc_demo.sv:38)",
+        "check": "cdc"
+      }
+    ],
+    "waived": [],
+    "config_path": null
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "total": 2,
+    "by_severity": {
+      "warning": 2
+    },
+    "by_rule": {
+      "cdc-crossing": 2
+    },
+    "by_check": {
+      "cdc": 2
+    },
+    "waived": 0,
+    "files_linted": 1,
+    "has_error": false
+  }
+}

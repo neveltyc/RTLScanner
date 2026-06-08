@@ -49,6 +49,9 @@ from rtl_common import (
     safe_str,
 )
 
+import agent_json
+from agent_json import AgentError, Envelope, filter_command, emit
+
 
 # ── Data Structures ──────────────────────────────────────────────────
 @dataclass
@@ -631,18 +634,34 @@ Output:
     out.add_argument('--markdown', action='store_true',
                      help='Render as Markdown tables')
     out.add_argument('--json', action='store_true', help='JSON output')
+    out.add_argument('--schema', action='store_true',
+                     help='Print the JSON Schema for --json output and exit')
     out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
     out.add_argument('--werror', action='store_true',
                      help='Exit 1 when --check reports any warning')
 
     a = p.parse_args()
 
+    if a.schema:
+        sys.exit(agent_json.print_schema('rtl-ports'))
+
     if a.no_color or not sys.stdout.isatty() or a.json or a.markdown:
         Color.disable()
+
+    env = Envelope('rtl-ports', filter_command(a)) if a.json else None
+
+    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=2):
+        if a.json:
+            sys.exit(emit(env.fail(code, msg)))
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(exit_code)
 
     # Resolve sources (same pattern as the other tools)
     all_paths = list(a.files) + list(a.dir)
     if not all_paths and not a.filelist:
+        if a.json:
+            die('no input: pass files, --dir, or --filelist',
+                agent_json.ERR_INPUT_NOT_FOUND)
         p.print_help()
         sys.exit(2)
 
@@ -652,24 +671,26 @@ Output:
         try:
             parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
         except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(2)
+            die(str(e), agent_json.ERR_BAD_FILELIST)
     scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
     filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
     if not filelist.sources:
-        print("Error: no .v/.sv source files found", file=sys.stderr)
-        sys.exit(2)
+        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
 
-    comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    try:
+        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    except Exception as e:
+        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
     pa = PortAnalyzer(comp)
 
     # Dispatch
     if a.instances:
         items = pa.connections(instance_glob=a.instance, module_glob=a.module)
         if a.json:
-            print(json.dumps({'mode': 'instances',
-                              'connections': [c.to_dict() for c in items]},
-                             indent=2, ensure_ascii=False))
+            data = {'mode': 'instances',
+                    'connections': [c.to_dict() for c in items]}
+            summary = {'mode': 'instances', 'connections': len(items)}
+            sys.exit(emit(env.ok(data, summary)))
         elif a.markdown:
             print(render_connections_markdown(items))
         else:
@@ -678,23 +699,30 @@ Output:
 
     if a.check:
         items = pa.filter_issues(instance_glob=a.instance, module_glob=a.module)
+        has_warn = any(i.severity == "warning" for i in items)
         if a.json:
-            print(json.dumps({'mode': 'check',
-                              'issues': [i.to_dict() for i in items]},
-                             indent=2, ensure_ascii=False))
+            by_sev = {}
+            for i in items:
+                by_sev[i.severity] = by_sev.get(i.severity, 0) + 1
+            data = {'mode': 'check',
+                    'issues': [i.to_dict() for i in items]}
+            summary = {'mode': 'check', 'issues': len(items),
+                       'by_severity': by_sev}
+            rc = emit(env.ok(data, summary))
+            sys.exit(1 if (a.werror and has_warn) else rc)
         elif a.markdown:
             print(render_issues_markdown(items))
         else:
             print_issues_pretty(items)
-        has_warn = any(i.severity == "warning" for i in items)
         sys.exit(1 if (a.werror and has_warn) else 0)
 
     # Default: modules mode
     items = pa.modules(name_glob=a.module)
     if a.json:
-        print(json.dumps({'mode': 'modules',
-                          'modules': [m.to_dict() for m in items]},
-                         indent=2, ensure_ascii=False))
+        data = {'mode': 'modules',
+                'modules': [m.to_dict() for m in items]}
+        summary = {'mode': 'modules', 'modules': len(items)}
+        sys.exit(emit(env.ok(data, summary)))
     elif a.markdown:
         print(render_modules_markdown(items))
     else:

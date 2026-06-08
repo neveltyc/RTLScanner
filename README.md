@@ -343,15 +343,56 @@ Unconnected **inputs** are reported as warnings (genuinely undriven);
 unconnected **outputs** are reported as notes (intentionally discarding
 an output is a common, benign idiom).
 
+## Agent / JSON Mode
+
+All four tools share a single, predictable JSON envelope when invoked
+with `--json`, designed to be safe to consume from LLM agents, MCP
+servers, or any script that wants structured output:
+
+```json
+{
+  "tool":        "rtl-tree",
+  "version":     "0.1.0",
+  "status":      "ok" | "error",
+  "command":     { /* echo of parsed args, output flags stripped */ },
+  "data":        { /* tool-specific payload */ } | null,
+  "diagnostics": [ {severity, file, line, col, message}, ... ],
+  "errors":      [ {code, message}, ... ],
+  "summary":     { /* tool-specific counts */ } | null
+}
+```
+
+Each tool ships a JSON Schema (draft-07) for its envelope; dump it with:
+
+```bash
+rtl-tree     --schema
+signal-trace --schema
+rtl-lint     --schema
+rtl-ports    --schema
+```
+
+Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
+`SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND` / `BAD_FILELIST` / `BAD_CONFIG`
+/ `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
+non-zero exit code), never a raw stack trace. See
+`examples/agent/README.md` for the full contract and worked examples.
+
+**CDC findings** (`rtl-lint --cdc`) appear as ordinary entries in
+`data.findings` with `rule="cdc-crossing"` and `check="cdc"`; the count
+is mirrored in `summary.by_check.cdc`. Note that
+`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` —
+waive it via a `[[waive]]` entry in `.rtllint.toml` instead.
+
 ## Code structure
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
 | `src/rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
-| `src/rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
-| `src/signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
-| `src/rtl_lint.py` | ~810 | Semantic + unused/shadow lint + CDC analyzer, config/waivers, CLI |
-| `src/rtl_ports.py` | ~700 | Module interface report, instance connectivity, width-mismatch check, CLI |
+| `src/agent_json.py` | ~440 | Shared JSON envelope, error codes, per-tool JSON schemas |
+| `src/rtl_tree.py` | ~400 | Hierarchy building, tree display, CLI |
+| `src/signal_trace.py` | ~670 | Driver/load analysis, signal tracing, CLI |
+| `src/rtl_lint.py` | ~830 | Semantic + unused/shadow lint + CDC analyzer, config/waivers, CLI |
+| `src/rtl_ports.py` | ~720 | Module interface report, instance connectivity, width-mismatch check, CLI |
 
 ## Why pyslang?
 
