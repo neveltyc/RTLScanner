@@ -1,0 +1,45 @@
+{
+  "tool": "inspect",
+  "version": "0.1.1",
+  "status": "ok",
+  "command": {
+    "cmd": "inspect",
+    "files": [],
+    "dir": [
+      "examples/trace"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "scope": "trace_top.u_dp.u_pipe",
+    "params": false,
+    "types": false,
+    "all": false
+  },
+  "data": {
+    "mode": "inspect",
+    "scope": "trace_top.u_dp.u_pipe",
+    "module": "pipe_reg",
+    "parameters": [
+      {
+        "name": "W",
+        "kind": "parameter",
+        "type": "int",
+        "value": "8",
+        "expression": "8",
+        "hierarchical_path": "trace_top.u_dp.u_pipe.W",
+        "lexical_path": "pipe_reg.W",
+        "is_overridden": true,
+        "file": "examples/trace/trace_top.sv",
+        "line": 9
+      }
+    ],
+    "types": []
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "inspect",
+    "parameters": 1,
+    "types": 0
+  }
+}

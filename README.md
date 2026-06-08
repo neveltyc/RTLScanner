@@ -5,7 +5,7 @@ signal driver/load tracing, dataflow analysis, static linting, and
 module interface reporting.
 
 All capabilities are exposed under a single CLI — `rtlscanner` — with
-seven subcommands:
+nine subcommands:
 
 | Subcommand | Purpose | Typical stage |
 |------------|---------|---------------|
@@ -16,6 +16,8 @@ seven subcommands:
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
 | `lint`     | Static linter (semantic + unused + shadow + CDC) | Code review / CI |
 | `ports`    | Module interface & connectivity report    | Documentation / integration |
+| `xref`     | Symbol definitions and references         | Simulation / debug / code review |
+| `inspect`  | Elaborated parameters and local types     | Integration / debug |
 
 ## Install
 
@@ -138,6 +140,40 @@ Reading the output:
 | **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. |
 | **depth** | BFS distance in hops from the starting signal. |
 
+## `rtlscanner xref` — symbol definition/reference index
+
+```bash
+rtlscanner xref -d ./rtl -s ready --scope top.u_dma
+rtlscanner xref -d ./rtl --name state --scope top.u_ctrl
+rtlscanner xref -d ./rtl -s valid --scope top --recursive
+```
+
+`xref` is a source-level index for one symbol name. It reports the
+elaborated definition, port/internal-symbol aliases when applicable, and
+references found through pyslang's analyzed read/write sets plus child
+instance port connections. It is intentionally lighter than a full LSP:
+use `--scope` to anchor the query; add `--recursive` only when you want
+to find same-named symbols in descendant instances as separate matches.
+
+Typical use: after a waveform search finds a suspicious signal, ask
+`xref` where that signal is declared, which procedural/continuous blocks
+read or write it, and which child instance ports it feeds or is driven by.
+
+## `rtlscanner inspect` — elaborated parameters and local types
+
+```bash
+rtlscanner inspect -d ./rtl --scope top.u_phy
+rtlscanner inspect -d ./rtl --scope top.u_phy --params
+rtlscanner inspect -d ./rtl --scope top.u_phy --types
+```
+
+`inspect` groups related scope metadata under one command instead of
+splitting parameters, localparams, type parameters, typedefs, enums,
+structs, and unions into separate subcommands. With no section flag it
+shows both `parameters` and `types`; `--params` or `--types` narrows the
+report. Values are read from pyslang's elaborated symbols, so overridden
+parameters and generated localparams are shown after elaboration.
+
 ## `rtlscanner lint` — static linter
 
 Built on pyslang's elaboration + analysis engine. Catches width
@@ -201,13 +237,13 @@ rtlscanner ports -d ./rtl --module 'cpu_*' --markdown > IFACE.md
 
 ## Agent / JSON Mode
 
-All seven subcommands accept `--json`, producing a single uniform
+All nine subcommands accept `--json`, producing a single uniform
 envelope shape:
 
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.0",
+  "version":     "0.1.1",
   "status":      "ok" | "error",
   "command":     { /* parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ } | null,
@@ -231,14 +267,16 @@ non-zero exit code), never a raw stack trace.
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `src/rtlscanner.py` | ~80 | Subcommand dispatch (entry point) |
+| `src/rtlscanner.py` | ~100 | Subcommand dispatch (entry point) |
 | `src/rtl_common.py` | ~490 | Color, filelist parsing, compilation builder |
 | `src/rtl_config.py` | ~190 | CLI/env/config resolution, `.rtlscanner.toml` loader |
-| `src/agent_json.py` | ~480 | Shared JSON envelope, error codes, schemas, CommaListAction |
+| `src/agent_json.py` | ~620 | Shared JSON envelope, error codes, schemas, CommaListAction |
 | `src/rtl_tree.py`   | ~360 | Hierarchy building + tree display |
 | `src/signal_trace.py` | ~890 | Driver/load + fanin/fanout |
 | `src/rtl_lint.py`   | ~760 | Semantic + unused/shadow + CDC + rule-selection model |
 | `src/rtl_ports.py`  | ~700 | Module interface & connectivity report |
+| `src/rtl_xref.py`   | ~430 | Symbol definition/reference index |
+| `src/rtl_inspect.py` | ~390 | Elaborated parameter/type reports |
 | `src/rtl_slang.py`  | ~200 | pyslang query helpers shared by the above |
 
 ## Why pyslang?

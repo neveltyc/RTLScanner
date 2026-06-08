@@ -9,6 +9,8 @@ Subcommands:
     fanout   — downstream dataflow BFS
     lint     — semantic + unused + shadow + CDC checks
     ports    — module/instance/port reports
+    xref     — symbol definitions and references
+    inspect  — elaborated parameters and local types
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ import rtl_tree
 import signal_trace
 import rtl_lint
 import rtl_ports
+import rtl_xref
+import rtl_inspect
 
 
 SUBCOMMANDS = {
@@ -45,6 +49,10 @@ SUBCOMMANDS = {
                 "Static lint (semantic + unused + shadow + CDC)"),
     "ports":   (rtl_ports.add_arguments,       rtl_ports.run,
                 "Module interface and instance connectivity report"),
+    "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
+                "Show symbol definitions and references"),
+    "inspect": (rtl_inspect.add_arguments,      rtl_inspect.run,
+                "Show elaborated parameters and local types"),
 }
 
 
@@ -62,6 +70,8 @@ Examples:
   rtlscanner fanout  -d ./rtl -s q --scope top.u_dp
   rtlscanner lint    -d ./rtl --rules default,cdc
   rtlscanner ports   -d ./rtl --check --strict
+  rtlscanner xref    -d ./rtl -s q --scope top.u_dp
+  rtlscanner inspect -d ./rtl --scope top.u_dp
 
 Configuration:
   ./.rtlscanner.toml is auto-discovered (CWD only).

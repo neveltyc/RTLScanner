@@ -1,0 +1,269 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "inspect agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `inspect --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "inspect"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "scope",
+            "module"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "inspect"
+            },
+            "scope": {
+              "type": "string"
+            },
+            "module": {
+              "type": "string"
+            },
+            "parameters": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "type",
+                  "value",
+                  "expression",
+                  "hierarchical_path",
+                  "lexical_path"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "parameter",
+                      "localparam",
+                      "type_parameter"
+                    ]
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "expression": {
+                    "type": "string"
+                  },
+                  "hierarchical_path": {
+                    "type": "string"
+                  },
+                  "lexical_path": {
+                    "type": "string"
+                  },
+                  "is_overridden": {
+                    "type": "boolean"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "types": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "type",
+                  "canonical_type",
+                  "bit_width",
+                  "hierarchical_path",
+                  "lexical_path"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "canonical_type": {
+                    "type": "string"
+                  },
+                  "bit_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "hierarchical_path": {
+                    "type": "string"
+                  },
+                  "lexical_path": {
+                    "type": "string"
+                  },
+                  "members": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "parameters",
+            "types"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "parameters": {
+              "type": "integer"
+            },
+            "types": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

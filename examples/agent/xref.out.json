@@ -1,0 +1,98 @@
+{
+  "tool": "xref",
+  "version": "0.1.1",
+  "status": "ok",
+  "command": {
+    "cmd": "xref",
+    "files": [],
+    "dir": [
+      "examples/trace"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "name": "mux_out",
+    "name_alt": null,
+    "scope": "trace_top.u_dp",
+    "recursive": false
+  },
+  "data": {
+    "mode": "xref",
+    "scope": "trace_top.u_dp",
+    "name": "mux_out",
+    "recursive": false,
+    "matches": [
+      {
+        "symbol": {
+          "name": "mux_out",
+          "kind": "Variable",
+          "type": "logic[7:0]",
+          "hierarchical_path": "trace_top.u_dp.mux_out",
+          "lexical_path": "datapath_v2.mux_out",
+          "file": "examples/trace/trace_top.sv",
+          "line": 34
+        },
+        "definitions": [
+          {
+            "name": "mux_out",
+            "kind": "Variable",
+            "type": "logic[7:0]",
+            "hierarchical_path": "trace_top.u_dp.mux_out",
+            "lexical_path": "datapath_v2.mux_out",
+            "file": "examples/trace/trace_top.sv",
+            "line": 34
+          }
+        ],
+        "references": [
+          {
+            "access": "read",
+            "kind": "continuous_assign",
+            "description": "assign",
+            "scope_path": "trace_top.u_dp",
+            "file": "examples/trace/trace_top.sv",
+            "line": 35
+          },
+          {
+            "access": "write",
+            "kind": "port_connection",
+            "description": "u_mux.y output",
+            "scope_path": "trace_top.u_dp",
+            "instance": "trace_top.u_dp.u_mux",
+            "port": "y",
+            "direction": "output",
+            "file": "examples/trace/trace_top.sv",
+            "line": 36
+          },
+          {
+            "access": "read",
+            "kind": "port_connection",
+            "description": "u_pipe.d input",
+            "scope_path": "trace_top.u_dp",
+            "instance": "trace_top.u_dp.u_pipe",
+            "port": "d",
+            "direction": "input",
+            "file": "examples/trace/trace_top.sv",
+            "line": 37
+          }
+        ],
+        "summary": {
+          "definitions": 1,
+          "references": 3,
+          "reads": 2,
+          "writes": 1,
+          "port_connections": 2
+        }
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "xref",
+    "symbols": 1,
+    "definitions": 1,
+    "references": 3,
+    "reads": 2,
+    "writes": 1,
+    "port_connections": 2
+  }
+}
