@@ -1,0 +1,340 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rtl-ports agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtl-ports --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "rtl-ports"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "modules",
+                "instances",
+                "check"
+              ]
+            },
+            "modules": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "module",
+                  "kind",
+                  "ports"
+                ],
+                "properties": {
+                  "module": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "parameters": {
+                    "type": "object"
+                  },
+                  "instance_count": {
+                    "type": "integer"
+                  },
+                  "ports": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name",
+                        "direction",
+                        "type",
+                        "width"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "direction": {
+                          "type": "string",
+                          "enum": [
+                            "input",
+                            "output",
+                            "inout",
+                            "ref"
+                          ]
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "width": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "is_interface": {
+                          "type": "boolean"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "line": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "description": "Populated for mode=modules."
+            },
+            "connections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "instance",
+                  "module",
+                  "port",
+                  "direction"
+                ],
+                "properties": {
+                  "instance": {
+                    "type": "string"
+                  },
+                  "module": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "string"
+                  },
+                  "direction": {
+                    "type": "string"
+                  },
+                  "port_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "connection": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "conn_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "unconnected": {
+                    "type": "boolean"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "description": "Populated for mode=instances."
+            },
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "severity",
+                  "instance",
+                  "port",
+                  "message"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "warning",
+                      "note",
+                      "error"
+                    ]
+                  },
+                  "instance": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "string"
+                  },
+                  "direction": {
+                    "type": "string"
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "description": "Populated for mode=check."
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "modules": {
+              "type": "integer"
+            },
+            "connections": {
+              "type": "integer"
+            },
+            "issues": {
+              "type": "integer"
+            },
+            "by_severity": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

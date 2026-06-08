@@ -1,0 +1,289 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rtl-lint agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtl-lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` — use `[[waive]]` in `.rtllint.toml` instead.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "rtl-lint"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "findings",
+            "waived",
+            "config_path"
+          ],
+          "properties": {
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "line",
+                  "col",
+                  "severity",
+                  "rule",
+                  "message",
+                  "check"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "col": {
+                    "type": "integer"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "error",
+                      "warning",
+                      "note",
+                      "ignored"
+                    ]
+                  },
+                  "rule": {
+                    "type": "string",
+                    "description": "Open enum. Known rules include `cdc-crossing`, `width-trunc`, `unused-port`, `case-default`, `latch`, `multi-driven`, `used-before-declared`."
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "check": {
+                    "type": "string",
+                    "enum": [
+                      "semantic",
+                      "unused",
+                      "shadow",
+                      "cdc"
+                    ]
+                  },
+                  "waived_reason": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "waived": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "line",
+                  "col",
+                  "severity",
+                  "rule",
+                  "message",
+                  "check"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "col": {
+                    "type": "integer"
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "error",
+                      "warning",
+                      "note",
+                      "ignored"
+                    ]
+                  },
+                  "rule": {
+                    "type": "string",
+                    "description": "Open enum. Known rules include `cdc-crossing`, `width-trunc`, `unused-port`, `case-default`, `latch`, `multi-driven`, `used-before-declared`."
+                  },
+                  "message": {
+                    "type": "string"
+                  },
+                  "check": {
+                    "type": "string",
+                    "enum": [
+                      "semantic",
+                      "unused",
+                      "shadow",
+                      "cdc"
+                    ]
+                  },
+                  "waived_reason": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "config_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "total",
+            "by_severity",
+            "by_rule",
+            "by_check",
+            "waived",
+            "files_linted",
+            "has_error"
+          ],
+          "properties": {
+            "total": {
+              "type": "integer"
+            },
+            "by_severity": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "by_rule": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "by_check": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            },
+            "waived": {
+              "type": "integer"
+            },
+            "files_linted": {
+              "type": "integer"
+            },
+            "has_error": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

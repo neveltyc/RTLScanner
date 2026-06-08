@@ -1,0 +1,209 @@
+{
+  "tool": "rtl-ports",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "files": [],
+    "dir": [
+      "examples/ports"
+    ],
+    "filelist": [],
+    "filelist_root": ".",
+    "filelist_prefix": "${PROJPATH}",
+    "exclude": [],
+    "modules": false,
+    "instances": false,
+    "check": false,
+    "module": null,
+    "instance": null,
+    "werror": false
+  },
+  "data": {
+    "mode": "modules",
+    "modules": [
+      {
+        "module": "alu",
+        "kind": "module",
+        "parameters": {},
+        "instance_count": 1,
+        "ports": [
+          {
+            "name": "a",
+            "direction": "input",
+            "type": "logic[31:0]",
+            "width": 32,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 22
+          },
+          {
+            "name": "b",
+            "direction": "input",
+            "type": "logic[31:0]",
+            "width": 32,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 23
+          },
+          {
+            "name": "op",
+            "direction": "input",
+            "type": "logic[3:0]",
+            "width": 4,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 24
+          },
+          {
+            "name": "y",
+            "direction": "output",
+            "type": "logic[31:0]",
+            "width": 32,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 25
+          },
+          {
+            "name": "zero",
+            "direction": "output",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 26
+          }
+        ],
+        "file": "examples/ports/ports_demo.sv",
+        "line": 21
+      },
+      {
+        "module": "fifo",
+        "kind": "module",
+        "parameters": {
+          "WIDTH": "8",
+          "DEPTH": "16"
+        },
+        "instance_count": 1,
+        "ports": [
+          {
+            "name": "clk",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 8
+          },
+          {
+            "name": "rst_n",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 9
+          },
+          {
+            "name": "wr_en",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 10
+          },
+          {
+            "name": "wr_data",
+            "direction": "input",
+            "type": "logic[7:0]",
+            "width": 8,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 11
+          },
+          {
+            "name": "rd_en",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 12
+          },
+          {
+            "name": "rd_data",
+            "direction": "output",
+            "type": "logic[7:0]",
+            "width": 8,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 13
+          },
+          {
+            "name": "full",
+            "direction": "output",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 14
+          },
+          {
+            "name": "empty",
+            "direction": "output",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 15
+          },
+          {
+            "name": "count",
+            "direction": "output",
+            "type": "logic[3:0]",
+            "width": 4,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 16
+          }
+        ],
+        "file": "examples/ports/ports_demo.sv",
+        "line": 4
+      },
+      {
+        "module": "top",
+        "kind": "module",
+        "parameters": {},
+        "instance_count": 1,
+        "ports": [
+          {
+            "name": "clk",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 32
+          },
+          {
+            "name": "rst_n",
+            "direction": "input",
+            "type": "logic",
+            "width": 1,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 33
+          },
+          {
+            "name": "din",
+            "direction": "input",
+            "type": "logic[31:0]",
+            "width": 32,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 34
+          },
+          {
+            "name": "dout",
+            "direction": "output",
+            "type": "logic[31:0]",
+            "width": 32,
+            "file": "examples/ports/ports_demo.sv",
+            "line": 35
+          }
+        ],
+        "file": "examples/ports/ports_demo.sv",
+        "line": 31
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "modules",
+    "modules": 3
+  }
+}

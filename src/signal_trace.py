@@ -45,6 +45,9 @@ from rtl_common import (
     filter_filelist,
 )
 
+import agent_json
+from agent_json import AgentError, Envelope, filter_command, emit
+
 
 # ── Display glyphs ───────────────────────────────────────────────────
 # Defined as named constants so they can be referenced inside f-string
@@ -524,6 +527,49 @@ class SignalTracer:
                 r.pretty_print(load_filter)
 
 
+# ── Agent-mode helpers ───────────────────────────────────────────────
+def _emit_list(env, tracer, scope) -> int:
+    sigs = tracer.list_signals(scope)
+    if not sigs:
+        return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
+                             f"scope '{scope}' not found or empty"))
+    data = {'mode': 'list', 'scope': scope, 'signals': sigs}
+    summary = {'mode': 'list', 'results': 0, 'signals': len(sigs)}
+    return emit(env.ok(data, summary))
+
+
+def _emit_all(env, tracer, scope, cross, load_filter) -> int:
+    results = tracer.trace_all(scope, cross)
+    if not results:
+        return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
+                             f"no signals in scope '{scope}'"))
+    rdicts = [r.to_dict(load_filter) for r in results]
+    data = {'mode': 'all', 'scope': scope, 'results': rdicts}
+    summary = {
+        'mode':    'all',
+        'results': len(rdicts),
+        'drivers': sum(1 for d in rdicts if d.get('driver')),
+        'loads':   sum(int(d.get('load_count', 0)) for d in rdicts),
+    }
+    return emit(env.ok(data, summary))
+
+
+def _emit_signal(env, tracer, signal, scope, cross, load_filter) -> int:
+    r = tracer.trace(signal, scope, cross)
+    if r is None:
+        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
+                             f"signal '{signal}' not found in scope '{scope}'"))
+    rd = r.to_dict(load_filter)
+    data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
+    summary = {
+        'mode':    'signal',
+        'results': 1,
+        'drivers': 1 if rd.get('driver') else 0,
+        'loads':   int(rd.get('load_count', 0)),
+    }
+    return emit(env.ok(data, summary))
+
+
 # ── Standalone CLI ───────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
@@ -567,16 +613,32 @@ With directory scan:
     p.add_argument('--list', action='store_true', help='List all signals in scope')
     p.add_argument('--all', action='store_true', help='Trace every signal in scope')
     p.add_argument('--json', action='store_true', help='JSON output')
+    p.add_argument('--schema', action='store_true',
+                   help='Print the JSON Schema for --json output and exit')
     p.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
 
     a = p.parse_args()
 
+    if a.schema:
+        sys.exit(agent_json.print_schema('signal-trace'))
+
     if a.no_color or not sys.stdout.isatty() or a.json:
         Color.disable()
+
+    env: Optional[Envelope] = Envelope('signal-trace', filter_command(a)) if a.json else None
+
+    def die(msg, code=agent_json.ERR_INTERNAL):
+        if a.json:
+            sys.exit(emit(env.fail(code, msg)))
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(1)
 
     # ── Resolve sources from all input methods ──
     all_paths = list(a.files) + list(a.dir)
     if not all_paths and not a.filelist:
+        if a.json:
+            die('no input: pass files, --dir, or --filelist',
+                agent_json.ERR_INPUT_NOT_FOUND)
         p.print_help()
         sys.exit(1)
 
@@ -587,18 +649,19 @@ With directory scan:
         try:
             parsed.append(parse_filelist(fl, fl_root, prefix=a.filelist_prefix))
         except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(1)
+            die(str(e), agent_json.ERR_BAD_FILELIST)
 
     scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
     filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
 
     if not filelist.sources:
-        print("Error: no source files found.", file=sys.stderr)
-        sys.exit(1)
+        die('no source files found.', agent_json.ERR_INPUT_NOT_FOUND)
 
     # ── Build compilation ──
-    comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    try:
+        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    except Exception as e:
+        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
     tracer = SignalTracer(comp)
 
     # ── Auto-detect scope ──
@@ -608,15 +671,27 @@ With directory scan:
         if len(tp) == 1:
             scope = tp[0]
         elif tp:
+            if a.json:
+                die('multiple tops, specify --scope: ' + ', '.join(tp),
+                    agent_json.ERR_SCOPE_NOT_FOUND)
             print("Multiple tops \u2014 specify --scope:", file=sys.stderr)
             for t in tp:
                 print(f"  {t}", file=sys.stderr)
             sys.exit(1)
         else:
-            print("Error: no top modules found.", file=sys.stderr)
-            sys.exit(1)
+            die('no top modules found.', agent_json.ERR_NO_TOP)
 
     # ── Dispatch ──
+    if a.json:
+        if a.list:
+            sys.exit(_emit_list(env, tracer, scope))
+        if a.all:
+            sys.exit(_emit_all(env, tracer, scope, a.cross, a.filter))
+        if a.signal:
+            sys.exit(_emit_signal(env, tracer, a.signal, scope, a.cross, a.filter))
+        die('specify --signal <name>, --list, or --all',
+            agent_json.ERR_INPUT_NOT_FOUND)
+
     if a.list:
         tracer.cmd_list(scope, a.json)
     elif a.all:
