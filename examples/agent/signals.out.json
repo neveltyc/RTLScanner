@@ -1,0 +1,52 @@
+{
+  "tool": "signals",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "cmd": "signals",
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "scope": "top.u_dp0"
+  },
+  "data": {
+    "mode": "list",
+    "scope": "top.u_dp0",
+    "signals": [
+      {
+        "name": "clk",
+        "kind": "Variable",
+        "type": "logic"
+      },
+      {
+        "name": "a",
+        "kind": "Variable",
+        "type": "logic[7:0]"
+      },
+      {
+        "name": "b",
+        "kind": "Variable",
+        "type": "logic[7:0]"
+      },
+      {
+        "name": "y",
+        "kind": "Variable",
+        "type": "logic[7:0]"
+      },
+      {
+        "name": "q",
+        "kind": "Variable",
+        "type": "logic[7:0]"
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "list",
+    "signals": 5
+  }
+}

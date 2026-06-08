@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "tree agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `tree --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "title": "fanin agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `fanin --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "tree"
+      "const": "fanin"
     },
     "version": {
       "type": "string"
@@ -37,40 +37,80 @@
         {
           "type": "object",
           "required": [
-            "hierarchy",
-            "filelist"
+            "mode",
+            "scope",
+            "signal",
+            "start",
+            "nodes",
+            "edges",
+            "max_depth"
           ],
           "properties": {
-            "hierarchy": {
+            "mode": {
+              "type": "string",
+              "const": "fanin"
+            },
+            "scope": {
+              "type": "string"
+            },
+            "signal": {
+              "type": "string",
+              "description": "Starting signal name."
+            },
+            "start": {
+              "type": "string",
+              "description": "Elaborated hierarchical path of the starting signal."
+            },
+            "nodes": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/node"
+                "type": "string"
               }
             },
-            "filelist": {
-              "type": "object",
-              "required": [
-                "sources",
-                "include_dirs",
-                "defines"
-              ],
-              "properties": {
-                "sources": {
-                  "type": "array",
-                  "items": {
+            "edges": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "source",
+                  "target",
+                  "kind",
+                  "description"
+                ],
+                "properties": {
+                  "source": {
                     "type": "string"
+                  },
+                  "target": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "source_type": {
+                    "type": "string"
+                  },
+                  "target_type": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "depth": {
+                    "type": "integer"
                   }
                 },
-                "include_dirs": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "defines": {
-                  "type": "object"
-                }
+                "additionalProperties": true
               }
+            },
+            "max_depth": {
+              "type": "integer"
             }
           }
         },
@@ -152,30 +192,24 @@
         {
           "type": "object",
           "required": [
-            "instances",
-            "unique_modules",
-            "max_depth",
-            "files_parsed",
-            "module_counts"
+            "mode",
+            "results"
           ],
           "properties": {
-            "instances": {
+            "mode": {
+              "type": "string"
+            },
+            "results": {
               "type": "integer"
             },
-            "unique_modules": {
+            "nodes": {
+              "type": "integer"
+            },
+            "edges": {
               "type": "integer"
             },
             "max_depth": {
               "type": "integer"
-            },
-            "files_parsed": {
-              "type": "integer"
-            },
-            "module_counts": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "integer"
-              }
             }
           }
         },
@@ -185,45 +219,5 @@
       ]
     }
   },
-  "additionalProperties": false,
-  "$defs": {
-    "node": {
-      "type": "object",
-      "required": [
-        "instance",
-        "module",
-        "path"
-      ],
-      "properties": {
-        "instance": {
-          "type": "string"
-        },
-        "module": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "parameters": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "is_interface": {
-          "type": "boolean"
-        },
-        "generated_scope": {
-          "type": "string"
-        },
-        "children": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/node"
-          }
-        }
-      },
-      "additionalProperties": true
-    }
-  }
+  "additionalProperties": false
 }

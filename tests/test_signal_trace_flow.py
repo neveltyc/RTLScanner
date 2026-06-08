@@ -6,12 +6,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SIGNAL_TRACE = ROOT / "src" / "signal_trace.py"
+RTLSCANNER = [sys.executable, "-m", "rtlscanner"]
 
 
-def run_signal_trace_json(*args):
+def run_json(*args):
     proc = subprocess.run(
-        [sys.executable, str(SIGNAL_TRACE), *args, "--json"],
+        RTLSCANNER + list(args) + ["--json"],
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,
@@ -21,9 +21,9 @@ def run_signal_trace_json(*args):
     return json.loads(proc.stdout)
 
 
-def run_signal_trace_help():
+def run_help(sub):
     return subprocess.run(
-        [sys.executable, str(SIGNAL_TRACE), "--help"],
+        RTLSCANNER + [sub, "--help"],
         cwd=ROOT,
         text=True,
         stdout=subprocess.PIPE,
@@ -39,23 +39,25 @@ def edge_keys(envelope):
     }
 
 
-class SignalTraceFlowCliTests(unittest.TestCase):
-    def test_help_mentions_flow_options(self):
-        help_text = run_signal_trace_help()
+class FlowSubcommandTests(unittest.TestCase):
+    def test_fanin_help_describes_depth(self):
+        text = run_help("fanin")
+        self.assertIn("--signal", text)
+        self.assertIn("--depth", text)
+        self.assertIn("BFS traversal depth", text)
 
-        self.assertIn("--fanin", help_text)
-        self.assertIn("Show upstream dataflow edges feeding --signal", help_text)
-        self.assertIn("--fanout", help_text)
-        self.assertIn("Show downstream dataflow edges driven by --signal", help_text)
-        self.assertIn("--flow-depth", help_text)
+    def test_fanout_help_describes_depth(self):
+        text = run_help("fanout")
+        self.assertIn("--signal", text)
+        self.assertIn("--depth", text)
 
-    def test_fanin_json_reports_upstream_edges(self):
-        env = run_signal_trace_json(
+    def test_fanin_reports_upstream_edges(self):
+        env = run_json(
+            "fanin",
             "-d", "examples/trace",
             "--signal", "result",
             "--scope", "trace_top.u_dp",
-            "--fanin",
-            "--flow-depth", "3",
+            "--depth", "3",
         )
 
         self.assertEqual(env["status"], "ok")
@@ -74,13 +76,13 @@ class SignalTraceFlowCliTests(unittest.TestCase):
             edge_keys(env),
         )
 
-    def test_fanout_json_reports_downstream_edges(self):
-        env = run_signal_trace_json(
+    def test_fanout_reports_downstream_edges(self):
+        env = run_json(
+            "fanout",
             "-d", "examples/trace",
             "--signal", "mux_out",
             "--scope", "trace_top.u_dp",
-            "--fanout",
-            "--flow-depth", "3",
+            "--depth", "3",
         )
 
         self.assertEqual(env["status"], "ok")
@@ -99,8 +101,9 @@ class SignalTraceFlowCliTests(unittest.TestCase):
             edge_keys(env),
         )
 
-    def test_procedural_lhs_is_not_reported_as_load(self):
-        env = run_signal_trace_json(
+    def test_trace_procedural_lhs_is_not_a_load(self):
+        env = run_json(
+            "trace",
             "-d", "examples/basic",
             "--signal", "q",
             "--scope", "top.u_dp0.u_reg",
@@ -111,8 +114,9 @@ class SignalTraceFlowCliTests(unittest.TestCase):
         self.assertEqual(result["load_count"], 0)
         self.assertEqual(result["loads"], [])
 
-    def test_timing_control_clock_is_reported_as_load(self):
-        env = run_signal_trace_json(
+    def test_trace_timing_control_clock_is_a_load(self):
+        env = run_json(
+            "trace",
             "-d", "examples/basic",
             "--signal", "clk",
             "--scope", "top.u_dp0.u_reg",

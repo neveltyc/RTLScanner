@@ -1,22 +1,21 @@
 {
-  "tool": "rtl-ports",
+  "tool": "ports",
   "version": "0.1.0",
   "status": "ok",
   "command": {
+    "cmd": "ports",
     "files": [],
     "dir": [
       "examples/ports"
     ],
     "filelist": [],
-    "filelist_root": ".",
-    "filelist_prefix": "${PROJPATH}",
     "exclude": [],
     "modules": false,
     "instances": false,
     "check": false,
-    "module": null,
-    "instance": null,
-    "werror": false
+    "module": [],
+    "instance": [],
+    "strict": false
   },
   "data": {
     "mode": "modules",

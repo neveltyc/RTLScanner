@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "tree agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `tree --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "title": "signals agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `signals --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "tree"
+      "const": "signals"
     },
     "version": {
       "type": "string"
@@ -37,39 +37,37 @@
         {
           "type": "object",
           "required": [
-            "hierarchy",
-            "filelist"
+            "mode",
+            "scope",
+            "signals"
           ],
           "properties": {
-            "hierarchy": {
+            "mode": {
+              "type": "string",
+              "const": "list"
+            },
+            "scope": {
+              "type": "string"
+            },
+            "signals": {
               "type": "array",
               "items": {
-                "$ref": "#/$defs/node"
-              }
-            },
-            "filelist": {
-              "type": "object",
-              "required": [
-                "sources",
-                "include_dirs",
-                "defines"
-              ],
-              "properties": {
-                "sources": {
-                  "type": "array",
-                  "items": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "kind": {
                     "type": "string"
                   }
                 },
-                "include_dirs": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  }
-                },
-                "defines": {
-                  "type": "object"
-                }
+                "additionalProperties": true
               }
             }
           }
@@ -152,30 +150,15 @@
         {
           "type": "object",
           "required": [
-            "instances",
-            "unique_modules",
-            "max_depth",
-            "files_parsed",
-            "module_counts"
+            "mode",
+            "signals"
           ],
           "properties": {
-            "instances": {
-              "type": "integer"
+            "mode": {
+              "type": "string"
             },
-            "unique_modules": {
+            "signals": {
               "type": "integer"
-            },
-            "max_depth": {
-              "type": "integer"
-            },
-            "files_parsed": {
-              "type": "integer"
-            },
-            "module_counts": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "integer"
-              }
             }
           }
         },
@@ -185,45 +168,5 @@
       ]
     }
   },
-  "additionalProperties": false,
-  "$defs": {
-    "node": {
-      "type": "object",
-      "required": [
-        "instance",
-        "module",
-        "path"
-      ],
-      "properties": {
-        "instance": {
-          "type": "string"
-        },
-        "module": {
-          "type": "string"
-        },
-        "path": {
-          "type": "string"
-        },
-        "parameters": {
-          "type": "object",
-          "additionalProperties": {
-            "type": "string"
-          }
-        },
-        "is_interface": {
-          "type": "boolean"
-        },
-        "generated_scope": {
-          "type": "string"
-        },
-        "children": {
-          "type": "array",
-          "items": {
-            "$ref": "#/$defs/node"
-          }
-        }
-      },
-      "additionalProperties": true
-    }
-  }
+  "additionalProperties": false
 }

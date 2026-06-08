@@ -40,17 +40,24 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    FileList,
     build_compilation,
-    collect_filelist,
-    parse_filelist,
-    merge_filelists,
-    filter_filelist,
     safe_str,
 )
 
 import agent_json
-from agent_json import AgentError, Envelope, filter_command, emit
+from agent_json import Envelope, emit
+from rtl_config import build_filelist, load_config, resolve_inputs
+
+
+# A single instance/module glob may match multiple patterns when the user
+# passes a comma-list. Returns True if the value matches ANY of the globs.
+# Accepts str (single glob) or list of strs.
+def _glob_any(value, globs):
+    if not globs:
+        return True
+    if isinstance(globs, str):
+        globs = [globs]
+    return any(fnmatch.fnmatch(value, g) for g in globs)
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -406,7 +413,7 @@ class PortAnalyzer:
     def modules(self, name_glob=None):
         items = list(self._modules.values())
         if name_glob:
-            items = [m for m in items if fnmatch.fnmatch(m.name, name_glob)]
+            items = [m for m in items if _glob_any(m.name, name_glob)]
         items.sort(key=lambda m: m.name)
         return items
 
@@ -416,24 +423,22 @@ class PortAnalyzer:
         out = self.all_connections()
         if instance_glob:
             out = [c for c in out
-                   if fnmatch.fnmatch(c.instance_path, instance_glob)
-                   or fnmatch.fnmatch(c.instance_name, instance_glob)]
+                   if _glob_any(c.instance_path, instance_glob)
+                   or _glob_any(c.instance_name, instance_glob)]
         if module_glob:
-            out = [c for c in out if fnmatch.fnmatch(c.module_name, module_glob)]
+            out = [c for c in out if _glob_any(c.module_name, module_glob)]
         out.sort(key=lambda c: c.instance_path)
         return out
 
     def filter_issues(self, instance_glob=None, module_glob=None):
         items = self.issues()
-        # Mirror connections() filtering, but issues only have instance_path/port.
         if instance_glob:
             items = [i for i in items
-                     if fnmatch.fnmatch(i.instance_path, instance_glob)]
+                     if _glob_any(i.instance_path, instance_glob)]
         if module_glob:
-            # Look up the module via the matching connection
             mods = {c.instance_path: c.module_name for c in self.all_connections()}
             items = [i for i in items
-                     if fnmatch.fnmatch(mods.get(i.instance_path, ""), module_glob)]
+                     if _glob_any(mods.get(i.instance_path, ""), module_glob)]
         items.sort(key=lambda i: i.instance_path)
         return items
 
@@ -579,42 +584,10 @@ def render_issues_markdown(issues):
     return "\n".join(lines) + "\n"
 
 
+
+
 # ── CLI ──────────────────────────────────────────────────────────────
-def main():
-    p = argparse.ArgumentParser(
-        prog='rtl-ports',
-        description='rtl-ports — SV Module Interface & Connectivity Report',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Modes:
-  rtl-ports -d ./rtl                  Module interface signatures (default)
-  rtl-ports -d ./rtl --instances      Connectivity per instance
-  rtl-ports -d ./rtl --check          Only connectivity issues
-
-Filtering:
-  rtl-ports -d ./rtl --module cpu_*               # filter by module glob
-  rtl-ports -d ./rtl --instances --instance 'top.u_cpu*'
-
-Output:
-  rtl-ports -d ./rtl --markdown > docs/IFACE.md   # auto-generate docs
-  rtl-ports -d ./rtl --json
-""")
-    p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
-                   help='Directory to scan recursively (repeatable)')
-
-    fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
-                    help='VCS-style .f filelist (repeatable)')
-    fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                    default='.', metavar='DIR',
-                    help='Base path for filelist relative paths (default: .)')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
-                    help='Prefix substituted for filelist path variables '
-                         '(default: ${PROJPATH})')
-    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
-                    help='Exclude paths matching glob (repeatable)')
-
+def add_arguments(p: argparse.ArgumentParser) -> None:
     md = p.add_argument_group('mode')
     g = md.add_mutually_exclusive_group()
     g.add_argument('--modules', action='store_true',
@@ -625,83 +598,74 @@ Output:
                    help='Show only connectivity issues')
 
     ft = p.add_argument_group('filters')
-    ft.add_argument('--module', default=None, metavar='GLOB',
-                    help='Filter modules by name')
-    ft.add_argument('--instance', default=None, metavar='GLOB',
-                    help='Filter instances by hierarchical path')
+    ft.add_argument('--module', action=agent_json.CommaListAction, default=[],
+                    metavar='GLOB',
+                    help='Filter modules by name (comma-list or repeat)')
+    ft.add_argument('--instance', action=agent_json.CommaListAction, default=[],
+                    metavar='GLOB',
+                    help='Filter instances by hierarchical path (comma-list or repeat)')
 
     out = p.add_argument_group('output')
     out.add_argument('--markdown', action='store_true',
                      help='Render as Markdown tables')
-    out.add_argument('--json', action='store_true',
-                     help='Emit results as an agent-friendly JSON envelope (see --schema)')
-    out.add_argument('--schema', action='store_true',
-                     help='Print the JSON Schema for --json output and exit')
-    out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
-    out.add_argument('--werror', action='store_true',
+    out.add_argument('--strict', action='store_true',
                      help='Exit 1 when --check reports any warning')
 
-    a = p.parse_args()
 
-    if a.schema:
-        sys.exit(agent_json.print_schema('rtl-ports'))
+def run(args, env):
+    cfg, cfg_path = load_config()
+    ri = resolve_inputs(
+        cli_files=args.files, cli_dir=args.dir,
+        cli_filelist=args.filelist, cli_exclude=args.exclude,
+        config=cfg, config_path=cfg_path,
+    )
+    for note in ri.notes:
+        print(f"note: {note}", file=sys.stderr)
 
-    if a.no_color or not sys.stdout.isatty() or a.json or a.markdown:
+    # Markdown output suppresses ANSI just like JSON
+    if args.markdown:
         Color.disable()
 
-    env = Envelope('rtl-ports', filter_command(a)) if a.json else None
-
-    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=2):
-        if a.json:
-            sys.exit(emit(env.fail(code, msg)))
-        print(f"Error: {msg}", file=sys.stderr)
-        sys.exit(exit_code)
-
-    # Resolve sources (same pattern as the other tools)
-    all_paths = list(a.files) + list(a.dir)
-    if not all_paths and not a.filelist:
-        if a.json:
-            die('no input: pass files, --dir, or --filelist',
-                agent_json.ERR_INPUT_NOT_FOUND)
-        p.print_help()
-        sys.exit(2)
-
-    fl_root = Path(a.filelist_root).expanduser().resolve()
-    parsed = []
-    for f in a.filelist:
-        try:
-            parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
-        except FileNotFoundError as e:
-            die(str(e), agent_json.ERR_BAD_FILELIST)
-    scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
-    filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
+    try:
+        filelist = build_filelist(ri)
+    except FileNotFoundError as e:
+        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
+    except ValueError as e:
+        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
     if not filelist.sources:
-        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
+        return _die(env, 'no .v/.sv source files found',
+                    agent_json.ERR_INPUT_NOT_FOUND)
 
     try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+        comp, _ = build_compilation(filelist.sources, filelist.include_dirs,
+                                    filelist.defines)
     except Exception as e:
-        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
+        return _die(env, f'compilation failed: {e}',
+                    agent_json.ERR_COMPILE_FAILED)
     pa = PortAnalyzer(comp)
 
-    # Dispatch
-    if a.instances:
-        items = pa.connections(instance_glob=a.instance, module_glob=a.module)
-        if a.json:
+    module_globs = list(args.module)
+    instance_globs = list(args.instance)
+
+    if args.instances:
+        items = pa.connections(instance_glob=instance_globs,
+                               module_glob=module_globs)
+        if env is not None:
             data = {'mode': 'instances',
                     'connections': [c.to_dict() for c in items]}
             summary = {'mode': 'instances', 'connections': len(items)}
-            sys.exit(emit(env.ok(data, summary)))
-        elif a.markdown:
+            return emit(env.ok(data, summary))
+        if args.markdown:
             print(render_connections_markdown(items))
         else:
             print_connections_pretty(items)
-        sys.exit(0)
+        return 0
 
-    if a.check:
-        items = pa.filter_issues(instance_glob=a.instance, module_glob=a.module)
+    if args.check:
+        items = pa.filter_issues(instance_glob=instance_globs,
+                                 module_glob=module_globs)
         has_warn = any(i.severity == "warning" for i in items)
-        if a.json:
+        if env is not None:
             by_sev = {}
             for i in items:
                 by_sev[i.severity] = by_sev.get(i.severity, 0) + 1
@@ -710,26 +674,29 @@ Output:
             summary = {'mode': 'check', 'issues': len(items),
                        'by_severity': by_sev}
             rc = emit(env.ok(data, summary))
-            sys.exit(1 if (a.werror and has_warn) else rc)
-        elif a.markdown:
+            return 1 if (args.strict and has_warn) else rc
+        if args.markdown:
             print(render_issues_markdown(items))
         else:
             print_issues_pretty(items)
-        sys.exit(1 if (a.werror and has_warn) else 0)
+        return 1 if (args.strict and has_warn) else 0
 
     # Default: modules mode
-    items = pa.modules(name_glob=a.module)
-    if a.json:
+    items = pa.modules(name_glob=module_globs)
+    if env is not None:
         data = {'mode': 'modules',
                 'modules': [m.to_dict() for m in items]}
         summary = {'mode': 'modules', 'modules': len(items)}
-        sys.exit(emit(env.ok(data, summary)))
-    elif a.markdown:
+        return emit(env.ok(data, summary))
+    if args.markdown:
         print(render_modules_markdown(items))
     else:
         print_modules_pretty(items)
-    sys.exit(0)
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+def _die(env, msg, code):
+    if env is not None:
+        return emit(env.fail(code, msg))
+    print(f"Error: {msg}", file=sys.stderr)
+    return 2
