@@ -118,6 +118,10 @@ signal-trace --filelist rtl.f --signal data --scope top --filter 'u_fifo*'
 # Trace through port boundaries
 signal-trace --filelist rtl.f --signal q --scope top.u_dp --cross
 
+# Dataflow fanin / fanout
+signal-trace --filelist rtl.f --signal result --scope top.u_dp --fanin
+signal-trace --filelist rtl.f --signal valid --scope top.u_dp --fanout --flow-depth 6
+
 # JSON output (for scripting / IDE integration)
 signal-trace --filelist rtl.f --signal q --scope top.u_dp --json
 ```
