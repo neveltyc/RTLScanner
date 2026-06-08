@@ -26,8 +26,9 @@ signal-trace --filelist rtl.f --signal clk --scope top
 You can also run the scripts directly:
 
 ```bash
-python3 rtl_tree.py -d ./examples/basic
-python3 signal_trace.py -d ./examples/basic --signal q --scope top.u_dp0
+python3 src/rtl_tree.py -d ./examples/basic
+python3 src/signal_trace.py -d ./examples/basic --signal q --scope top.u_dp0
+python3 src/rtl_lint.py -d ./examples/lint
 ```
 
 ## Hierarchy Viewer (`rtl-tree`)
@@ -266,10 +267,10 @@ examples/lint/lint_demo.sv
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
-| `rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
-| `signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
-| `rtl_lint.py` | ~580 | Semantic + unused/shadow lint, config/waivers, CLI |
+| `src/rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
+| `src/rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
+| `src/signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
+| `src/rtl_lint.py` | ~580 | Semantic + unused/shadow lint, config/waivers, CLI |
 
 ## Why pyslang?
 
