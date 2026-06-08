@@ -213,6 +213,33 @@ class LintRuleModelTests(unittest.TestCase):
                    cwd=self.tmp, env=self._no_env(), check=False)
         self.assertEqual(proc.returncode, 1)
 
+    def test_rules_everything_keeps_semantic_findings(self):
+        env, _, _ = run_json("lint", "-d", "examples/lint",
+                             "--rules", "everything",
+                             cwd=self.tmp, env=self._no_env())
+        checks = {f["check"] for f in env["data"]["findings"]}
+        self.assertEqual(checks, {"semantic"})
+        self.assertGreater(len(env["data"]["findings"]), 0)
+
+    def test_rules_all_keeps_every_real_family_without_everything_family(self):
+        env, _, _ = run_json("lint", "-d", "examples/lint",
+                             "--rules", "all",
+                             cwd=self.tmp, env=self._no_env())
+        checks = {f["check"] for f in env["data"]["findings"]}
+        self.assertIn("semantic", checks)
+        self.assertIn("unused", checks)
+        self.assertIn("cdc", checks)
+        self.assertNotIn("everything", checks)
+
+    def test_semantic_includes_frontend_diagnostics(self):
+        bad = self.tmp / "bad_include.v"
+        bad.write_text('`include "missing_defs.vh"\nmodule bad_include; endmodule\n')
+        env, _, rc = run_json("lint", str(bad), "--rules", "semantic",
+                             cwd=self.tmp, env=self._no_env())
+        self.assertEqual(rc, 1)
+        rules = {f["rule"] for f in env["data"]["findings"]}
+        self.assertIn("CouldNotOpenIncludeFile", rules)
+
 
 if __name__ == "__main__":
     unittest.main()

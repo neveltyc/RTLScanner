@@ -35,6 +35,8 @@ class ParameterInfo:
     type_str: str = ""
     value: Optional[str] = None
     expression: str = ""
+    bit_width: Optional[int] = None
+    is_signed: Optional[bool] = None
     hierarchical_path: str = ""
     lexical_path: str = ""
     is_overridden: Optional[bool] = None
@@ -48,6 +50,8 @@ class ParameterInfo:
             "type": self.type_str,
             "value": self.value,
             "expression": self.expression,
+            "bit_width": self.bit_width,
+            "is_signed": self.is_signed,
             "hierarchical_path": self.hierarchical_path,
             "lexical_path": self.lexical_path,
         }
@@ -72,6 +76,8 @@ class TypeInfo:
     file: str = ""
     line: int = 0
     members: list[str] = field(default_factory=list)
+    member_details: list[dict[str, Any]] = field(default_factory=list)
+    fields: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self):
         d = {
@@ -85,6 +91,10 @@ class TypeInfo:
         }
         if self.members:
             d["members"] = list(self.members)
+        if self.member_details:
+            d["member_details"] = list(self.member_details)
+        if self.fields:
+            d["fields"] = list(self.fields)
         if self.file:
             d["file"] = self.file
             d["line"] = self.line
@@ -152,6 +162,12 @@ class ScopeInspector:
         except Exception:
             return None
 
+    def _type_signed(self, type_obj) -> Optional[bool]:
+        try:
+            return bool(type_obj.isSigned)
+        except Exception:
+            return None
+
     def _path(self, sym, attr: str) -> str:
         return safe_str(getattr(sym, attr, ""), "")
 
@@ -176,6 +192,17 @@ class ScopeInspector:
                     return ""
         return safe_str(getattr(sym, "type", ""), "")
 
+    def _param_type_obj(self, sym):
+        if getattr(sym, "kind", None) == getattr(ast.SymbolKind, "TypeParameter", None):
+            try:
+                return sym.targetType.type
+            except Exception:
+                return None
+        try:
+            return sym.type
+        except Exception:
+            return None
+
     def _param_value(self, sym) -> Optional[str]:
         if getattr(sym, "kind", None) == getattr(ast.SymbolKind, "TypeParameter", None):
             return None
@@ -191,12 +218,15 @@ class ScopeInspector:
             overridden = bool(sym.isOverridden)
         except Exception:
             pass
+        type_obj = self._param_type_obj(sym)
         return ParameterInfo(
             name=safe_str(getattr(sym, "name", ""), ""),
             kind=self._param_kind(sym),
             type_str=self._param_type(sym),
             value=self._param_value(sym),
             expression=self._expr_text(getattr(sym, "initializer", None)),
+            bit_width=self._type_width(type_obj) if type_obj is not None else None,
+            is_signed=self._type_signed(type_obj) if type_obj is not None else None,
             hierarchical_path=self._path(sym, "hierarchicalPath"),
             lexical_path=self._path(sym, "lexicalPath"),
             is_overridden=overridden,
@@ -204,18 +234,111 @@ class ScopeInspector:
             line=ln,
         )
 
-    def _members(self, sym) -> list[str]:
+    def _target_type(self, sym):
+        for attr in ("canonicalType", "targetType", "declaredType"):
+            try:
+                obj = getattr(sym, attr)
+            except Exception:
+                continue
+            try:
+                return obj.type
+            except Exception:
+                if obj is not None:
+                    return obj
+        return sym
+
+    def _member_details(self, sym) -> list[dict[str, Any]]:
+        target = self._target_type(sym)
+        enum_value_kind = getattr(ast.SymbolKind, "EnumValue", None)
         out = []
+
+        def collect(member):
+            if enum_value_kind is not None and getattr(member, "kind", None) != enum_value_kind:
+                return
+            name = safe_str(getattr(member, "name", ""), "")
+            if not name:
+                return
+            item = {"name": name}
+            try:
+                item["value"] = safe_str(member.value, "")
+            except Exception:
+                pass
+            expr = self._expr_text(getattr(member, "initializer", None))
+            if expr:
+                item["expression"] = expr
+            f, ln = self._loc(member)
+            if f:
+                item["file"] = f
+                item["line"] = ln
+            out.append(item)
+
         try:
-            for m in sym.members:
-                name = safe_str(getattr(m, "name", ""), "")
-                if name:
-                    out.append(name)
+            target.visit(collect)
         except Exception:
             pass
         return out
 
+    def _members(self, sym) -> list[str]:
+        return [m.get("name", "") for m in self._member_details(sym) if m.get("name")]
+
+    def _fields(self, sym) -> list[dict[str, Any]]:
+        target = self._target_type(sym)
+        field_kind = getattr(ast.SymbolKind, "Field", None)
+        out = []
+
+        def collect(field):
+            if field_kind is not None and getattr(field, "kind", None) != field_kind:
+                return
+            name = safe_str(getattr(field, "name", ""), "")
+            if not name:
+                return
+            try:
+                type_obj = field.type
+            except Exception:
+                type_obj = None
+            item = {
+                "name": name,
+                "type": safe_str(type_obj, "") if type_obj is not None else "",
+                "bit_width": self._type_width(type_obj) if type_obj is not None else None,
+            }
+            try:
+                item["bit_offset"] = int(field.bitOffset)
+            except Exception:
+                pass
+            try:
+                item["index"] = int(field.fieldIndex)
+            except Exception:
+                pass
+            f, ln = self._loc(field)
+            if f:
+                item["file"] = f
+                item["line"] = ln
+            out.append(item)
+
+        try:
+            target.visit(collect)
+        except Exception:
+            pass
+        out.sort(key=lambda x: x.get("index", 0))
+        return out
+
     def _type_kind(self, sym) -> str:
+        target = self._target_type(sym)
+        try:
+            if bool(target.isEnum):
+                return "enum"
+        except Exception:
+            pass
+        try:
+            if bool(target.isStruct):
+                return "struct"
+        except Exception:
+            pass
+        try:
+            if bool(target.isPackedUnion) or bool(target.isUnpackedUnion):
+                return "union"
+        except Exception:
+            pass
         name = getattr(getattr(sym, "kind", None), "name", safe_str(getattr(sym, "kind", ""), ""))
         mapping = {
             "TypeAlias": "typedef",
@@ -231,6 +354,8 @@ class ScopeInspector:
     def _make_type(self, sym) -> TypeInfo:
         f, ln = self._loc(sym)
         canonical = ""
+        target = self._target_type(sym)
+        member_details = self._member_details(sym)
         try:
             canonical = safe_str(sym.canonicalType, "")
         except Exception:
@@ -240,12 +365,14 @@ class ScopeInspector:
             kind=self._type_kind(sym),
             type_str=safe_str(sym, ""),
             canonical_type=canonical,
-            bit_width=self._type_width(sym),
+            bit_width=self._type_width(target),
             hierarchical_path=self._path(sym, "hierarchicalPath"),
             lexical_path=self._path(sym, "lexicalPath"),
             file=f,
             line=ln,
-            members=self._members(sym),
+            members=[m.get("name", "") for m in member_details if m.get("name")],
+            member_details=member_details,
+            fields=self._fields(sym),
         )
 
     def _local_types(self, body) -> list[TypeInfo]:

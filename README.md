@@ -172,7 +172,11 @@ splitting parameters, localparams, type parameters, typedefs, enums,
 structs, and unions into separate subcommands. With no section flag it
 shows both `parameters` and `types`; `--params` or `--types` narrows the
 report. Values are read from pyslang's elaborated symbols, so overridden
-parameters and generated localparams are shown after elaboration.
+parameters and generated localparams are shown after elaboration. For
+plain Verilog, `--params` reports ordinary `parameter` / `localparam`
+metadata. For synthesizable SystemVerilog, `--types` also exposes common
+local type metadata such as enum member values and packed struct / union
+fields when pyslang provides them.
 
 ## `rtlscanner lint` — static linter
 
@@ -195,9 +199,17 @@ rtlscanner lint -d ./rtl --min-severity error         # display floor
 `--rules SPEC[,SPEC...]` — white list. SPEC can be:
 
 - a rule name: `width-trunc`, `unused-port`, …
-- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `everything`
+- a family alias: `semantic`, `unused`, `shadow`, `cdc`
+- a warning option: `everything` (enable slang's broader warning set)
 - a glob: `width-*`
 - a meta value: `default` (= `semantic + unused`), `all`, `none`
+
+`semantic` is the normalized slang diagnostic stream. It includes parse,
+preprocessor, type, binding, and elaboration diagnostics that slang emits;
+for example missing includes, undeclared identifiers, width truncation,
+and port-connection diagnostics. `everything` is not a finding family and
+will never appear as `check="everything"`; it only changes slang warning
+configuration.
 
 `--skip RULE[,...]` — subtract from the resulting set (glob ok).
 
@@ -243,7 +255,7 @@ envelope shape:
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.1",
+  "version":     "0.1.2",
   "status":      "ok" | "error",
   "command":     { /* parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ } | null,

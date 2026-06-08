@@ -105,11 +105,49 @@ class ScopeInspectorTests(unittest.TestCase):
         self.assertEqual(params["W"]["value"], "16")
         self.assertEqual(params["L"]["kind"], "localparam")
         self.assertEqual(params["L"]["value"], "17")
+        self.assertEqual(params["L"]["bit_width"], 32)
+        self.assertTrue(params["L"]["is_signed"])
         self.assertEqual(params["T"]["kind"], "type_parameter")
         self.assertEqual(params["T"]["type"], "logic[15:0]")
+        self.assertEqual(params["T"]["bit_width"], 16)
         self.assertIn("state_t", types)
         self.assertIn("packet_t", types)
+        self.assertEqual(types["state_t"]["kind"], "enum")
+        self.assertEqual(types["state_t"]["bit_width"], 2)
+        enum_values = {m["name"]: m["value"] for m in types["state_t"]["member_details"]}
+        self.assertEqual(enum_values["IDLE"], "2'b0")
+        self.assertEqual(enum_values["BUSY"], "2'b1")
+        self.assertEqual(types["packet_t"]["kind"], "struct")
+        fields = {f["name"]: f for f in types["packet_t"]["fields"]}
+        self.assertEqual(fields["data"]["bit_width"], 8)
+        self.assertEqual(fields["valid"]["bit_width"], 1)
         self.assertEqual(types["wide_t"]["bit_width"], 17)
+
+    def test_inspect_params_work_for_traditional_verilog(self):
+        tmp = Path("/tmp/rtlscanner_inspect_verilog_test.v")
+        tmp.write_text(textwrap.dedent(
+            """
+            module legacy #(parameter W = 8) (input [W-1:0] a, output [W-1:0] y);
+                localparam L = W + 1;
+                assign y = a;
+            endmodule
+
+            module top(input [15:0] a, output [15:0] y);
+                legacy #(.W(16)) u(.a(a), .y(y));
+            endmodule
+            """
+        ))
+
+        from rtl_inspect import ScopeInspector
+
+        inspector = ScopeInspector(compile_file(tmp))
+        data = inspector.inspect("top.u")
+        params = {p["name"]: p for p in data["parameters"]}
+
+        self.assertEqual(params["W"]["value"], "16")
+        self.assertEqual(params["L"]["kind"], "localparam")
+        self.assertEqual(params["L"]["value"], "17")
+        self.assertEqual(data["types"], [])
 
     def test_inspect_can_suppress_types_in_api(self):
         from rtl_inspect import ScopeInspector
