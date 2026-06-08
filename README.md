@@ -1,13 +1,15 @@
 # RTLScanner
 
 A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection,
-signal driver/load tracing, and static linting.
+signal driver/load tracing, static linting, and module interface
+reporting.
 
 | Tool | Purpose | Typical stage |
 |------|---------|---------------|
 | `rtl-tree` | Hierarchy viewer & filelist generator | Architecture / code organisation |
 | `signal-trace` | Signal driver & load analyzer | Simulation / debug |
 | `rtl-lint` | Static linter (width, unused, case, latch, …) | Code review / CI |
+| `rtl-ports` | Module interface & connectivity report | Documentation / integration |
 
 ## Install
 
@@ -29,6 +31,7 @@ You can also run the scripts directly:
 python3 src/rtl_tree.py -d ./examples/basic
 python3 src/signal_trace.py -d ./examples/basic --signal q --scope top.u_dp0
 python3 src/rtl_lint.py -d ./examples/lint
+python3 src/rtl_ports.py -d ./examples/ports
 ```
 
 ## Hierarchy Viewer (`rtl-tree`)
@@ -263,6 +266,52 @@ examples/lint/lint_demo.sv
 | `1` | one or more error-level findings (or warnings with `--werror`) |
 | `2` | usage / source error |
 
+## Port Reporter (`rtl-ports`)
+
+Auto-generates module interface documentation and finds connectivity
+issues at instance sites — useful for IP integration, design reviews,
+and onboarding.
+
+```bash
+# Module interface signatures (default)
+rtl-ports -d ./rtl
+
+# Connectivity per instance
+rtl-ports -d ./rtl --instances
+
+# Only connectivity issues (unconnected ports, width mismatches)
+rtl-ports -d ./rtl --check
+rtl-ports -d ./rtl --check --werror      # CI gate
+
+# Filter by module or instance name (glob)
+rtl-ports -d ./rtl --module cpu_*
+rtl-ports -d ./rtl --instances --instance 'top.u_cpu*'
+
+# Export Markdown docs / machine-readable JSON
+rtl-ports -d ./rtl --markdown > docs/INTERFACES.md
+rtl-ports -d ./rtl --json
+```
+
+### Example
+
+```bash
+rtl-ports -d examples/ports --check --no-color
+```
+
+```
+top.u_alu
+  note      output port 'zero' is unconnected  [unconnected]
+
+top.u_fifo
+  note      output port 'count' is unconnected  [unconnected]
+  note      output port 'empty' is unconnected  [unconnected]
+  warning   width mismatch on .wr_data: port is 8 bits, connection is 32 bits  [width_mismatch]
+```
+
+Unconnected **inputs** are reported as warnings (genuinely undriven);
+unconnected **outputs** are reported as notes (intentionally discarding
+an output is a common, benign idiom).
+
 ## Code structure
 
 | File | Lines | Responsibility |
@@ -271,6 +320,7 @@ examples/lint/lint_demo.sv
 | `src/rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
 | `src/signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
 | `src/rtl_lint.py` | ~580 | Semantic + unused/shadow lint, config/waivers, CLI |
+| `src/rtl_ports.py` | ~700 | Module interface report, instance connectivity, width-mismatch check, CLI |
 
 ## Why pyslang?
 

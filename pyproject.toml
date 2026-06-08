@@ -16,7 +16,8 @@ dependencies = [
 rtl-tree = "rtl_tree:main"
 signal-trace = "signal_trace:main"
 rtl-lint = "rtl_lint:main"
+rtl-ports = "rtl_ports:main"
 
 [tool.setuptools]
-py-modules = ["rtl_tree", "rtl_common", "signal_trace", "rtl_lint"]
+py-modules = ["rtl_tree", "rtl_common", "signal_trace", "rtl_lint", "rtl_ports"]
 package-dir = {"" = "src"}
