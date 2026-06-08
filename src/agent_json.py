@@ -4,7 +4,7 @@ All subcommands share the same top-level envelope when invoked with --json::
 
     {
       "tool":        "rtl-tree",
-      "version":     "0.1.2",
+      "version":     "0.1.3",
       "status":      "ok" | "error",
       "command":     { <argparse Namespace echo, output flags filtered out> },
       "data":        { <tool-specific payload, see TOOL_SCHEMAS> } | null,
@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.1.2"
+TOOL_VERSION = "0.1.3"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -113,7 +113,7 @@ class Envelope:
 # only the semantic intent of the run.
 _OUTPUT_FIELDS = frozenset({
     "json", "schema", "no_color", "markdown", "ndjson",
-    "diag", "waived",
+    "diag", "waived", "verbose",
 })
 
 
@@ -629,6 +629,17 @@ _SYMBOL_INFO = {
         "lexical_path":      {"type": "string"},
         "file":              {"type": "string"},
         "line":              {"type": "integer"},
+        "column":            {"type": "integer"},
+        "location": {
+            "type": "object",
+            "required": ["file", "line", "column"],
+            "properties": {
+                "file":   {"type": "string"},
+                "line":   {"type": "integer"},
+                "column": {"type": "integer"},
+            },
+            "additionalProperties": False,
+        },
     },
     "additionalProperties": True,
 }
@@ -645,6 +656,17 @@ _XREF_REF = {
         "direction":   {"type": "string"},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
+        "column":      {"type": "integer"},
+        "location": {
+            "type": "object",
+            "required": ["file", "line", "column"],
+            "properties": {
+                "file":   {"type": "string"},
+                "line":   {"type": "integer"},
+                "column": {"type": "integer"},
+            },
+            "additionalProperties": False,
+        },
     },
     "additionalProperties": True,
 }
@@ -659,31 +681,65 @@ _XREF_MATCH = {
     },
     "additionalProperties": True,
 }
+_XREF_MODULE_DEF = {
+    "type": "object",
+    "required": ["kind", "name"],
+    "properties": {
+        "kind": {"type": "string", "const": "module"},
+        "name": {"type": "string"},
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "column": {"type": "integer"},
+        "location": {"type": "object"},
+    },
+    "additionalProperties": True,
+}
+_XREF_MODULE_REF = {
+    "type": "object",
+    "required": ["kind", "module", "instance_path"],
+    "properties": {
+        "kind": {"type": "string", "enum": ["instance", "top_instance"]},
+        "module": {"type": "string"},
+        "instance_path": {"type": "string"},
+        "file": {"type": "string"},
+        "line": {"type": "integer"},
+        "column": {"type": "integer"},
+        "location": {"type": "object"},
+        "details": {"type": "object"},
+    },
+    "additionalProperties": True,
+}
 _XREF_SCHEMA = _envelope_schema(
     "xref",
     data_schema={
         "type": "object",
-        "required": ["mode", "scope", "name", "recursive", "matches"],
+        "required": ["mode"],
         "properties": {
             "mode":      {"type": "string", "const": "xref"},
+            "target":    {"type": "object"},
             "scope":     {"type": "string"},
             "name":      {"type": "string"},
             "recursive": {"type": "boolean"},
             "matches":   {"type": "array", "items": _XREF_MATCH},
+            "definitions": {"type": "array", "items": _XREF_MODULE_DEF},
+            "references":  {"type": "array", "items": _XREF_MODULE_REF},
+            "summary":     {"type": "object"},
         },
+        "additionalProperties": True,
     },
     summary_schema={
         "type": "object",
-        "required": ["mode", "symbols", "definitions", "references",
-                     "reads", "writes", "port_connections"],
+        "required": ["mode", "definitions", "references"],
         "properties": {
             "mode":             {"type": "string"},
+            "target_kind":      {"type": "string", "enum": ["signal", "module"]},
             "symbols":          {"type": "integer"},
             "definitions":      {"type": "integer"},
             "references":       {"type": "integer"},
             "reads":            {"type": "integer"},
             "writes":           {"type": "integer"},
             "port_connections": {"type": "integer"},
+            "instances":        {"type": "integer"},
         },
     },
 )
@@ -691,7 +747,7 @@ _XREF_SCHEMA = _envelope_schema(
 _INSPECT_PARAM = {
     "type": "object",
     "required": ["name", "kind", "type", "value", "expression",
-                 "hierarchical_path", "lexical_path"],
+                 "hierarchical_path", "lexical_path", "bit_width", "is_signed"],
     "properties": {
         "name":              {"type": "string"},
         "kind":              {"type": "string",
@@ -699,6 +755,8 @@ _INSPECT_PARAM = {
         "type":              {"type": "string"},
         "value":             {"type": ["string", "null"]},
         "expression":        {"type": "string"},
+        "bit_width":         {"type": ["integer", "null"]},
+        "is_signed":         {"type": ["boolean", "null"]},
         "hierarchical_path": {"type": "string"},
         "lexical_path":      {"type": "string"},
         "is_overridden":     {"type": "boolean"},
@@ -720,6 +778,38 @@ _INSPECT_TYPE = {
         "hierarchical_path": {"type": "string"},
         "lexical_path":      {"type": "string"},
         "members":           {"type": "array", "items": {"type": "string"}},
+        "member_details": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name":       {"type": "string"},
+                    "value":      {"type": "string"},
+                    "expression": {"type": "string"},
+                    "file":       {"type": "string"},
+                    "line":       {"type": "integer"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "fields": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "type", "bit_width"],
+                "properties": {
+                    "name":       {"type": "string"},
+                    "type":       {"type": "string"},
+                    "bit_width":  {"type": ["integer", "null"]},
+                    "bit_offset": {"type": "integer"},
+                    "index":      {"type": "integer"},
+                    "file":       {"type": "string"},
+                    "line":       {"type": "integer"},
+                },
+                "additionalProperties": True,
+            },
+        },
         "file":              {"type": "string"},
         "line":              {"type": "integer"},
     },

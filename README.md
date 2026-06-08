@@ -69,6 +69,9 @@ waive = ["dbg_*", "third_party_*"]    # module-name globs (suppress entire modul
 
 [lint.cdc]
 reset = ["nrst_*", "por_*"]           # extra reset-signal name globs
+
+[xref]
+path_style = "relative"                # relative | absolute | name
 ```
 
 ### Filelist precedence over dir scan
@@ -140,20 +143,45 @@ Reading the output:
 | **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. |
 | **depth** | BFS distance in hops from the starting signal. |
 
-## `rtlscanner xref` — symbol definition/reference index
+## `rtlscanner xref` — source cross-reference lookup
 
 ```bash
 rtlscanner xref -d ./rtl -s ready --scope top.u_dma
 rtlscanner xref -d ./rtl --name state --scope top.u_ctrl
 rtlscanner xref -d ./rtl -s valid --scope top --recursive
+rtlscanner xref -d ./rtl --module fifo
+rtlscanner xref -d ./rtl --module lane --scope top.u_phy
 ```
 
-`xref` is a source-level index for one symbol name. It reports the
-elaborated definition, port/internal-symbol aliases when applicable, and
-references found through pyslang's analyzed read/write sets plus child
-instance port connections. It is intentionally lighter than a full LSP:
-use `--scope` to anchor the query; add `--recursive` only when you want
-to find same-named symbols in descendant instances as separate matches.
+`xref` is a source-location lookup for two common questions: where a
+signal/symbol is declared and referenced, and where a module is declared
+and instantiated. It reports file, line, and column positions so agents
+and editors can jump to source quickly.
+
+Signal xref reports the elaborated definition, port/internal-symbol
+aliases when applicable, and references found through pyslang's analyzed
+read/write sets plus child instance port connections. Use `--scope` to
+anchor the query; add `--recursive` only when you want to find same-named
+symbols in descendant instances as separate matches.
+
+Module xref reports module declaration sites and elaborated instance
+sites. With `--scope`, instance results are limited to that hierarchy
+subtree; declarations are still reported globally.
+
+By default, human-readable output prints only the definition/reference
+locations and minimal labels. Add `--verbose` for extra context such as
+types, parent modules, and parameter values. JSON output always preserves
+the structured details.
+
+Path style is configured in `.rtlscanner.toml` under `[xref]`:
+
+```toml
+[xref]
+path_style = "relative"   # ./path/from/root.sv; also supports absolute, name
+```
+
+The `relative` style is relative to `[inputs].root` and is printed with
+an explicit `./` prefix.
 
 Typical use: after a waveform search finds a suspicious signal, ask
 `xref` where that signal is declared, which procedural/continuous blocks
@@ -255,7 +283,7 @@ envelope shape:
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.2",
+  "version":     "0.1.3",
   "status":      "ok" | "error",
   "command":     { /* parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ } | null,

@@ -1,6 +1,6 @@
 {
   "tool": "xref",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "status": "ok",
   "command": {
     "cmd": "xref",
@@ -12,11 +12,17 @@
     "exclude": [],
     "name": "mux_out",
     "name_alt": null,
+    "module": null,
     "scope": "trace_top.u_dp",
     "recursive": false
   },
   "data": {
     "mode": "xref",
+    "target": {
+      "kind": "signal",
+      "name": "mux_out",
+      "scope": "trace_top.u_dp"
+    },
     "scope": "trace_top.u_dp",
     "name": "mux_out",
     "recursive": false,
@@ -28,8 +34,14 @@
           "type": "logic[7:0]",
           "hierarchical_path": "trace_top.u_dp.mux_out",
           "lexical_path": "datapath_v2.mux_out",
-          "file": "examples/trace/trace_top.sv",
-          "line": 34
+          "file": "./examples/trace/trace_top.sv",
+          "line": 34,
+          "column": 17,
+          "location": {
+            "file": "./examples/trace/trace_top.sv",
+            "line": 34,
+            "column": 17
+          }
         },
         "definitions": [
           {
@@ -38,8 +50,14 @@
             "type": "logic[7:0]",
             "hierarchical_path": "trace_top.u_dp.mux_out",
             "lexical_path": "datapath_v2.mux_out",
-            "file": "examples/trace/trace_top.sv",
-            "line": 34
+            "file": "./examples/trace/trace_top.sv",
+            "line": 34,
+            "column": 17,
+            "location": {
+              "file": "./examples/trace/trace_top.sv",
+              "line": 34,
+              "column": 17
+            }
           }
         ],
         "references": [
@@ -48,8 +66,14 @@
             "kind": "continuous_assign",
             "description": "assign",
             "scope_path": "trace_top.u_dp",
-            "file": "examples/trace/trace_top.sv",
-            "line": 35
+            "file": "./examples/trace/trace_top.sv",
+            "line": 35,
+            "column": 12,
+            "location": {
+              "file": "./examples/trace/trace_top.sv",
+              "line": 35,
+              "column": 12
+            }
           },
           {
             "access": "write",
@@ -59,8 +83,14 @@
             "instance": "trace_top.u_dp.u_mux",
             "port": "y",
             "direction": "output",
-            "file": "examples/trace/trace_top.sv",
-            "line": 36
+            "file": "./examples/trace/trace_top.sv",
+            "line": 36,
+            "column": 19,
+            "location": {
+              "file": "./examples/trace/trace_top.sv",
+              "line": 36,
+              "column": 19
+            }
           },
           {
             "access": "read",
@@ -70,8 +100,14 @@
             "instance": "trace_top.u_dp.u_pipe",
             "port": "d",
             "direction": "input",
-            "file": "examples/trace/trace_top.sv",
-            "line": 37
+            "file": "./examples/trace/trace_top.sv",
+            "line": 37,
+            "column": 23,
+            "location": {
+              "file": "./examples/trace/trace_top.sv",
+              "line": 37,
+              "column": 23
+            }
           }
         ],
         "summary": {
@@ -88,6 +124,7 @@
   "errors": [],
   "summary": {
     "mode": "xref",
+    "target_kind": "signal",
     "symbols": 1,
     "definitions": 1,
     "references": 3,

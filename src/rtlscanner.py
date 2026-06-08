@@ -9,7 +9,7 @@ Subcommands:
     fanout   — downstream dataflow BFS
     lint     — semantic + unused + shadow + CDC checks
     ports    — module/instance/port reports
-    xref     — symbol definitions and references
+    xref     — signal/module source definitions and references
     inspect  — elaborated parameters and local types
 """
 
@@ -50,7 +50,7 @@ SUBCOMMANDS = {
     "ports":   (rtl_ports.add_arguments,       rtl_ports.run,
                 "Module interface and instance connectivity report"),
     "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
-                "Show symbol definitions and references"),
+                "Show signal/module definitions and references"),
     "inspect": (rtl_inspect.add_arguments,      rtl_inspect.run,
                 "Show elaborated parameters and local types"),
 }
