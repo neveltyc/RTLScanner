@@ -326,7 +326,7 @@ Signal tracing:
     h.add_argument('--path', action='store_true',
                    help='Show full hierarchical path next to each node')
     h.add_argument('--json', action='store_true',
-                   help='Emit the hierarchy as JSON')
+                   help='Emit the hierarchy as an agent-friendly JSON envelope (see --schema)')
     h.add_argument('--schema', action='store_true',
                    help='Print the JSON Schema for --json output and exit')
     h.add_argument('--stats', action='store_true',

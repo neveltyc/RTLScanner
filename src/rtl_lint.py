@@ -721,7 +721,8 @@ Inline waivers (standard SystemVerilog, no config needed):
                      help='Suppress the trailing summary')
     out.add_argument('--show-waived', action='store_true',
                      help='List findings suppressed by waivers/disabled rules')
-    out.add_argument('--json', action='store_true', help='JSON output')
+    out.add_argument('--json', action='store_true',
+                     help='Emit findings as an agent-friendly JSON envelope (see --schema)')
     out.add_argument('--schema', action='store_true',
                      help='Print the JSON Schema for --json output and exit')
     out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')

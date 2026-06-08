@@ -633,7 +633,8 @@ Output:
     out = p.add_argument_group('output')
     out.add_argument('--markdown', action='store_true',
                      help='Render as Markdown tables')
-    out.add_argument('--json', action='store_true', help='JSON output')
+    out.add_argument('--json', action='store_true',
+                     help='Emit results as an agent-friendly JSON envelope (see --schema)')
     out.add_argument('--schema', action='store_true',
                      help='Print the JSON Schema for --json output and exit')
     out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
