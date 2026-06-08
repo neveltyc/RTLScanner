@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtlhier-scanner"
+version = "0.1.0"
+description = "A pyslang-powered SystemVerilog RTL hierarchy viewer."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyslang>=11.0.0",
+]
+
+[project.scripts]
+rtl-tree = "rtl_tree:main"
+signal-trace = "signal_trace:main"
+
+[tool.setuptools]
+py-modules = ["rtl_tree", "rtl_common", "signal_trace"]
