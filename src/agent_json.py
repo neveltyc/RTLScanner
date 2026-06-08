@@ -4,7 +4,7 @@ All subcommands share the same top-level envelope when invoked with --json::
 
     {
       "tool":        "rtl-tree",
-      "version":     "0.1.1",
+      "version":     "0.1.2",
       "status":      "ok" | "error",
       "command":     { <argparse Namespace echo, output flags filtered out> },
       "data":        { <tool-specific payload, see TOOL_SCHEMAS> } | null,
@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.1.1"
+TOOL_VERSION = "0.1.2"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"

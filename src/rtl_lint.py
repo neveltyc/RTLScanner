@@ -161,8 +161,11 @@ class LintRunner:
     def run(self) -> list[LintFinding]:
         findings = []
 
-        # 1. Semantic diagnostics from elaboration (width, case, ports, …)
-        for d in self._comp.getSemanticDiagnostics():
+        # 1. Native slang diagnostics.  Keep these under the existing
+        # ``semantic`` family, but use the full diagnostic stream instead of
+        # semantic-only diagnostics so frontend/preprocessor issues such as
+        # missing includes are surfaced by the same rule family.
+        for d in self._comp.getAllDiagnostics():
             f = self._finding(d, "semantic")
             if f is not None:
                 findings.append(f)
@@ -414,13 +417,15 @@ class CDCAnalyzer:
 
 # ── Rule selection model ─────────────────────────────────────────────
 # A `--rules SPEC[,...]` spec can contain:
-#   * family alias:  semantic | unused | shadow | cdc | everything
+#   * family alias:  semantic | unused | shadow | cdc
+#   * warning opt:   everything      (passes -Weverything to slang)
 #   * meta:          default (= semantic+unused) | all | none
 #   * rule name:     width-trunc | unused-port | ...
 #   * glob:          width-* | unused-*
 
-FAMILIES = {"semantic", "unused", "shadow", "cdc", "everything"}
+FAMILIES = {"semantic", "unused", "shadow", "cdc"}
 DEFAULT_FAMILIES = ["semantic", "unused"]
+WARNING_OPTIONS = {"everything"}
 META_KEYWORDS = {"default", "all", "none"}
 
 # Map rule-name prefix → check family, so a bare rule like "unused-port"
@@ -439,7 +444,8 @@ def _expand_meta(specs):
         if s == "default":
             out.extend(DEFAULT_FAMILIES)
         elif s == "all":
-            out.extend(FAMILIES)
+            out.extend(DEFAULT_FAMILIES)
+            out.extend(["shadow", "cdc", "everything"])
         elif s == "none":
             return []
         else:
@@ -454,7 +460,7 @@ def _expand_meta(specs):
 
 
 def resolve_rules(specs):
-    """Split a rules spec list into (run_families, keep_families, rule_globs, noop).
+    """Split rule specs into runtime families, keep filters, warning opts.
 
     - run_families: check families to actually RUN (lint engine input).
                     Always includes the family any rule glob's prefix implies,
@@ -462,25 +468,31 @@ def resolve_rules(specs):
     - keep_families: families whose findings the user wants to KEEP. Empty when
                     the user only listed rule names (display is rule-glob-only).
     - rule_globs: explicit rule names/globs to keep.
+    - warning_options: slang warning option groups such as ``everything``.
     - noop: True iff specs == ['none'] (everything is suppressed).
     """
     specs = list(specs) if specs else ["default"]
     if "none" in specs:
-        return set(), set(), [], True
+        return set(), set(), [], set(), True
     expanded = _expand_meta(specs)
     keep_families, globs = set(), []
+    warning_options = set()
     run_families = {"semantic"}  # semantic always runs (pyslang elaboration)
     for s in expanded:
         if s in FAMILIES:
             keep_families.add(s)
             run_families.add(s)
+        elif s in WARNING_OPTIONS:
+            warning_options.add(s)
+            keep_families.add("semantic")
+            run_families.add("semantic")
         else:
             globs.append(s)
             for pref, fam in _RULE_PREFIX_FAMILY.items():
                 if s.startswith(pref):
                     run_families.add(fam)
                     break
-    return run_families, keep_families, globs, False
+    return run_families, keep_families, globs, warning_options, False
 
 
 def rule_matches(finding, keep_families, globs):
@@ -537,7 +549,7 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
 
     Returns (kept, waived) where waived items carry waived_reason.
     """
-    _run_families, keep_families, rule_globs, noop = resolve_rules(rules_specs)
+    _run_families, keep_families, rule_globs, _warning_options, noop = resolve_rules(rules_specs)
     kept, waived = [], []
     sev_map = {}
     for k, v in (lint_severity_map or {}).items():
@@ -644,7 +656,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     rs.add_argument("--rules", action=agent_json.CommaListAction, default=[],
                     metavar="SPEC",
                     help="Rule white list. SPEC = rule name | family "
-                         "(semantic/unused/shadow/cdc/everything) | glob | "
+                         "(semantic/unused/shadow/cdc) | warning option "
+                         "(everything) | glob | "
                          "default/all/none. Comma-list or repeat. "
                          "Default: 'default' (semantic + unused).")
     rs.add_argument("--skip", action=agent_json.CommaListAction, default=[],
@@ -688,7 +701,7 @@ def run(args, env):
     cdc_reset_globs = list((lint_cfg.get("cdc") or {}).get("reset") or [])
     severity_map = lint_cfg.get("severity") or {}
 
-    run_families, _, _, _ = resolve_rules(rules_specs)
+    run_families, _, _, warning_options, _ = resolve_rules(rules_specs)
 
     try:
         filelist = build_filelist(ri)
@@ -711,7 +724,7 @@ def run(args, env):
         comp,
         check_unused=("unused" in run_families),
         check_shadow=("shadow" in run_families),
-        weverything=("everything" in run_families),
+        weverything=("everything" in warning_options),
         check_cdc=("cdc" in run_families),
         cdc_reset_globs=cdc_reset_globs,
     )

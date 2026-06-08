@@ -63,7 +63,9 @@
                   "value",
                   "expression",
                   "hierarchical_path",
-                  "lexical_path"
+                  "lexical_path",
+                  "bit_width",
+                  "is_signed"
                 ],
                 "properties": {
                   "name": {
@@ -103,6 +105,18 @@
                   },
                   "line": {
                     "type": "integer"
+                  },
+                  "bit_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "is_signed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
                   }
                 },
                 "additionalProperties": true
@@ -157,6 +171,71 @@
                   },
                   "line": {
                     "type": "integer"
+                  },
+                  "member_details": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string"
+                        },
+                        "expression": {
+                          "type": "string"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "line": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "fields": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "name",
+                        "type",
+                        "bit_width"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string"
+                        },
+                        "bit_width": {
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "bit_offset": {
+                          "type": "integer"
+                        },
+                        "index": {
+                          "type": "integer"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "line": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
                   }
                 },
                 "additionalProperties": true
