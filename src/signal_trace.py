@@ -612,7 +612,8 @@ With directory scan:
                    help='Filter loads by instance name glob (e.g. u_fifo*)')
     p.add_argument('--list', action='store_true', help='List all signals in scope')
     p.add_argument('--all', action='store_true', help='Trace every signal in scope')
-    p.add_argument('--json', action='store_true', help='JSON output')
+    p.add_argument('--json', action='store_true',
+                   help='Emit trace results as an agent-friendly JSON envelope (see --schema)')
     p.add_argument('--schema', action='store_true',
                    help='Print the JSON Schema for --json output and exit')
     p.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
