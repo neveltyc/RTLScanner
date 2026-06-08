@@ -20,7 +20,7 @@ dist/
 *.tgz
 /rtl/
 /soc_verif/
-/rtlhier-results/
+/rtlscanner-results/
 /experiments/
 /scratch/
 /tmp/
