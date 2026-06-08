@@ -18,6 +18,8 @@ Install dependency:
     pip install pyslang
 """
 
+from __future__ import annotations
+
 import argparse
 import fnmatch
 import json
@@ -224,7 +226,7 @@ class SignalTracer:
                 if top.name == parts[0] or top.body.name == parts[0]:
                     current = top
                     break
-            except (UnicodeDecodeError, Exception):
+            except Exception:
                 continue
         if current is None:
             return None
@@ -336,7 +338,7 @@ class SignalTracer:
                 pcs = inst.portConnections
                 inst_name = inst.name
                 inst_path = inst.hierarchicalPath
-            except (UnicodeDecodeError, Exception):
+            except Exception:
                 continue
             for pc in pcs:
                 try:
@@ -354,7 +356,7 @@ class SignalTracer:
                         instance_name=inst_name, port_name=port.name,
                         port_direction=port.direction.name,
                         scope_path=inst_path, file=f, line=ln))
-                except (UnicodeDecodeError, Exception):
+                except Exception:
                     continue
 
         # 2. Continuous assignments (signal on RHS)

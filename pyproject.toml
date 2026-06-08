@@ -7,7 +7,7 @@ name = "rtlscanner"
 version = "0.1.0"
 description = "A pyslang-powered SystemVerilog RTL hierarchy viewer."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.8"
 dependencies = [
   "pyslang>=11.0.0",
 ]

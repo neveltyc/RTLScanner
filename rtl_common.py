@@ -5,6 +5,8 @@ Provides Color, FileList, file collection, filelist parsing, and
 compilation building.
 """
 
+from __future__ import annotations
+
 import fnmatch
 import os
 import re
@@ -472,5 +474,5 @@ def safe_str(val, default=""):
     """
     try:
         return str(val)
-    except (UnicodeDecodeError, Exception):
+    except Exception:
         return default
