@@ -1,6 +1,6 @@
 # Agent-Friendly JSON Mode
 
-`rtlscanner` exposes seven subcommands behind a unified JSON envelope when
+`rtlscanner` exposes nine subcommands behind a unified JSON envelope when
 invoked with `--json`. The envelope shape is identical across all
 subcommands, so a single consumer (LLM agent, MCP server, CI script)
 can drive every one of them without per-subcommand parsing.
@@ -10,7 +10,7 @@ can drive every one of them without per-subcommand parsing.
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.0",
+  "version":     "0.1.1",
   "status":      "ok",
   "command":     { /* echo of parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ },
@@ -21,7 +21,7 @@ can drive every one of them without per-subcommand parsing.
 ```
 
 Top-level keys are **always present** (even when empty). The shape is the
-same across all seven subcommands — only `tool`, `data`, and `summary`
+same across all nine subcommands — only `tool`, `data`, and `summary`
 differ.
 
 ## Discovering a subcommand's schema
@@ -37,6 +37,8 @@ rtlscanner fanin   --schema > schemas/fanin.schema.json
 rtlscanner fanout  --schema > schemas/fanout.schema.json
 rtlscanner lint    --schema > schemas/lint.schema.json
 rtlscanner ports   --schema > schemas/ports.schema.json
+rtlscanner xref    --schema > schemas/xref.schema.json
+rtlscanner inspect --schema > schemas/inspect.schema.json
 ```
 
 Pre-generated schemas live in `examples/agent/schemas/`.
@@ -80,6 +82,8 @@ Closed enum of error codes:
 | `lint.out.json`       | `rtlscanner lint -d examples/lint --json`                        |
 | `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules default,cdc --json` |
 | `ports.out.json`      | `rtlscanner ports -d examples/ports --json`                      |
+| `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
+| `inspect.out.json`    | `rtlscanner inspect -d examples/trace --scope trace_top.u_dp.u_pipe --json` |
 
 ## CDC notes for agents
 

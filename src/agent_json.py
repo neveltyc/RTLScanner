@@ -1,11 +1,10 @@
-"""Agent-friendly JSON envelope + schemas for the four RTLScanner CLIs.
+"""Agent-friendly JSON envelope + schemas for RTLScanner subcommands.
 
-All four tools (`rtl-tree`, `signal-trace`, `rtl-lint`, `rtl-ports`) share
-the same top-level envelope when invoked with --json::
+All subcommands share the same top-level envelope when invoked with --json::
 
     {
       "tool":        "rtl-tree",
-      "version":     "0.1.0",
+      "version":     "0.1.1",
       "status":      "ok" | "error",
       "command":     { <argparse Namespace echo, output flags filtered out> },
       "data":        { <tool-specific payload, see TOOL_SCHEMAS> } | null,
@@ -27,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.1.1"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -617,6 +616,141 @@ _PORTS_SCHEMA = _envelope_schema(
 )
 
 
+# ── rtl-xref / rtl-inspect ──
+_SYMBOL_INFO = {
+    "type": "object",
+    "required": ["name", "kind", "type", "hierarchical_path", "lexical_path"],
+    "properties": {
+        "name":              {"type": "string"},
+        "kind":              {"type": "string"},
+        "type":              {"type": "string"},
+        "direction":         {"type": "string"},
+        "hierarchical_path": {"type": "string"},
+        "lexical_path":      {"type": "string"},
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_XREF_REF = {
+    "type": "object",
+    "required": ["access", "kind", "description", "scope_path"],
+    "properties": {
+        "access":      {"type": "string", "enum": ["read", "write", "readwrite"]},
+        "kind":        {"type": "string"},
+        "description": {"type": "string"},
+        "scope_path":  {"type": "string"},
+        "instance":    {"type": "string"},
+        "port":        {"type": "string"},
+        "direction":   {"type": "string"},
+        "file":        {"type": "string"},
+        "line":        {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_XREF_MATCH = {
+    "type": "object",
+    "required": ["symbol", "definitions", "references", "summary"],
+    "properties": {
+        "symbol":      _SYMBOL_INFO,
+        "definitions": {"type": "array", "items": _SYMBOL_INFO},
+        "references":  {"type": "array", "items": _XREF_REF},
+        "summary":     {"type": "object"},
+    },
+    "additionalProperties": True,
+}
+_XREF_SCHEMA = _envelope_schema(
+    "xref",
+    data_schema={
+        "type": "object",
+        "required": ["mode", "scope", "name", "recursive", "matches"],
+        "properties": {
+            "mode":      {"type": "string", "const": "xref"},
+            "scope":     {"type": "string"},
+            "name":      {"type": "string"},
+            "recursive": {"type": "boolean"},
+            "matches":   {"type": "array", "items": _XREF_MATCH},
+        },
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["mode", "symbols", "definitions", "references",
+                     "reads", "writes", "port_connections"],
+        "properties": {
+            "mode":             {"type": "string"},
+            "symbols":          {"type": "integer"},
+            "definitions":      {"type": "integer"},
+            "references":       {"type": "integer"},
+            "reads":            {"type": "integer"},
+            "writes":           {"type": "integer"},
+            "port_connections": {"type": "integer"},
+        },
+    },
+)
+
+_INSPECT_PARAM = {
+    "type": "object",
+    "required": ["name", "kind", "type", "value", "expression",
+                 "hierarchical_path", "lexical_path"],
+    "properties": {
+        "name":              {"type": "string"},
+        "kind":              {"type": "string",
+                              "enum": ["parameter", "localparam", "type_parameter"]},
+        "type":              {"type": "string"},
+        "value":             {"type": ["string", "null"]},
+        "expression":        {"type": "string"},
+        "hierarchical_path": {"type": "string"},
+        "lexical_path":      {"type": "string"},
+        "is_overridden":     {"type": "boolean"},
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_INSPECT_TYPE = {
+    "type": "object",
+    "required": ["name", "kind", "type", "canonical_type",
+                 "bit_width", "hierarchical_path", "lexical_path"],
+    "properties": {
+        "name":              {"type": "string"},
+        "kind":              {"type": "string"},
+        "type":              {"type": "string"},
+        "canonical_type":    {"type": "string"},
+        "bit_width":         {"type": ["integer", "null"]},
+        "hierarchical_path": {"type": "string"},
+        "lexical_path":      {"type": "string"},
+        "members":           {"type": "array", "items": {"type": "string"}},
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_INSPECT_SCHEMA = _envelope_schema(
+    "inspect",
+    data_schema={
+        "type": "object",
+        "required": ["mode", "scope", "module"],
+        "properties": {
+            "mode":       {"type": "string", "const": "inspect"},
+            "scope":      {"type": "string"},
+            "module":     {"type": "string"},
+            "parameters": {"type": "array", "items": _INSPECT_PARAM},
+            "types":      {"type": "array", "items": _INSPECT_TYPE},
+        },
+        "additionalProperties": False,
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["mode", "parameters", "types"],
+        "properties": {
+            "mode":       {"type": "string"},
+            "parameters": {"type": "integer"},
+            "types":      {"type": "integer"},
+        },
+    },
+)
+
+
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "tree":    _TREE_SCHEMA,
     "trace":   _TRACE_SCHEMA,
@@ -625,6 +759,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "fanout":  _FANOUT_SCHEMA,
     "lint":    _LINT_SCHEMA,
     "ports":   _PORTS_SCHEMA,
+    "xref":    _XREF_SCHEMA,
+    "inspect": _INSPECT_SCHEMA,
 }
 
 
