@@ -1,9 +1,11 @@
 """
-Shared utilities for the RTLHierScanner tool family.
+Shared utilities for the RTLScanner tool family.
 
 Provides Color, FileList, file collection, filelist parsing, and
 compilation building.
 """
+
+from __future__ import annotations
 
 import fnmatch
 import os
@@ -54,18 +56,6 @@ class Color:
 
 
 # ── Data Structures ──────────────────────────────────────────────────
-@dataclass
-class InstanceNode:
-    """Represents one instance in the elaborated hierarchy."""
-    inst_name: str
-    module_name: str
-    hier_path: str
-    params: dict = field(default_factory=dict)
-    is_interface: bool = False
-    generated_scope: str = ""
-    children: list = field(default_factory=list)
-
-
 @dataclass
 class FileList:
     """Normalized VCS-style filelist content."""
@@ -484,5 +474,5 @@ def safe_str(val, default=""):
     """
     try:
         return str(val)
-    except (UnicodeDecodeError, Exception):
+    except Exception:
         return default
