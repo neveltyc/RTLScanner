@@ -155,6 +155,56 @@ Scope:  trace_top.u_dp  [datapath_v2]
     → assign → sum  examples/trace/trace_top.sv:35
 ```
 
+### Fanin / fanout example
+
+`--fanin` walks upstream from a signal (everything that feeds it),
+`--fanout` walks downstream (everything it drives). Both report a
+breadth-first set of dataflow edges grouped by traversal depth, and
+both honor `--flow-depth N` (default `4`) for the maximum number of
+hops to chase.
+
+```bash
+signal-trace -d examples/trace --signal mux_out --scope trace_top.u_dp --fanin --no-color
+```
+
+```
+Signal: mux_out  logic[7:0]
+Scope:  trace_top.u_dp  [datapath_v2]
+Mode:   FANIN  depth <= 4
+────────────────────────────────────────────────────────────
+
+  depth 1
+    trace_top.u_dp.u_mux.y → trace_top.u_dp.mux_out  port_connection u_mux.y output  examples/trace/trace_top.sv:36
+
+  depth 2
+    trace_top.u_dp.u_mux.a → trace_top.u_dp.u_mux.y    continuous_assign assign  examples/trace/trace_top.sv:6
+    trace_top.u_dp.u_mux.b → trace_top.u_dp.u_mux.y    continuous_assign assign  examples/trace/trace_top.sv:6
+    trace_top.u_dp.u_mux.sel → trace_top.u_dp.u_mux.y  continuous_assign assign  examples/trace/trace_top.sv:6
+
+  depth 3
+    trace_top.u_dp.data_a → trace_top.u_dp.u_mux.a    port_connection u_mux.a   input
+    trace_top.u_dp.data_b → trace_top.u_dp.u_mux.b    port_connection u_mux.b   input
+    trace_top.u_dp.sel    → trace_top.u_dp.u_mux.sel  port_connection u_mux.sel input
+
+  depth 4
+    trace_top.in_a → trace_top.u_dp.data_a  port_connection u_dp.data_a input
+    trace_top.in_b → trace_top.u_dp.data_b  port_connection u_dp.data_b input
+    trace_top.mode → trace_top.u_dp.sel     port_connection u_dp.sel    input
+```
+
+Reading the output:
+
+| Term      | Meaning                                                                 |
+|-----------|-------------------------------------------------------------------------|
+| **node**  | A signal at one elaborated hierarchical path (e.g. `trace_top.u_dp.sel`). The starting signal is depth 0; everything else surfaces because some edge connected it. |
+| **edge**  | One directed dataflow link `source → target`. Its `kind` is `port_connection`, `continuous_assign`, or `procedural`; `description` and `file:line` point at the RTL site it came from. |
+| **depth** | BFS distance in hops from the starting signal. Depth 1 is the immediate upstream/downstream neighbors; depth N requires N consecutive edges to reach. Traversal stops at `--flow-depth`. |
+
+The `--json` form returns the same information in the shared agent
+envelope, with `data.nodes` (flat list of hierarchical paths) and
+`data.edges` (each carrying a `depth` field) — see
+`examples/agent/schemas/trace.schema.json`.
+
 ## Static Linter (`rtl-lint`)
 
 A fast linter built on pyslang's elaboration + analysis engine.  It
