@@ -43,7 +43,15 @@ from rtl_common import (
     parse_filelist,
     merge_filelists,
     filter_filelist,
-    safe_str,
+)
+from rtl_slang import (
+    analyzed_procedures,
+    expr_refs_symbol,
+    find_signal,
+    procedure_label,
+    procedure_reads_symbol,
+    resolve_scope,
+    scope_visit,
 )
 
 import agent_json
@@ -223,29 +231,10 @@ class SignalTracer:
     # ── helpers ───────────────────────────────────────────────────────
 
     def _resolve_scope(self, scope_path):
-        parts = scope_path.split('.')
-        current = None
-        for top in self._root.topInstances:
-            try:
-                if top.name == parts[0] or top.body.name == parts[0]:
-                    current = top
-                    break
-            except Exception:
-                continue
-        if current is None:
-            return None
-        for part in parts[1:]:
-            found = current.body.find(part)
-            if found is None or found.kind != ast.SymbolKind.Instance:
-                return None
-            current = found
-        return current
+        return resolve_scope(self._root, scope_path)
 
     def _find_signal(self, name, body):
-        sym = body.find(name)
-        if sym and sym.kind in (ast.SymbolKind.Net, ast.SymbolKind.Variable):
-            return sym
-        return None
+        return find_signal(body, name)
 
     def _loc_range(self, sr):
         try:
@@ -261,69 +250,10 @@ class SignalTracer:
             return "", 0
 
     def _refs(self, expr, target):
-        """Does *expr* reference *target*?"""
-        hit = []
-        def _w(e):
-            if hasattr(e, 'symbol') and self._same_symbol(e.symbol, target):
-                hit.append(True)
-        try:
-            expr.visit(f=_w)
-        except Exception:
-            pass
-        return bool(hit)
+        return expr_refs_symbol(expr, target)
 
     def _scope_visit(self, body, kinds):
-        """Visit body collecting per kinds dict, skipping child instances."""
-        table = dict(kinds)
-        table.setdefault(ast.SymbolKind.Instance, lambda _: ast.VisitAction.Skip)
-        body.visit(lookup_table=table)
-
-    def _symbol_key(self, sym):
-        try:
-            hp = safe_str(sym.hierarchicalPath, "")
-            if hp:
-                return hp
-        except Exception:
-            pass
-        kind = safe_str(getattr(sym, 'kind', ''), '')
-        name = safe_str(getattr(sym, 'name', ''), '')
-        return f"{kind}:{name}"
-
-    def _same_symbol(self, a, b):
-        return self._symbol_key(a) == self._symbol_key(b)
-
-    def _proc_label(self, proc):
-        try:
-            pk = safe_str(proc.analyzedSymbol.procedureKind, "")
-        except Exception:
-            return "procedural block"
-        labels = {
-            "AlwaysFF": "always_ff",
-            "AlwaysComb": "always_comb",
-            "AlwaysLatch": "always_latch",
-            "Always": "always",
-            "Initial": "initial",
-            "Final": "final",
-        }
-        for key, label in labels.items():
-            if key in pk:
-                return label
-        return "procedural block"
-
-    def _proc_reads_symbol(self, proc, symbol):
-        try:
-            if any(self._same_symbol(rr.symbol, symbol)
-                   for rr in (proc.readSet or [])):
-                return True
-        except Exception:
-            pass
-
-        # Clocks are used in timing controls rather than expression read sets.
-        for tc in getattr(proc, 'timingControls', []) or []:
-            timing = getattr(tc, 'timing', None)
-            if timing is not None and self._refs(timing, symbol):
-                return True
-        return False
+        return scope_visit(body, kinds)
 
     # ── driver analysis ──────────────────────────────────────────────
 
@@ -433,20 +363,14 @@ class SignalTracer:
                     file=f, line=ln))
 
         # 3. Procedural blocks (readSet excludes assignment LHS symbols)
-        try:
-            analyzed_scope = self._mgr.getAnalyzedScope(body)
-            procedures = analyzed_scope.procedures if analyzed_scope is not None else []
-        except Exception:
-            procedures = []
-
-        for proc in procedures:
+        for proc in analyzed_procedures(self._mgr, body):
             try:
                 if proc.analyzedSymbol.kind != ast.SymbolKind.ProceduralBlock:
                     continue
-                if not self._proc_reads_symbol(proc, symbol):
+                if not procedure_reads_symbol(proc, symbol):
                     continue
                 f, ln = self._loc_sym(proc.analyzedSymbol)
-                desc = f"{C.yellow(self._proc_label(proc))}"
+                desc = f"{C.yellow(procedure_label(proc))}"
                 loads.append(LoadInfo(
                     kind="procedural", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
