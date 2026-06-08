@@ -40,6 +40,7 @@ from pathlib import Path
 
 try:
     import pyslang
+    import pyslang.ast as ast
     import pyslang.analysis as analysis
 except ImportError:
     print("Error: pyslang is required.  pip install pyslang", file=sys.stderr)
@@ -102,11 +103,13 @@ class LintRunner:
     """Runs pyslang's semantic + analysis checks and normalizes results."""
 
     def __init__(self, compilation, check_unused=True, check_shadow=False,
-                 weverything=False):
+                 weverything=False, check_cdc=False, cdc_reset_globs=None):
         self._comp = compilation
         self._sm = compilation.sourceManager
         self._check_unused = check_unused
         self._check_shadow = check_shadow
+        self._check_cdc = check_cdc
+        self._cdc_reset_globs = cdc_reset_globs or []
         self._eng = pyslang.DiagnosticEngine(self._sm)
         if weverything:
             try:
@@ -200,8 +203,227 @@ class LintRunner:
             except Exception as e:
                 print(f"Warning: analysis pass failed: {e}", file=sys.stderr)
 
+        # 3. CDC analysis (opt-in) — flop-to-flop clock domain crossings
+        if self._check_cdc:
+            try:
+                cdc = CDCAnalyzer(self._comp, reset_globs=self._cdc_reset_globs,
+                                  rel=self._rel)
+                findings.extend(cdc.findings())
+            except Exception as e:
+                print(f"Warning: CDC analysis failed: {e}", file=sys.stderr)
+
         findings.sort(key=lambda f: (f.file, f.line, f.col, f.rule))
         return findings
+
+
+# ── CDC Analyzer ─────────────────────────────────────────────────────
+_DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*_n",
+                        "reset*", "*reset*", "clr*", "*clr_n")
+
+
+class CDCAnalyzer:
+    """Detect flop-to-flop clock domain crossings.
+
+    A signal driven inside ``always_ff @(posedge clkA …)`` and then read
+    inside ``always_ff @(posedge clkB …)`` (clkB ≠ clkA) constitutes a
+    CDC crossing that typically needs an explicit synchronizer.  We
+    report one ``cdc-crossing`` finding per (signal, reader-domain) pair,
+    pointing at the procedural block that does the unsafe read.
+
+    Signals that look like resets (matched against ``reset_globs``) are
+    ignored in the timing event list so a single-clock design with an
+    asynchronous reset doesn't get flagged.
+    """
+
+    def __init__(self, compilation, reset_globs=None, rel=None):
+        self._comp = compilation
+        self._sm = compilation.sourceManager
+        self._reset_globs = list(reset_globs or []) + list(_DEFAULT_RESET_GLOBS)
+        self._rel = rel or (lambda x: x)
+        mgr = analysis.AnalysisManager(analysis.AnalysisOptions())
+        mgr.analyze(compilation)
+        self._mgr = mgr
+
+    # ── helpers ───────────────────────────────────────────────────────
+
+    def _looks_like_reset(self, name: str) -> bool:
+        n = (name or "").lower()
+        return any(fnmatch.fnmatch(n, g.lower()) for g in self._reset_globs)
+
+    def _clock_and_timing_syms(self, proc):
+        """Return (primary_clock_name, {all_timing_signal_names}) or (None, set())."""
+        if not proc.timingControls:
+            return None, set()
+        tc = proc.timingControls[0].timing
+        events = tc.events if hasattr(tc, 'events') else [tc]
+        timing_syms = set()
+        non_reset = []
+        for ev in events:
+            e = getattr(ev, 'expr', None)
+            if e is None or not hasattr(e, 'symbol'):
+                continue
+            n = safe_str(e.symbol.name, "")
+            if not n:
+                continue
+            timing_syms.add(n)
+            if not self._looks_like_reset(n):
+                non_reset.append(n)
+        # Heuristic: if exactly one non-reset event signal, that's the
+        # clock; otherwise prefer the first non-reset, else fall back to
+        # whatever timing signal we saw first.
+        if non_reset:
+            return non_reset[0], timing_syms
+        if timing_syms:
+            return next(iter(timing_syms)), timing_syms
+        return None, timing_syms
+
+    def _sym_key(self, sym):
+        """Stable identity key for a pyslang symbol — uses hierarchicalPath
+        because Python id() of pybind11 wrappers is recycled across GC.
+        """
+        try:
+            hp = safe_str(sym.hierarchicalPath, "")
+            if hp:
+                return hp
+        except Exception:
+            pass
+        return safe_str(getattr(sym, 'name', ''), '')
+
+    def _walk_reads(self, proc, exclude_names):
+        """Walk the procedure body and collect (sym_key, name, source_loc) for
+        every NamedValueExpression that isn't a clock/reset.
+        """
+        out = []
+        sym_key = self._sym_key
+        def visit(node):
+            if type(node).__name__ != 'NamedValueExpression':
+                return
+            try:
+                sym = node.symbol
+                name = sym.name
+            except Exception:
+                return
+            if name in exclude_names:
+                return
+            try:
+                loc = node.sourceRange.start
+            except Exception:
+                loc = None
+            out.append((sym_key(sym), name, loc))
+        try:
+            proc.analyzedSymbol.body.visit(f=visit)
+        except Exception:
+            pass
+        return out
+
+    def _loc(self, loc):
+        try:
+            return self._rel(safe_str(self._sm.getFileName(loc))), \
+                   int(self._sm.getLineNumber(loc)), \
+                   int(self._sm.getColumnNumber(loc))
+        except Exception:
+            return "", 0, 0
+
+    def _proc_loc(self, proc):
+        """Location of the procedure block itself (for the timing-control line)."""
+        try:
+            sym = proc.analyzedSymbol
+            return self._loc(sym.location)
+        except Exception:
+            return "", 0, 0
+
+    # ── main analysis ─────────────────────────────────────────────────
+
+    def findings(self) -> list:
+        # Per scope, build write/read maps keyed by symbol identity (we
+        # use the Python id of the symbol so two same-named signals in
+        # different modules don't collide).
+        writers = {}   # sym_id -> {'name': str, 'clocks': set, 'locs': [(file,line,col)]}
+        readers = {}   # sym_id -> list of {'clock':..., 'loc':..., 'proc_loc':...}
+
+        insts = []
+        def _ci(s):
+            insts.append(s)
+        try:
+            self._comp.getRoot().visit(lookup_table={ast.SymbolKind.Instance: _ci})
+        except Exception:
+            pass
+
+        for inst in insts:
+            try:
+                body = inst.body
+                sc = self._mgr.getAnalyzedScope(body)
+            except Exception:
+                continue
+            if sc is None:
+                continue
+            for p in sc.procedures:
+                try:
+                    pk = p.analyzedSymbol.procedureKind
+                    if 'AlwaysFF' not in safe_str(pk, ""):
+                        continue
+                except Exception:
+                    continue
+                clk, timing_syms = self._clock_and_timing_syms(p)
+                if not clk:
+                    continue
+
+                # Writes: pyslang gives us ValueDrivers
+                driven_keys = set()
+                driven_names = set()
+                for d in (p.drivers or []):
+                    try:
+                        if d.flags & analysis.DriverFlags.InputPort:
+                            continue
+                    except Exception:
+                        pass
+                    try:
+                        key = self._sym_key(d.symbol)
+                        driven_keys.add(key)
+                        driven_names.add(d.symbol.name)
+                        rec = writers.setdefault(key, {
+                            'name': d.symbol.name, 'clocks': set(),
+                            'locs': []})
+                        rec['clocks'].add(clk)
+                        rec['locs'].append(self._proc_loc(p))
+                    except Exception:
+                        continue
+
+                # Reads: walk the body, skip the signals used purely for
+                # timing (clock + reset) and skip self-reads of the
+                # signals this same proc drives (a flip-flop reading its
+                # own output is fine, same domain).
+                exclude = set(timing_syms) | driven_names
+                for key, sym_name, loc in self._walk_reads(p, exclude):
+                    readers.setdefault(key, []).append({
+                        'clock': clk,
+                        'loc': self._loc(loc) if loc else self._proc_loc(p),
+                        'name': sym_name,
+                    })
+
+        # Build findings — one per (signal, reader-clock) crossing
+        out = []
+        for key, wrec in writers.items():
+            w_clocks = wrec['clocks']
+            for r in readers.get(key, ()):
+                if r['clock'] in w_clocks:
+                    continue
+                rfile, rline, rcol = r['loc']
+                # First writer location for context
+                if wrec['locs']:
+                    wfile, wline, _ = wrec['locs'][0]
+                    where = f" (written at {wfile}:{wline})" if wfile else ""
+                else:
+                    where = ""
+                msg = (f"signal '{wrec['name']}' crosses clock domains: "
+                       f"written in '{'/'.join(sorted(w_clocks))}' domain, "
+                       f"read in '{r['clock']}' domain{where}")
+                out.append(LintFinding(
+                    file=rfile, line=rline, col=rcol,
+                    severity="warning", rule="cdc-crossing",
+                    message=msg, check="cdc",
+                ))
+        return out
 
 
 # ── Configuration ────────────────────────────────────────────────────
@@ -454,6 +676,12 @@ Inline waivers (standard SystemVerilog, no config needed):
                     help='Disable unused/undriven signal & port analysis')
     ck.add_argument('--shadow', action='store_true',
                     help='Enable variable-shadowing analysis')
+    ck.add_argument('--cdc', action='store_true',
+                    help='Enable clock-domain-crossing detection '
+                         '(flop-to-flop, opt-in; emits rule "cdc-crossing")')
+    ck.add_argument('--cdc-reset', action='append', default=[], metavar='GLOB',
+                    help='Extra signal-name glob to treat as a reset for CDC '
+                         '(repeatable; defaults match rst*/reset*/*_n)')
     ck.add_argument('--weverything', action='store_true',
                     help='Enable every available pyslang warning')
 
@@ -514,9 +742,11 @@ Inline waivers (standard SystemVerilog, no config needed):
 
     check_unused = not (a.no_unused or lint_cfg.get('unused') is False)
     check_shadow = cfg_bool('shadow', a.shadow)
+    check_cdc = cfg_bool('cdc', a.cdc)
     weverything = cfg_bool('weverything', a.weverything)
     werror = cfg_bool('werror', a.werror)
     min_severity = a.min_severity or lint_cfg.get('min_severity')
+    cdc_reset_globs = list(a.cdc_reset) + list(lint_cfg.get('cdc_reset', []) or [])
 
     # ── Resolve sources ──
     all_paths = list(a.files) + list(a.dir)
@@ -542,7 +772,8 @@ Inline waivers (standard SystemVerilog, no config needed):
     # ── Build & lint ──
     comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
     runner = LintRunner(comp, check_unused=check_unused,
-                        check_shadow=check_shadow, weverything=weverything)
+                        check_shadow=check_shadow, weverything=weverything,
+                        check_cdc=check_cdc, cdc_reset_globs=cdc_reset_globs)
     findings = runner.run()
 
     # Merge config [rules]/[[waive]] with CLI flags (CLI wins).
