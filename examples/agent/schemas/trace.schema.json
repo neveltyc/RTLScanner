@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "signal-trace agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `signal-trace --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "title": "trace agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `trace --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "signal-trace"
+      "const": "trace"
     },
     "version": {
       "type": "string"
@@ -43,11 +43,7 @@
           "properties": {
             "mode": {
               "type": "string",
-              "enum": [
-                "signal",
-                "all",
-                "list"
-              ]
+              "const": "signal"
             },
             "scope": {
               "type": "string"
@@ -193,30 +189,7 @@
                   }
                 },
                 "additionalProperties": true
-              },
-              "description": "Populated for mode=signal|all."
-            },
-            "signals": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": [
-                  "name"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "type": {
-                    "type": "string"
-                  },
-                  "kind": {
-                    "type": "string"
-                  }
-                },
-                "additionalProperties": true
-              },
-              "description": "Populated for mode=list."
+              }
             }
           }
         },
@@ -312,9 +285,6 @@
               "type": "integer"
             },
             "loads": {
-              "type": "integer"
-            },
-            "signals": {
               "type": "integer"
             }
           }

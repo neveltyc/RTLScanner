@@ -1,25 +1,18 @@
 {
-  "tool": "signal-trace",
+  "tool": "fanout",
   "version": "0.1.0",
   "status": "ok",
   "command": {
+    "cmd": "fanout",
     "files": [],
     "dir": [
       "examples/basic"
     ],
     "filelist": [],
-    "filelist_root": ".",
-    "filelist_prefix": "${PROJPATH}",
     "exclude": [],
     "signal": "q",
     "scope": "top.u_dp0",
-    "cross": false,
-    "filter": null,
-    "list": false,
-    "all": false,
-    "fanin": false,
-    "fanout": true,
-    "flow_depth": 4
+    "depth": 4
   },
   "data": {
     "mode": "fanout",

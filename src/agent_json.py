@@ -20,7 +20,9 @@ code), so agents get structured failure info instead of a stderr stack trace.
 
 from __future__ import annotations
 
+import argparse
 import json
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -112,8 +114,55 @@ class Envelope:
 # only the semantic intent of the run.
 _OUTPUT_FIELDS = frozenset({
     "json", "schema", "no_color", "markdown", "ndjson",
-    "diag", "summary", "no_summary", "show_waived",
+    "diag", "waived",
 })
+
+
+# ── Shared CLI helpers ──────────────────────────────────────────────
+class CommaListAction(argparse.Action):
+    """argparse Action that accepts a,b,c | [a,b,c] | {a,b,c} and is repeatable.
+
+    Each invocation extends the accumulated list, so repeating the flag
+    composes naturally:  --skip A,B --skip C  -> ["A","B","C"]
+    """
+
+    _STRIP_BRACKETS = re.compile(r"^[\[{]\s*|\s*[\]}]$")
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        cur = getattr(namespace, self.dest, None) or []
+        s = self._STRIP_BRACKETS.sub("", str(values))
+        items = [tok.strip() for tok in s.split(",") if tok.strip()]
+        setattr(namespace, self.dest, list(cur) + items)
+
+
+def add_input_args(p: argparse.ArgumentParser) -> None:
+    """Attach the shared input flags (files / -d / -f / --exclude).
+
+    Root, prefix, and config-path are NOT exposed on the CLI — they come
+    from env vars (RTLSCANNER_ROOT / RTLSCANNER_PREFIX) and ./.rtlscanner.toml.
+    """
+    g = p.add_argument_group("inputs")
+    g.add_argument("files", nargs="*", help="Verilog/SV source files (ad-hoc)")
+    g.add_argument("-d", "--dir", action=CommaListAction, default=[],
+                   metavar="DIR",
+                   help="Directory to scan recursively (comma-list or repeat)")
+    g.add_argument("-f", "--filelist", action=CommaListAction, default=[],
+                   metavar="FILE",
+                   help="VCS-style .f filelist (comma-list or repeat)")
+    g.add_argument("--exclude", action=CommaListAction, default=[],
+                   metavar="GLOB",
+                   help="Exclude paths matching glob (comma-list or repeat)")
+
+
+def add_output_args(p: argparse.ArgumentParser) -> None:
+    """Attach the shared output flags (--json / --schema / --no-color)."""
+    g = p.add_argument_group("output")
+    g.add_argument("--json", action="store_true",
+                   help="Emit results as an agent-friendly JSON envelope (see --schema)")
+    g.add_argument("--schema", action="store_true",
+                   help="Print the JSON Schema for --json output and exit")
+    g.add_argument("--no-color", action="store_true",
+                   help="Disable ANSI colors")
 
 
 def filter_command(ns, extra_exclude: Optional[set] = None) -> Dict[str, Any]:
@@ -229,7 +278,7 @@ _TREE_NODE = {
 }
 
 _TREE_SCHEMA = _envelope_schema(
-    "rtl-tree",
+    "tree",
     data_schema={
         "type": "object",
         "required": ["hierarchy", "filelist"],
@@ -338,27 +387,14 @@ _TRACE_FLOW_EDGE = {
 }
 
 _TRACE_SCHEMA = _envelope_schema(
-    "signal-trace",
+    "trace",
     data_schema={
         "type": "object",
         "required": ["mode", "scope"],
         "properties": {
-            "mode":    {"type": "string",
-                        "enum": ["signal", "all", "list", "fanin", "fanout"]},
+            "mode":    {"type": "string", "const": "signal"},
             "scope":   {"type": "string"},
-            "results": {"type": "array", "items": _TRACE_RESULT,
-                        "description": "Populated for mode=signal|all."},
-            "signals": {"type": "array", "items": _TRACE_SIGNAL_LIST_ITEM,
-                        "description": "Populated for mode=list."},
-            "signal":  {"type": "string",
-                        "description": "Starting signal for mode=fanin|fanout."},
-            "start":   {"type": "string",
-                        "description": "Elaborated hierarchical path of the starting signal."},
-            "nodes":   {"type": "array", "items": {"type": "string"},
-                        "description": "Populated for mode=fanin|fanout."},
-            "edges":   {"type": "array", "items": _TRACE_FLOW_EDGE,
-                        "description": "Populated for mode=fanin|fanout."},
-            "max_depth": {"type": "integer"},
+            "results": {"type": "array", "items": _TRACE_RESULT},
         },
     },
     summary_schema={
@@ -369,13 +405,65 @@ _TRACE_SCHEMA = _envelope_schema(
             "results": {"type": "integer"},
             "drivers": {"type": "integer"},
             "loads":   {"type": "integer"},
-            "signals": {"type": "integer"},
-            "nodes":   {"type": "integer"},
-            "edges":   {"type": "integer"},
-            "max_depth": {"type": "integer"},
         },
     },
 )
+
+_SIGNALS_SCHEMA = _envelope_schema(
+    "signals",
+    data_schema={
+        "type": "object",
+        "required": ["mode", "scope", "signals"],
+        "properties": {
+            "mode":    {"type": "string", "const": "list"},
+            "scope":   {"type": "string"},
+            "signals": {"type": "array", "items": _TRACE_SIGNAL_LIST_ITEM},
+        },
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["mode", "signals"],
+        "properties": {
+            "mode":    {"type": "string"},
+            "signals": {"type": "integer"},
+        },
+    },
+)
+
+def _flow_schema(tool_name: str) -> Dict[str, Any]:
+    return _envelope_schema(
+        tool_name,
+        data_schema={
+            "type": "object",
+            "required": ["mode", "scope", "signal", "start", "nodes", "edges", "max_depth"],
+            "properties": {
+                "mode":      {"type": "string", "const": tool_name},
+                "scope":     {"type": "string"},
+                "signal":    {"type": "string",
+                              "description": "Starting signal name."},
+                "start":     {"type": "string",
+                              "description": "Elaborated hierarchical path of the starting signal."},
+                "nodes":     {"type": "array", "items": {"type": "string"}},
+                "edges":     {"type": "array", "items": _TRACE_FLOW_EDGE},
+                "max_depth": {"type": "integer"},
+            },
+        },
+        summary_schema={
+            "type": "object",
+            "required": ["mode", "results"],
+            "properties": {
+                "mode":      {"type": "string"},
+                "results":   {"type": "integer"},
+                "nodes":     {"type": "integer"},
+                "edges":     {"type": "integer"},
+                "max_depth": {"type": "integer"},
+            },
+        },
+    )
+
+
+_FANIN_SCHEMA = _flow_schema("fanin")
+_FANOUT_SCHEMA = _flow_schema("fanout")
 
 
 # ── rtl-lint ──
@@ -400,7 +488,7 @@ _LINT_FINDING = {
 }
 
 _LINT_SCHEMA = _envelope_schema(
-    "rtl-lint",
+    "lint",
     data_schema={
         "type": "object",
         "required": ["findings", "waived", "config_path"],
@@ -427,11 +515,11 @@ _LINT_SCHEMA = _envelope_schema(
             "has_error":    {"type": "boolean"},
         },
     },
-    description=("Stable agent-mode JSON envelope produced by `rtl-lint --json`. "
+    description=("Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. "
                  "CDC findings appear as regular entries in `data.findings` with "
                  "`rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog "
                  "`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` "
-                 "— use `[[waive]]` in `.rtllint.toml` instead."),
+                 "— use `[lint].waive` in `.rtlscanner.toml` instead."),
 )
 
 
@@ -499,7 +587,7 @@ _PORT_ISSUE = {
 }
 
 _PORTS_SCHEMA = _envelope_schema(
-    "rtl-ports",
+    "ports",
     data_schema={
         "type": "object",
         "required": ["mode"],
@@ -530,10 +618,13 @@ _PORTS_SCHEMA = _envelope_schema(
 
 
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
-    "rtl-tree":     _TREE_SCHEMA,
-    "signal-trace": _TRACE_SCHEMA,
-    "rtl-lint":     _LINT_SCHEMA,
-    "rtl-ports":    _PORTS_SCHEMA,
+    "tree":    _TREE_SCHEMA,
+    "trace":   _TRACE_SCHEMA,
+    "signals": _SIGNALS_SCHEMA,
+    "fanin":   _FANIN_SCHEMA,
+    "fanout":  _FANOUT_SCHEMA,
+    "lint":    _LINT_SCHEMA,
+    "ports":   _PORTS_SCHEMA,
 }
 
 

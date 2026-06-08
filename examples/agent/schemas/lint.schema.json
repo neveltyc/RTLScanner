@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "rtl-lint agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `rtl-lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` — use `[[waive]]` in `.rtllint.toml` instead.",
+  "title": "lint agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` — use `[lint].waive` in `.rtlscanner.toml` instead.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "rtl-lint"
+      "const": "lint"
     },
     "version": {
       "type": "string"

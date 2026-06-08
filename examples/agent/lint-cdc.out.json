@@ -1,28 +1,23 @@
 {
-  "tool": "rtl-lint",
+  "tool": "lint",
   "version": "0.1.0",
   "status": "ok",
   "command": {
+    "cmd": "lint",
     "files": [
       "examples/lint/cdc_demo.sv"
     ],
     "dir": [],
     "filelist": [],
-    "filelist_root": ".",
-    "filelist_prefix": "${PROJPATH}",
     "exclude": [],
-    "no_unused": false,
-    "shadow": false,
-    "cdc": true,
-    "cdc_reset": [],
-    "weverything": false,
-    "disable": [],
-    "rule": [],
-    "error": [],
-    "werror": false,
-    "min_severity": null,
-    "config": null,
-    "no_config": false
+    "rules": [
+      "default",
+      "cdc"
+    ],
+    "skip": [],
+    "waive": [],
+    "strict": false,
+    "min_severity": null
   },
   "data": {
     "findings": [

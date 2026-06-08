@@ -5,12 +5,7 @@ rtl_tree — Verilog/SystemVerilog RTL Hierarchy Viewer
 Like ``tree`` for your RTL design.  Uses pyslang for accurate parsing
 with full SystemVerilog support (generate, parameters, interfaces, …).
 
-Usage:
-    rtl_tree file1.sv file2.v ...
-    rtl_tree -d ./rtl_dir
-    rtl_tree -d ./rtl_dir --top top_module
-    rtl_tree -d ./rtl_dir --trace clk --scope top
-    rtl_tree -d ./rtl_dir --write-filelist rtl.f
+This module is invoked via the unified `rtlscanner tree` subcommand.
 
 Install dependency:
     pip install pyslang
@@ -19,7 +14,6 @@ Install dependency:
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -30,16 +24,13 @@ import pyslang.ast as ast
 from rtl_common import (
     Color,
     FileList,
-    collect_filelist,
-    parse_filelist,
-    merge_filelists,
-    filter_filelist,
     write_filelist_file,
     build_compilation,
 )
 
 import agent_json
-from agent_json import AgentError, Envelope, filter_command, emit
+from agent_json import Envelope, filter_command, emit
+from rtl_config import build_filelist
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -57,19 +48,13 @@ class InstanceNode:
 
 # ── Hierarchy Building ───────────────────────────────────────────────
 def build_hierarchy(
-    files: list[str],
+    files: list,
     top_module: Optional[str] = None,
-    include_dirs: list[str] = None,
-    defines: list[str] = None,
+    include_dirs: list = None,
+    defines: list = None,
     return_compilation: bool = False,
 ):
-    """
-    Parse files with pyslang, elaborate, and return the instance tree.
-
-    Returns ``(tops, diags)`` normally.  When *return_compilation* is
-    True a third element — the raw ``ast.Compilation`` — is appended so
-    that callers (e.g. signal tracing) can run further analysis.
-    """
+    """Parse files with pyslang, elaborate, and return the instance tree."""
     comp, diag_messages = build_compilation(files, include_dirs, defines)
     root = comp.getRoot()
 
@@ -91,7 +76,7 @@ def build_hierarchy(
                 is_interface=getattr(inst, 'isInterface', False),
             )
         except Exception:
-            continue  # skip phantom instances from `include compilation
+            continue
 
     for path, node in node_map.items():
         parts = path.split('.')
@@ -239,246 +224,128 @@ def _hierarchy_summary(tops, files_parsed: int) -> dict:
     }
 
 
-def _emit_trace_envelope(env: 'Envelope', tracer, scope,
-                         trace_signal, trace_list, trace_all,
-                         cross, load_filter) -> int:
-    if trace_list:
-        sigs = tracer.list_signals(scope)
-        if not sigs:
-            return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
-                                 f"scope '{scope}' not found or empty"))
-        data = {'mode': 'list', 'scope': scope, 'signals': sigs}
-        summary = {'mode': 'list', 'results': 0, 'signals': len(sigs)}
-        return emit(env.ok(data, summary))
-
-    if trace_all:
-        results = tracer.trace_all(scope, cross)
-        if not results:
-            return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
-                                 f"no signals in scope '{scope}'"))
-        rdicts = [r.to_dict(load_filter) for r in results]
-        data = {'mode': 'all', 'scope': scope, 'results': rdicts}
-        summary = {
-            'mode':    'all',
-            'results': len(rdicts),
-            'drivers': sum(1 for d in rdicts if d.get('driver')),
-            'loads':   sum(int(d.get('load_count', 0)) for d in rdicts),
-        }
-        return emit(env.ok(data, summary))
-
-    # single signal
-    r = tracer.trace(trace_signal, scope, cross)
-    if r is None:
-        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
-                             f"signal '{trace_signal}' not found in scope '{scope}'"))
-    rd = r.to_dict(load_filter)
-    data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
-    summary = {
-        'mode':    'signal',
-        'results': 1,
-        'drivers': 1 if rd.get('driver') else 0,
-        'loads':   int(rd.get('load_count', 0)),
-    }
-    return emit(env.ok(data, summary))
-
-
-# ── CLI ──────────────────────────────────────────────────────────────
-def main():
-    p = argparse.ArgumentParser(
-        prog='rtl-tree',
-        description='rtl-tree — SV RTL Hierarchy Viewer (pyslang)',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Hierarchy:
-  rtl-tree top.sv sub.sv               Show hierarchy tree
-  rtl-tree -d ./rtl --top cpu          Specify top module
-  rtl-tree -d ./rtl --depth 2          Limit depth
-  rtl-tree -d ./rtl --stats            Module usage stats
-  rtl-tree --filelist rtl.f --top cpu  Use VCS-style filelist
-
-Signal tracing:
-  rtl-tree -d ./rtl --trace clk --scope top
-  rtl-tree --filelist rtl.f --trace q --scope top.u_dp --cross
-  rtl-tree --filelist rtl.f --trace-list --scope top.u_dp
-  rtl-tree --filelist rtl.f --trace data --scope top --filter 'u_fifo*'
-""")
-    p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
-                   help='Directory to scan recursively (repeatable)')
-
-    fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', action='append', default=[], metavar='FILE',
-                    help='VCS-style .f filelist (repeatable)')
-    fl.add_argument('--write-filelist', default=None, metavar='FILE',
-                    help="Write the resolved filelist to FILE ('-' for stdout)")
-    fl.add_argument('--filelist-only', action='store_true',
-                    help='Only write the filelist, then exit (no tree)')
-    fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                    default='.', metavar='DIR',
-                    help='Base path for filelist relative paths (default: .)')
-    fl.add_argument('--filelist-path', choices=('rel', 'abs', 'prefix'),
-                    default='rel',
-                    help='Path style in --write-filelist output (default: rel)')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
-                    help="Prefix for 'prefix' path style (default: ${PROJPATH})")
-    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
-                    help='Exclude paths matching glob (repeatable)')
-
-    h = p.add_argument_group('hierarchy display')
-    h.add_argument('--top', default=None, metavar='MODULE',
+# ── CLI plumbing ─────────────────────────────────────────────────────
+def add_arguments(p: argparse.ArgumentParser) -> None:
+    """Attach tree-specific flags to a subparser."""
+    g = p.add_argument_group('hierarchy display')
+    g.add_argument('--top', default=None, metavar='MODULE',
                    help='Treat MODULE as the top (default: auto-detect)')
-    h.add_argument('--depth', type=int, default=-1, metavar='N',
+    g.add_argument('--depth', type=int, default=-1, metavar='N',
                    help='Limit tree depth to N levels (default: unlimited)')
-    h.add_argument('--no-params', action='store_true',
+    g.add_argument('--no-params', action='store_true',
                    help='Hide module parameter values')
-    h.add_argument('--path', action='store_true',
+    g.add_argument('--path', action='store_true',
                    help='Show full hierarchical path next to each node')
-    h.add_argument('--json', action='store_true',
-                   help='Emit the hierarchy as an agent-friendly JSON envelope (see --schema)')
-    h.add_argument('--schema', action='store_true',
-                   help='Print the JSON Schema for --json output and exit')
-    h.add_argument('--stats', action='store_true',
+    g.add_argument('--stats', action='store_true',
                    help='Print module usage statistics')
-    h.add_argument('--flat', action='store_true',
+    g.add_argument('--flat', action='store_true',
                    help='List every instance path flat, one per line')
 
-    t = p.add_argument_group('signal tracing')
-    t.add_argument('--trace', metavar='SIGNAL', default=None,
-                   help='Trace driver/loads of SIGNAL (needs --scope)')
-    t.add_argument('--scope', default=None, metavar='SCOPE',
-                   help='Hierarchical scope for tracing (e.g. top.u_dp)')
-    t.add_argument('--trace-list', action='store_true',
-                   help='List all signals in --scope')
-    t.add_argument('--trace-all', action='store_true',
-                   help='Trace every signal in --scope')
-    t.add_argument('--cross', action='store_true',
-                   help='Follow the signal through port boundaries')
-    t.add_argument('--filter', default=None, metavar='GLOB',
-                   help='Filter traced loads by instance-name glob')
+    exp = p.add_argument_group('filelist export')
+    exp.add_argument('--export', default=None, metavar='FILE',
+                     help="Write the resolved filelist to FILE ('-' for stdout) and exit")
+    exp.add_argument('--path-style', choices=('rel', 'abs', 'prefix'),
+                     default='rel',
+                     help="Path style for --export (default: rel)")
 
-    p.add_argument('--no-color', action='store_true',
-                   help='Disable ANSI colors')
     p.add_argument('--diag', action='store_true',
                    help='Print parser/elaboration diagnostics to stderr')
-    a = p.parse_args()
 
-    if a.schema:
-        sys.exit(agent_json.print_schema('rtl-tree'))
 
-    if a.no_color or not sys.stdout.isatty() or a.json:
-        Color.disable()
+def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
+    from rtl_config import resolve_inputs, load_config
+    cfg, cfg_path = load_config()
+    ri = resolve_inputs(
+        cli_files=args.files,
+        cli_dir=args.dir,
+        cli_filelist=args.filelist,
+        cli_exclude=args.exclude,
+        config=cfg,
+        config_path=cfg_path,
+    )
+    for note in ri.notes:
+        print(f"note: {note}", file=sys.stderr)
 
-    env: Optional[Envelope] = Envelope('rtl-tree', filter_command(a)) if a.json else None
-
-    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=1):
-        if a.json:
-            sys.exit(emit(env.fail(code, msg)))
-        print(f"Error: {msg}", file=sys.stderr)
-        sys.exit(exit_code)
-
-    # ── sources ──
-    all_paths = list(a.files) + list(a.dir)
-    if not all_paths and not a.filelist:
-        if a.json:
-            die('no input: pass files, --dir, or --filelist', agent_json.ERR_INPUT_NOT_FOUND, 1)
-        p.print_help(); sys.exit(1)
-
-    fl_root = Path(a.filelist_root).expanduser().resolve()
-    parsed = []
-    for f in a.filelist:
-        try: parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
-        except FileNotFoundError as e:
-            die(str(e), agent_json.ERR_BAD_FILELIST)
-    scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
-    filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
-
-    if a.write_filelist:
-        write_filelist_file(a.write_filelist, filelist, fl_root, a.filelist_path, a.filelist_prefix)
-        if a.write_filelist != '-':
-            print(f"Wrote filelist: {a.write_filelist}", file=sys.stderr)
-    if a.filelist_only:
-        if not a.write_filelist:
-            die('--filelist-only requires --write-filelist', agent_json.ERR_INPUT_NOT_FOUND)
-        if a.json:
-            sys.exit(emit(env.ok({'filelist': _filelist_to_dict(filelist)},
-                                 {'instances': 0, 'unique_modules': 0,
-                                  'max_depth': 0, 'files_parsed': len(filelist.sources),
-                                  'module_counts': {}})))
-        return
-
-    files = filelist.sources
-    if not files:
-        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
-
-    # ── elaborate ──
-    is_trace = a.trace or a.trace_list or a.trace_all
     try:
-        res = build_hierarchy(files, a.top, filelist.include_dirs, filelist.defines,
-                              return_compilation=is_trace)
+        filelist = build_filelist(ri)
+    except FileNotFoundError as e:
+        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
+    except ValueError as e:
+        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
+
+    # --export FILE: write filelist and exit
+    if args.export:
+        if not filelist.sources:
+            return _die(env, 'no .v/.sv source files found',
+                        agent_json.ERR_INPUT_NOT_FOUND)
+        try:
+            write_filelist_file(args.export, filelist, ri.root,
+                                args.path_style, ri.prefix)
+        except Exception as e:
+            return _die(env, f"failed to write filelist: {e}",
+                        agent_json.ERR_INTERNAL)
+        if args.export != '-':
+            print(f"Wrote filelist: {args.export}", file=sys.stderr)
+        if env is not None:
+            return emit(env.ok(
+                {'hierarchy': [], 'filelist': _filelist_to_dict(filelist)},
+                {'instances': 0, 'unique_modules': 0, 'max_depth': 0,
+                 'files_parsed': len(filelist.sources), 'module_counts': {}},
+            ))
+        return 0
+
+    if not filelist.sources:
+        return _die(env, 'no .v/.sv source files found',
+                    agent_json.ERR_INPUT_NOT_FOUND)
+
+    try:
+        tops, diags = build_hierarchy(
+            filelist.sources, args.top,
+            filelist.include_dirs, filelist.defines)
     except Exception as e:
-        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
-    if is_trace:
-        tops, diags, comp = res
-    else:
-        tops, diags = res
+        return _die(env, f'compilation failed: {e}',
+                    agent_json.ERR_COMPILE_FAILED)
 
     if env is not None:
         for d in diags[:50]:
             env.add_diagnostic('warning', '', 0, 0, str(d))
-    elif a.diag and diags:
+    elif args.diag and diags:
         print(f"\n{Color.red('Parser diagnostics:')}", file=sys.stderr)
         for d in diags[:20]: print(f"  {d}", file=sys.stderr)
         if len(diags) > 20: print(f"  ... and {len(diags)-20} more", file=sys.stderr)
 
     if not tops:
         msg = "no top-level modules found"
-        if a.top: msg += f" (--top {a.top})"
-        die(msg, agent_json.ERR_NO_TOP)
+        if args.top:
+            msg += f" (--top {args.top})"
+        return _die(env, msg, agent_json.ERR_NO_TOP)
 
-    # ── signal tracing ──
-    if is_trace:
-        from signal_trace import SignalTracer
-        tracer = SignalTracer(comp)
-        scope = a.scope
-        if scope is None:
-            tp = tracer.get_top_paths()
-            if len(tp) == 1: scope = tp[0]
-            elif tp:
-                if a.json:
-                    die('multiple tops — specify --scope: ' + ', '.join(tp),
-                        agent_json.ERR_SCOPE_NOT_FOUND)
-                print("Multiple tops — specify --scope:", file=sys.stderr)
-                for x in tp: print(f"  {x}", file=sys.stderr)
-                sys.exit(1)
-        if a.json:
-            sys.exit(_emit_trace_envelope(env, tracer, scope,
-                                          a.trace, a.trace_list, a.trace_all,
-                                          a.cross, a.filter))
-        if a.trace_list:   tracer.cmd_list(scope, a.json)
-        elif a.trace_all:  tracer.cmd_trace_all(scope, a.cross, a.filter, a.json)
-        elif a.trace:      tracer.cmd_trace(a.trace, scope, a.cross, a.filter, a.json)
-        return
-
-    # ── hierarchy output ──
-    if a.json:
-        hier = [node_to_dict(t, a.depth) for t in tops]
-        sys.exit(emit(env.ok(
+    if env is not None:
+        hier = [node_to_dict(t, args.depth) for t in tops]
+        return emit(env.ok(
             {'hierarchy': hier, 'filelist': _filelist_to_dict(filelist)},
-            _hierarchy_summary(tops, len(files)),
-        )))
-    elif a.flat:
-        for t in _walk(tops): print(f"{t.hier_path}  ({t.module_name})")
+            _hierarchy_summary(tops, len(filelist.sources)),
+        ))
+
+    if args.flat:
+        for t in _walk(tops):
+            print(f"{t.hier_path}  ({t.module_name})")
     else:
         for i, t in enumerate(tops):
             if i: print()
-            print_tree(t, is_root=True, max_depth=a.depth,
-                       show_params=not a.no_params, show_path=a.path)
-    if a.stats: print_stats(tops)
-    if not a.flat:
+            print_tree(t, is_root=True, max_depth=args.depth,
+                       show_params=not args.no_params, show_path=args.path)
+    if args.stats:
+        print_stats(tops)
+    if not args.flat:
         total = sum(1 for _ in _walk(tops))
         mods = len(set(n.module_name for n in _walk(tops)))
-        print(f"\n{Color.dim(f'{total} instances, {mods} unique modules, {len(files)} files parsed')}")
+        print(f"\n{Color.dim(f'{total} instances, {mods} unique modules, {len(filelist.sources)} files parsed')}")
+    return 0
 
 
-if __name__ == '__main__':
-    main()
+def _die(env: Optional[Envelope], msg: str, code: str) -> int:
+    if env is not None:
+        return emit(env.fail(code, msg))
+    print(f"Error: {msg}", file=sys.stderr)
+    return 1

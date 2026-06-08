@@ -8,21 +8,7 @@ defaults, unused/undriven signals and ports, multi-driven nets — that
 regex linters miss, using the same filelist/compilation infrastructure
 as the rest of the RTLScanner family.
 
-Primary usage (with filelist):
-    rtl_lint --filelist rtl.f
-    rtl_lint --filelist rtl.f --werror          # fail CI on any warning
-    rtl_lint --filelist rtl.f --disable case-default --disable width-expand
-    rtl_lint --filelist rtl.f --error width-trunc   # promote a rule to error
-    rtl_lint --filelist rtl.f --summary --json
-
-With directory scan:
-    rtl_lint -d ./rtl
-    rtl_lint -d ./rtl --rule 'unused-*'         # only show matching rules
-
-Exit codes:
-    0  clean (no error-level findings)
-    1  one or more error-level findings (or warnings with --werror)
-    2  usage / source error
+This module is invoked via the unified `rtlscanner lint` subcommand.
 
 Install dependency:
     pip install pyslang
@@ -32,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import os
 import sys
 from dataclasses import dataclass
@@ -48,17 +33,13 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    FileList,
     build_compilation,
-    collect_filelist,
-    parse_filelist,
-    merge_filelists,
-    filter_filelist,
     safe_str,
 )
 
 import agent_json
-from agent_json import AgentError, Envelope, filter_command, emit
+from agent_json import Envelope, emit
+from rtl_config import build_filelist, lint_config, load_config, resolve_inputs
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -429,20 +410,118 @@ class CDCAnalyzer:
         return out
 
 
-# ── Configuration ────────────────────────────────────────────────────
-CONFIG_NAMES = (".rtllint.toml", ".rtllint.json")
-_SUPPRESS_WORDS = {"off", "ignore", "ignored", "none", "suppress",
-                   "disable", "disabled", "waive", "waived"}
 
 
-def normalize_severity(val):
-    """Map a config severity string to a canonical name, or None if unknown.
+# ── Rule selection model ─────────────────────────────────────────────
+# A `--rules SPEC[,...]` spec can contain:
+#   * family alias:  semantic | unused | shadow | cdc | everything
+#   * meta:          default (= semantic+unused) | all | none
+#   * rule name:     width-trunc | unused-port | ...
+#   * glob:          width-* | unused-*
 
-    Suppression words ("off"/"ignore"/…) normalize to "ignored".
+FAMILIES = {"semantic", "unused", "shadow", "cdc", "everything"}
+DEFAULT_FAMILIES = ["semantic", "unused"]
+META_KEYWORDS = {"default", "all", "none"}
+
+# Map rule-name prefix → check family, so a bare rule like "unused-port"
+# implies we need to RUN the unused analysis.
+_RULE_PREFIX_FAMILY = {
+    "unused-": "unused",
+    "shadow-": "shadow",
+    "cdc-":    "cdc",
+}
+
+
+def _expand_meta(specs):
+    """Resolve 'default'/'all'/'none' meta keywords into concrete spec list."""
+    out = []
+    for s in specs:
+        if s == "default":
+            out.extend(DEFAULT_FAMILIES)
+        elif s == "all":
+            out.extend(FAMILIES)
+        elif s == "none":
+            return []
+        else:
+            out.append(s)
+    # de-dup, preserve order
+    seen, deduped = set(), []
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            deduped.append(s)
+    return deduped
+
+
+def resolve_rules(specs):
+    """Split a rules spec list into (run_families, keep_families, rule_globs, noop).
+
+    - run_families: check families to actually RUN (lint engine input).
+                    Always includes the family any rule glob's prefix implies,
+                    so explicit `--rules unused-port` still runs the unused pass.
+    - keep_families: families whose findings the user wants to KEEP. Empty when
+                    the user only listed rule names (display is rule-glob-only).
+    - rule_globs: explicit rule names/globs to keep.
+    - noop: True iff specs == ['none'] (everything is suppressed).
     """
+    specs = list(specs) if specs else ["default"]
+    if "none" in specs:
+        return set(), set(), [], True
+    expanded = _expand_meta(specs)
+    keep_families, globs = set(), []
+    run_families = {"semantic"}  # semantic always runs (pyslang elaboration)
+    for s in expanded:
+        if s in FAMILIES:
+            keep_families.add(s)
+            run_families.add(s)
+        else:
+            globs.append(s)
+            for pref, fam in _RULE_PREFIX_FAMILY.items():
+                if s.startswith(pref):
+                    run_families.add(fam)
+                    break
+    return run_families, keep_families, globs, False
+
+
+def rule_matches(finding, keep_families, globs):
+    """A finding is kept iff:
+       (a) a family was explicitly listed and matches this finding's check, OR
+       (b) a rule glob matches this finding's rule name.
+    """
+    if keep_families and finding.check in keep_families:
+        return True
+    return any(fnmatch.fnmatch(finding.rule, g) for g in globs)
+
+
+def skip_matches(finding, skip_globs):
+    return any(fnmatch.fnmatch(finding.rule, g) for g in skip_globs)
+
+
+# ── Waive (module-name globs, file-basename heuristic) ───────────────
+def _file_module_name(finding):
+    """Heuristic: a finding's module is the file's basename without extension.
+
+    Real RTL projects overwhelmingly follow one-module-per-file with matching
+    names; this avoids dragging a symbol-table lookup into the lint loop.
+    """
+    if not finding.file:
+        return ""
+    return Path(finding.file).stem
+
+
+def waive_matches(finding, waive_globs):
+    if not waive_globs:
+        return False
+    mod = _file_module_name(finding)
+    return any(fnmatch.fnmatch(mod, g) for g in waive_globs)
+
+
+# ── Severity application ─────────────────────────────────────────────
+SEVERITY_RANK = {"error": 3, "warning": 2, "note": 1}
+
+
+def _normalize_severity(val):
     v = str(val).strip().lower()
-    if v in _SUPPRESS_WORDS:
-        return "ignored"
     if v in ("error", "err", "e"):
         return "error"
     if v in ("warning", "warn", "w"):
@@ -452,133 +531,58 @@ def normalize_severity(val):
     return None
 
 
-def discover_config(start="."):
-    """Walk up from *start* looking for a project lint config file."""
-    d = Path(start).resolve()
-    for parent in (d, *d.parents):
-        for name in CONFIG_NAMES:
-            cand = parent / name
-            if cand.is_file():
-                return cand
-    return None
+def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
+          min_severity, lint_severity_map):
+    """Filter findings through rules → skip → waive → severity overrides.
 
-
-def load_config(path):
-    """Load a TOML (.toml) or JSON (.json) lint config into a dict."""
-    p = Path(path)
-    text = p.read_text(errors="ignore")
-    if p.suffix == ".json":
-        return json.loads(text)
-    # TOML — stdlib tomllib (3.11+) or the tomli backport, if available.
-    for mod in ("tomllib", "tomli"):
-        try:
-            return __import__(mod).loads(text)
-        except ModuleNotFoundError:
-            continue
-    raise SystemExit(
-        "Error: reading a TOML config needs Python 3.11+ or the 'tomli' "
-        "package.  Use a .rtllint.json config instead, or `pip install tomli`.")
-
-
-def _path_matches(file_path, pattern):
-    """Flexible path glob: matches full path, a */suffix, or basename."""
-    if not pattern:
-        return True
-    return (fnmatch.fnmatch(file_path, pattern)
-            or fnmatch.fnmatch(file_path, "*/" + pattern.lstrip("/"))
-            or fnmatch.fnmatch(Path(file_path).name, pattern))
-
-
-def _find_waiver(f, waivers):
-    """Return the first waiver entry matching finding *f*, or None."""
-    for w in waivers:
-        rule = w.get("rule")
-        if rule and not fnmatch.fnmatch(f.rule, rule):
-            continue
-        if not _path_matches(f.file, w.get("path") or w.get("file")):
-            continue
-        line = w.get("line")
-        if line is not None and int(line) != f.line:
-            continue
-        return w
-    return None
-
-
-# ── Filtering / promotion ────────────────────────────────────────────
-def apply_rules(findings, rules=None, waivers=None, only=None, werror=False,
-                min_severity=None):
-    """Filter and re-grade findings.
-
-    *rules*   — ordered list of ``(glob, severity)``; last match wins.
-                A severity of "ignored" suppresses the finding.
-    *waivers* — list of dicts with optional ``rule``/``path``/``line`` and
-                ``reason``; matching findings are suppressed (location-aware).
-    *only*    — if set, keep only rules matching one of these globs.
-
-    Returns ``(kept, waived)`` where *waived* carries ``waived_reason``.
+    Returns (kept, waived) where waived items carry waived_reason.
     """
-    rules = rules or []
-    waivers = waivers or []
+    _run_families, keep_families, rule_globs, noop = resolve_rules(rules_specs)
     kept, waived = [], []
+    sev_map = {}
+    for k, v in (lint_severity_map or {}).items():
+        sev = _normalize_severity(v)
+        if sev is not None:
+            sev_map[k] = sev
+
     for f in findings:
-        if only and not any(fnmatch.fnmatch(f.rule, p) for p in only):
-            continue
-
-        # 1. Location-specific waivers
-        w = _find_waiver(f, waivers)
-        if w is not None:
-            f.waived_reason = w.get("reason", "") or "waived"
+        if noop:
+            f.waived_reason = "rules=none"
             waived.append(f)
             continue
-
-        # 2. Rule severity map (later entries override earlier ones)
-        mapped = None
-        for glob, sev in rules:
-            if fnmatch.fnmatch(f.rule, glob):
-                mapped = sev
-        if mapped == "ignored":
-            f.waived_reason = "rule disabled"
+        if not rule_matches(f, keep_families, rule_globs):
+            f.waived_reason = "rule not selected"
             waived.append(f)
             continue
-        if mapped in ("error", "warning", "note"):
-            f.severity = mapped
-
-        # 3. Global --werror promotion of anything still a warning
-        if werror and f.severity == "warning":
+        if skip_matches(f, skip_globs):
+            f.waived_reason = "skipped"
+            waived.append(f)
+            continue
+        if waive_matches(f, waive_globs):
+            f.waived_reason = "module waived"
+            waived.append(f)
+            continue
+        # Per-rule severity override (from [lint.severity])
+        for pat, sev in sev_map.items():
+            if fnmatch.fnmatch(f.rule, pat):
+                f.severity = sev
+        # --strict: warning → error
+        if strict and f.severity == "warning":
             f.severity = "error"
-
-        # 4. Minimum-severity gate
-        if min_severity and SEVERITY_ORDER.get(f.severity, 0) < SEVERITY_ORDER.get(min_severity, 0):
+        # Display floor
+        if (min_severity
+                and SEVERITY_RANK.get(f.severity, 0)
+                < SEVERITY_RANK.get(min_severity, 0)):
             continue
         kept.append(f)
     return kept, waived
 
 
-def build_rule_list(config_rules, cli_disable, cli_error):
-    """Merge config [rules] + CLI --disable/--error into an ordered list.
-
-    CLI entries are appended last so they win over the config file.
-    """
-    rules = []
-    for name, val in (config_rules or {}).items():
-        sev = normalize_severity(val)
-        if sev is None:
-            print(f"Warning: config rule '{name}' has unknown severity "
-                  f"'{val}' (use off/warning/error)", file=sys.stderr)
-            continue
-        rules.append((name, sev))
-    for name in cli_disable or []:
-        rules.append((name, "ignored"))
-    for name in cli_error or []:
-        rules.append((name, "error"))
-    return rules
-
-
-# ── Output ───────────────────────────────────────────────────────────
+# ── Display ──────────────────────────────────────────────────────────
 _SEV_COLOR = {
-    "error": Color.red,
+    "error":   Color.red,
     "warning": Color.yellow,
-    "note": Color.cyan,
+    "note":    Color.cyan,
 }
 
 
@@ -635,184 +639,98 @@ def print_findings(findings):
 
 
 # ── CLI ──────────────────────────────────────────────────────────────
-def main():
-    p = argparse.ArgumentParser(
-        prog='rtl-lint',
-        description='rtl-lint — SV Static Linter (pyslang)',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  rtl-lint --filelist rtl.f                 Lint a design via filelist
-  rtl-lint -d ./rtl                         Scan a directory
-  rtl-lint -d ./rtl --werror                Fail (exit 1) on any warning
-  rtl-lint -d ./rtl --disable case-default  Suppress a rule
-  rtl-lint -d ./rtl --error width-trunc     Promote a rule to error
-  rtl-lint -d ./rtl --rule 'unused-*'       Only show matching rules
-  rtl-lint -d ./rtl --cdc                   Clock-domain-crossing check
-  rtl-lint -d ./rtl --summary               Show only the summary
-  rtl-lint -d ./rtl --json                  Machine-readable output
+def add_arguments(p: argparse.ArgumentParser) -> None:
+    rs = p.add_argument_group("rule selection")
+    rs.add_argument("--rules", action=agent_json.CommaListAction, default=[],
+                    metavar="SPEC",
+                    help="Rule white list. SPEC = rule name | family "
+                         "(semantic/unused/shadow/cdc/everything) | glob | "
+                         "default/all/none. Comma-list or repeat. "
+                         "Default: 'default' (semantic + unused).")
+    rs.add_argument("--skip", action=agent_json.CommaListAction, default=[],
+                    metavar="RULE",
+                    help="Subtract rule(s) from the white list (glob ok).")
 
-Config file (.rtllint.toml or .rtllint.json, auto-discovered):
-  [rules]                  # severity per rule (glob ok): off | warning | error
-  "case-default" = "off"
-  "width-trunc"  = "error"
+    sc = p.add_argument_group("scope")
+    sc.add_argument("--waive", action=agent_json.CommaListAction, default=[],
+                    metavar="MODULE",
+                    help="Suppress findings in these modules (file basename "
+                         "glob; e.g. 'dbg_*,third_party_*').")
 
-  [[waive]]                # location-specific waivers
-  rule   = "unused-port"
-  path   = "rtl/perips/*.v"
-  reason = "third-party IP"
+    sv = p.add_argument_group("severity & exit code")
+    sv.add_argument("--strict", action="store_true",
+                    help="Warnings count as errors AND any finding fails exit.")
+    sv.add_argument("--min-severity", choices=("error", "warning", "note"),
+                    default=None,
+                    help="Hide findings below this severity (display floor).")
 
-Inline waivers (standard SystemVerilog, no config needed):
-  `pragma diagnostic ignore="-Wwidth-trunc"
-""")
-    p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
-                   help='Directory to scan recursively (repeatable)')
+    out = p.add_argument_group("waived output")
+    out.add_argument("--waived", action="store_true",
+                     help="Also list findings suppressed by skip/waive/rules.")
 
-    fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
-                    help='VCS-style .f filelist (repeatable)')
-    fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                    default='.', metavar='DIR',
-                    help='Base path for filelist relative paths (default: .)')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
-                    help='Prefix substituted for filelist path variables '
-                         '(default: ${PROJPATH})')
-    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
-                    help='Exclude paths matching glob (repeatable)')
 
-    ck = p.add_argument_group('checks')
-    ck.add_argument('--no-unused', action='store_true',
-                    help='Disable unused/undriven signal & port analysis')
-    ck.add_argument('--shadow', action='store_true',
-                    help='Enable variable-shadowing analysis')
-    ck.add_argument('--cdc', action='store_true',
-                    help='Enable clock-domain-crossing detection '
-                         '(flop-to-flop, opt-in; emits rule "cdc-crossing")')
-    ck.add_argument('--cdc-reset', action='append', default=[], metavar='GLOB',
-                    help='Extra signal-name glob to treat as a reset for CDC '
-                         '(repeatable; defaults match rst*/reset*/*_n)')
-    ck.add_argument('--weverything', action='store_true',
-                    help='Enable every available pyslang warning')
+def run(args, env):
+    cfg, cfg_path = load_config()
+    ri = resolve_inputs(
+        cli_files=args.files, cli_dir=args.dir,
+        cli_filelist=args.filelist, cli_exclude=args.exclude,
+        config=cfg, config_path=cfg_path,
+    )
+    for note in ri.notes:
+        print(f"note: {note}", file=sys.stderr)
 
-    rg = p.add_argument_group('rules & severity')
-    rg.add_argument('--disable', action='append', default=[], metavar='RULE',
-                    help='Suppress a rule by name/glob (repeatable)')
-    rg.add_argument('--rule', action='append', default=[], metavar='GLOB',
-                    help='Only show rules matching glob (repeatable)')
-    rg.add_argument('--error', action='append', default=[], metavar='RULE',
-                    help='Promote a rule to error (repeatable)')
-    rg.add_argument('--werror', action='store_true',
-                    help='Treat all warnings as errors')
-    rg.add_argument('--min-severity', choices=('error', 'warning', 'note'),
-                    default=None, help='Hide findings below this severity')
+    lint_cfg = lint_config(cfg)
 
-    cf = p.add_argument_group('config')
-    cf.add_argument('--config', default=None, metavar='PATH',
-                    help='Lint config file (.toml/.json); default: auto-discover '
-                         '.rtllint.toml/.rtllint.json')
-    cf.add_argument('--no-config', action='store_true',
-                    help='Ignore any auto-discovered config file')
+    # CLI > config (field-level)
+    rules_specs = list(args.rules) or list(lint_cfg.get("rules") or [])
+    skip_globs  = list(args.skip)  or list(lint_cfg.get("skip")  or [])
+    waive_globs = list(args.waive) or list(lint_cfg.get("waive") or [])
+    cdc_reset_globs = list((lint_cfg.get("cdc") or {}).get("reset") or [])
+    severity_map = lint_cfg.get("severity") or {}
 
-    out = p.add_argument_group('output')
-    out.add_argument('--summary', action='store_true',
-                     help='Show only the summary, not individual findings')
-    out.add_argument('--no-summary', action='store_true',
-                     help='Suppress the trailing summary')
-    out.add_argument('--show-waived', action='store_true',
-                     help='List findings suppressed by waivers/disabled rules')
-    out.add_argument('--json', action='store_true',
-                     help='Emit findings as an agent-friendly JSON envelope (see --schema)')
-    out.add_argument('--schema', action='store_true',
-                     help='Print the JSON Schema for --json output and exit')
-    out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
+    run_families, _, _, _ = resolve_rules(rules_specs)
 
-    a = p.parse_args()
-
-    if a.schema:
-        sys.exit(agent_json.print_schema('rtl-lint'))
-
-    if a.no_color or not sys.stdout.isatty() or a.json:
-        Color.disable()
-
-    env = Envelope('rtl-lint', filter_command(a)) if a.json else None
-
-    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=2):
-        if a.json:
-            sys.exit(emit(env.fail(code, msg)))
-        print(f"Error: {msg}", file=sys.stderr)
-        sys.exit(exit_code)
-
-    # ── Load config (CLI overrides config) ──
-    cfg = {}
-    cfg_path = None
-    if not a.no_config:
-        cfg_path = Path(a.config) if a.config else discover_config('.')
-        if a.config and not Path(a.config).is_file():
-            die(f"config not found: {a.config}", agent_json.ERR_BAD_CONFIG)
-        if cfg_path:
-            try:
-                cfg = load_config(cfg_path)
-            except SystemExit:
-                raise
-            except Exception as e:
-                die(f"failed to parse config {cfg_path}: {e}",
-                    agent_json.ERR_BAD_CONFIG)
-    lint_cfg = cfg.get('lint', cfg) if isinstance(cfg, dict) else {}
-
-    def cfg_bool(key, cli_flag):
-        return bool(cli_flag or lint_cfg.get(key, False))
-
-    check_unused = not (a.no_unused or lint_cfg.get('unused') is False)
-    check_shadow = cfg_bool('shadow', a.shadow)
-    check_cdc = cfg_bool('cdc', a.cdc)
-    weverything = cfg_bool('weverything', a.weverything)
-    werror = cfg_bool('werror', a.werror)
-    min_severity = a.min_severity or lint_cfg.get('min_severity')
-    cdc_reset_globs = list(a.cdc_reset) + list(lint_cfg.get('cdc_reset', []) or [])
-
-    # ── Resolve sources ──
-    all_paths = list(a.files) + list(a.dir)
-    if not all_paths and not a.filelist:
-        if a.json:
-            die('no input: pass files, --dir, or --filelist',
-                agent_json.ERR_INPUT_NOT_FOUND)
-        p.print_help()
-        sys.exit(2)
-
-    fl_root = Path(a.filelist_root).expanduser().resolve()
-    parsed = []
-    for f in a.filelist:
-        try:
-            parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
-        except FileNotFoundError as e:
-            die(str(e), agent_json.ERR_BAD_FILELIST)
-    scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
-    filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
-
-    if not filelist.sources:
-        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
-
-    # ── Build & lint ──
     try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+        filelist = build_filelist(ri)
+    except FileNotFoundError as e:
+        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
+    except ValueError as e:
+        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
+    if not filelist.sources:
+        return _die(env, 'no .v/.sv source files found',
+                    agent_json.ERR_INPUT_NOT_FOUND)
+
+    try:
+        comp, _ = build_compilation(
+            filelist.sources, filelist.include_dirs, filelist.defines)
     except Exception as e:
-        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
-    runner = LintRunner(comp, check_unused=check_unused,
-                        check_shadow=check_shadow, weverything=weverything,
-                        check_cdc=check_cdc, cdc_reset_globs=cdc_reset_globs)
+        return _die(env, f'compilation failed: {e}',
+                    agent_json.ERR_COMPILE_FAILED)
+
+    runner = LintRunner(
+        comp,
+        check_unused=("unused" in run_families),
+        check_shadow=("shadow" in run_families),
+        weverything=("everything" in run_families),
+        check_cdc=("cdc" in run_families),
+        cdc_reset_globs=cdc_reset_globs,
+    )
     findings = runner.run()
 
-    # Merge config [rules]/[[waive]] with CLI flags (CLI wins).
-    rules = build_rule_list(cfg.get('rules'), a.disable, a.error)
-    waivers = cfg.get('waive') or cfg.get('waivers') or []
-    findings, waived = apply_rules(findings, rules=rules, waivers=waivers,
-                                   only=a.rule, werror=werror,
-                                   min_severity=min_severity)
+    findings, waived = apply(
+        findings,
+        rules_specs=rules_specs,
+        skip_globs=skip_globs,
+        waive_globs=waive_globs,
+        strict=args.strict,
+        min_severity=args.min_severity,
+        lint_severity_map=severity_map,
+    )
 
-    # ── Output ──
     has_error = any(f.severity == "error" for f in findings)
-    if a.json:
+    strict_fail = args.strict and bool(findings)
+
+    if env is not None:
         by_sev, by_rule, by_check = _counts(findings)
         data = {
             'findings':    [f.to_dict() for f in findings],
@@ -829,18 +747,18 @@ Inline waivers (standard SystemVerilog, no config needed):
             'has_error':    has_error,
         }
         rc = emit(env.ok(data, summary))
-        sys.exit(1 if has_error else rc)
-    else:
-        if not a.summary:
-            print_findings(findings)   # prints the all-clear line when empty
-        if a.show_waived:
-            print_waived(waived)
-        if findings and (a.summary or not a.no_summary):
-            print_summary(findings, waived=len(waived))
+        return 1 if (has_error or strict_fail) else rc
 
-    # ── Exit code ──
-    sys.exit(1 if has_error else 0)
+    print_findings(findings)
+    if args.waived:
+        print_waived(waived)
+    if findings:
+        print_summary(findings, waived=len(waived))
+    return 1 if (has_error or strict_fail) else 0
 
 
-if __name__ == '__main__':
-    main()
+def _die(env, msg, code):
+    if env is not None:
+        return emit(env.fail(code, msg))
+    print(f"Error: {msg}", file=sys.stderr)
+    return 2

@@ -1,22 +1,19 @@
 {
-  "tool": "signal-trace",
+  "tool": "trace",
   "version": "0.1.0",
   "status": "ok",
   "command": {
+    "cmd": "trace",
     "files": [],
     "dir": [
       "examples/basic"
     ],
     "filelist": [],
-    "filelist_root": ".",
-    "filelist_prefix": "${PROJPATH}",
     "exclude": [],
     "signal": "q",
     "scope": "top.u_dp0",
     "cross": false,
-    "filter": null,
-    "list": false,
-    "all": false
+    "filter": null
   },
   "data": {
     "mode": "signal",

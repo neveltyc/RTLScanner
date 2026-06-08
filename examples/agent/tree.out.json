@@ -1,18 +1,14 @@
 {
-  "tool": "rtl-tree",
+  "tool": "tree",
   "version": "0.1.0",
   "status": "ok",
   "command": {
+    "cmd": "tree",
     "files": [],
     "dir": [
       "examples/basic"
     ],
     "filelist": [],
-    "write_filelist": null,
-    "filelist_only": false,
-    "filelist_root": ".",
-    "filelist_path": "rel",
-    "filelist_prefix": "${PROJPATH}",
     "exclude": [],
     "top": null,
     "depth": -1,
@@ -20,12 +16,8 @@
     "path": false,
     "stats": false,
     "flat": false,
-    "trace": null,
-    "scope": null,
-    "trace_list": false,
-    "trace_all": false,
-    "cross": false,
-    "filter": null
+    "export": null,
+    "path_style": "rel"
   },
   "data": {
     "hierarchy": [
