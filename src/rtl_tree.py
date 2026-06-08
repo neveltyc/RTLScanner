@@ -210,10 +210,18 @@ def _walk(nodes):
 
 # ── Agent-mode helpers ───────────────────────────────────────────────
 def _filelist_to_dict(fl: FileList) -> dict:
+    defines = {}
+    for define in getattr(fl, 'defines', []) or []:
+        if '=' in define:
+            name, value = define.split('=', 1)
+        else:
+            name, value = define, ""
+        if name:
+            defines[name] = value
     return {
         'sources':      list(fl.sources),
         'include_dirs': list(fl.include_dirs),
-        'defines':      dict(getattr(fl, 'defines', {}) or {}),
+        'defines':      defines,
     }
 
 

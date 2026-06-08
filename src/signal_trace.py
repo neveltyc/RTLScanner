@@ -43,6 +43,7 @@ from rtl_common import (
     parse_filelist,
     merge_filelists,
     filter_filelist,
+    safe_str,
 )
 
 import agent_json
@@ -263,7 +264,7 @@ class SignalTracer:
         """Does *expr* reference *target*?"""
         hit = []
         def _w(e):
-            if hasattr(e, 'symbol') and e.symbol.name == target.name and e.symbol.kind == target.kind:
+            if hasattr(e, 'symbol') and self._same_symbol(e.symbol, target):
                 hit.append(True)
         try:
             expr.visit(f=_w)
@@ -276,6 +277,53 @@ class SignalTracer:
         table = dict(kinds)
         table.setdefault(ast.SymbolKind.Instance, lambda _: ast.VisitAction.Skip)
         body.visit(lookup_table=table)
+
+    def _symbol_key(self, sym):
+        try:
+            hp = safe_str(sym.hierarchicalPath, "")
+            if hp:
+                return hp
+        except Exception:
+            pass
+        kind = safe_str(getattr(sym, 'kind', ''), '')
+        name = safe_str(getattr(sym, 'name', ''), '')
+        return f"{kind}:{name}"
+
+    def _same_symbol(self, a, b):
+        return self._symbol_key(a) == self._symbol_key(b)
+
+    def _proc_label(self, proc):
+        try:
+            pk = safe_str(proc.analyzedSymbol.procedureKind, "")
+        except Exception:
+            return "procedural block"
+        labels = {
+            "AlwaysFF": "always_ff",
+            "AlwaysComb": "always_comb",
+            "AlwaysLatch": "always_latch",
+            "Always": "always",
+            "Initial": "initial",
+            "Final": "final",
+        }
+        for key, label in labels.items():
+            if key in pk:
+                return label
+        return "procedural block"
+
+    def _proc_reads_symbol(self, proc, symbol):
+        try:
+            if any(self._same_symbol(rr.symbol, symbol)
+                   for rr in (proc.readSet or [])):
+                return True
+        except Exception:
+            pass
+
+        # Clocks are used in timing controls rather than expression read sets.
+        for tc in getattr(proc, 'timingControls', []) or []:
+            timing = getattr(tc, 'timing', None)
+            if timing is not None and self._refs(timing, symbol):
+                return True
+        return False
 
     # ── driver analysis ──────────────────────────────────────────────
 
@@ -384,33 +432,27 @@ class SignalTracer:
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
                     file=f, line=ln))
 
-        # 3. Procedural blocks
-        procs = []
-        def _cp(s):
-            procs.append(s); return ast.VisitAction.Skip
-        self._scope_visit(body, {ast.SymbolKind.ProceduralBlock: _cp})
+        # 3. Procedural blocks (readSet excludes assignment LHS symbols)
+        try:
+            analyzed_scope = self._mgr.getAnalyzedScope(body)
+            procedures = analyzed_scope.procedures if analyzed_scope is not None else []
+        except Exception:
+            procedures = []
 
-        for proc in procs:
-            hit = []
-            def _fr(e):
-                if hasattr(e, 'symbol') and e.symbol.name == symbol.name:
-                    hit.append(True)
+        for proc in procedures:
             try:
-                proc.visit(f=_fr)
-            except Exception:
-                pass
-            if hit:
-                blk = "procedural block"
-                stx = str(proc.syntax) if hasattr(proc, 'syntax') and proc.syntax else ""
-                for kw in ("always_ff","always_comb","always_latch","always","initial","final"):
-                    if kw in stx:
-                        blk = kw; break
-                f, ln = self._loc_sym(proc)
-                desc = f"{C.yellow(blk)}"
+                if proc.analyzedSymbol.kind != ast.SymbolKind.ProceduralBlock:
+                    continue
+                if not self._proc_reads_symbol(proc, symbol):
+                    continue
+                f, ln = self._loc_sym(proc.analyzedSymbol)
+                desc = f"{C.yellow(self._proc_label(proc))}"
                 loads.append(LoadInfo(
                     kind="procedural", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
                     file=f, line=ln))
+            except Exception:
+                continue
         return loads
 
     # ── cross-hierarchy ──────────────────────────────────────────────
