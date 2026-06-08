@@ -208,53 +208,79 @@ def _walk(nodes):
 # ── CLI ──────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description='rtl_tree — SV RTL Hierarchy Viewer (pyslang)',
+        prog='rtl-tree',
+        description='rtl-tree — SV RTL Hierarchy Viewer (pyslang)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Hierarchy:
-  rtl_tree top.sv sub.sv               Show hierarchy tree
-  rtl_tree -d ./rtl --top cpu          Specify top module
-  rtl_tree -d ./rtl --depth 2          Limit depth
-  rtl_tree -d ./rtl --stats            Module usage stats
-  rtl_tree --filelist rtl.f --top cpu  Use VCS-style filelist
+  rtl-tree top.sv sub.sv               Show hierarchy tree
+  rtl-tree -d ./rtl --top cpu          Specify top module
+  rtl-tree -d ./rtl --depth 2          Limit depth
+  rtl-tree -d ./rtl --stats            Module usage stats
+  rtl-tree --filelist rtl.f --top cpu  Use VCS-style filelist
 
 Signal tracing:
-  rtl_tree -d ./rtl --trace clk --scope top
-  rtl_tree --filelist rtl.f --trace q --scope top.u_dp --cross
-  rtl_tree --filelist rtl.f --trace-list --scope top.u_dp
-  rtl_tree --filelist rtl.f --trace data --scope top --filter 'u_fifo*'
+  rtl-tree -d ./rtl --trace clk --scope top
+  rtl-tree --filelist rtl.f --trace q --scope top.u_dp --cross
+  rtl-tree --filelist rtl.f --trace-list --scope top.u_dp
+  rtl-tree --filelist rtl.f --trace data --scope top --filter 'u_fifo*'
 """)
     p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[])
+    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
+                   help='Directory to scan recursively (repeatable)')
 
     fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', action='append', default=[])
-    fl.add_argument('--write-filelist', default=None)
-    fl.add_argument('--filelist-only', action='store_true')
-    fl.add_argument('--filelist-root', '--projpath', dest='filelist_root', default='.')
-    fl.add_argument('--filelist-path', choices=('rel','abs','prefix'), default='rel')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}')
-    fl.add_argument('--exclude', action='append', default=[])
+    fl.add_argument('--filelist', action='append', default=[], metavar='FILE',
+                    help='VCS-style .f filelist (repeatable)')
+    fl.add_argument('--write-filelist', default=None, metavar='FILE',
+                    help="Write the resolved filelist to FILE ('-' for stdout)")
+    fl.add_argument('--filelist-only', action='store_true',
+                    help='Only write the filelist, then exit (no tree)')
+    fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
+                    default='.', metavar='DIR',
+                    help='Base path for filelist relative paths (default: .)')
+    fl.add_argument('--filelist-path', choices=('rel', 'abs', 'prefix'),
+                    default='rel',
+                    help='Path style in --write-filelist output (default: rel)')
+    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
+                    help="Prefix for 'prefix' path style (default: ${PROJPATH})")
+    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
+                    help='Exclude paths matching glob (repeatable)')
 
     h = p.add_argument_group('hierarchy display')
-    h.add_argument('--top', default=None)
-    h.add_argument('--depth', type=int, default=-1)
-    h.add_argument('--no-params', action='store_true')
-    h.add_argument('--path', action='store_true')
-    h.add_argument('--json', action='store_true')
-    h.add_argument('--stats', action='store_true')
-    h.add_argument('--flat', action='store_true')
+    h.add_argument('--top', default=None, metavar='MODULE',
+                   help='Treat MODULE as the top (default: auto-detect)')
+    h.add_argument('--depth', type=int, default=-1, metavar='N',
+                   help='Limit tree depth to N levels (default: unlimited)')
+    h.add_argument('--no-params', action='store_true',
+                   help='Hide module parameter values')
+    h.add_argument('--path', action='store_true',
+                   help='Show full hierarchical path next to each node')
+    h.add_argument('--json', action='store_true',
+                   help='Emit the hierarchy as JSON')
+    h.add_argument('--stats', action='store_true',
+                   help='Print module usage statistics')
+    h.add_argument('--flat', action='store_true',
+                   help='List every instance path flat, one per line')
 
     t = p.add_argument_group('signal tracing')
-    t.add_argument('--trace', metavar='SIGNAL', default=None)
-    t.add_argument('--scope', default=None)
-    t.add_argument('--trace-list', action='store_true')
-    t.add_argument('--trace-all', action='store_true')
-    t.add_argument('--cross', action='store_true')
-    t.add_argument('--filter', default=None, metavar='GLOB')
+    t.add_argument('--trace', metavar='SIGNAL', default=None,
+                   help='Trace driver/loads of SIGNAL (needs --scope)')
+    t.add_argument('--scope', default=None, metavar='SCOPE',
+                   help='Hierarchical scope for tracing (e.g. top.u_dp)')
+    t.add_argument('--trace-list', action='store_true',
+                   help='List all signals in --scope')
+    t.add_argument('--trace-all', action='store_true',
+                   help='Trace every signal in --scope')
+    t.add_argument('--cross', action='store_true',
+                   help='Follow the signal through port boundaries')
+    t.add_argument('--filter', default=None, metavar='GLOB',
+                   help='Filter traced loads by instance-name glob')
 
-    p.add_argument('--no-color', action='store_true')
-    p.add_argument('--diag', action='store_true')
+    p.add_argument('--no-color', action='store_true',
+                   help='Disable ANSI colors')
+    p.add_argument('--diag', action='store_true',
+                   help='Print parser/elaboration diagnostics to stderr')
     a = p.parse_args()
 
     if a.no_color or not sys.stdout.isatty() or a.json:

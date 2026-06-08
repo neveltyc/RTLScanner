@@ -633,18 +633,20 @@ def print_findings(findings):
 # ── CLI ──────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description='rtl_lint — SV Static Linter (pyslang)',
+        prog='rtl-lint',
+        description='rtl-lint — SV Static Linter (pyslang)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  rtl_lint --filelist rtl.f                 Lint a design via filelist
-  rtl_lint -d ./rtl                         Scan a directory
-  rtl_lint -d ./rtl --werror                Fail (exit 1) on any warning
-  rtl_lint -d ./rtl --disable case-default  Suppress a rule
-  rtl_lint -d ./rtl --error width-trunc     Promote a rule to error
-  rtl_lint -d ./rtl --rule 'unused-*'       Only show matching rules
-  rtl_lint -d ./rtl --summary               Show only the summary
-  rtl_lint -d ./rtl --json                  Machine-readable output
+  rtl-lint --filelist rtl.f                 Lint a design via filelist
+  rtl-lint -d ./rtl                         Scan a directory
+  rtl-lint -d ./rtl --werror                Fail (exit 1) on any warning
+  rtl-lint -d ./rtl --disable case-default  Suppress a rule
+  rtl-lint -d ./rtl --error width-trunc     Promote a rule to error
+  rtl-lint -d ./rtl --rule 'unused-*'       Only show matching rules
+  rtl-lint -d ./rtl --cdc                   Clock-domain-crossing check
+  rtl-lint -d ./rtl --summary               Show only the summary
+  rtl-lint -d ./rtl --json                  Machine-readable output
 
 Config file (.rtllint.toml or .rtllint.json, auto-discovered):
   [rules]                  # severity per rule (glob ok): off | warning | error
@@ -660,16 +662,20 @@ Inline waivers (standard SystemVerilog, no config needed):
   `pragma diagnostic ignore="-Wwidth-trunc"
 """)
     p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[],
-                   help='Directory to scan (recursive)')
+    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
+                   help='Directory to scan recursively (repeatable)')
 
     fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', '-f', action='append', default=[],
+    fl.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
                     help='VCS-style .f filelist (repeatable)')
     fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                    default='.', help='Base path for filelist relative paths')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}')
-    fl.add_argument('--exclude', action='append', default=[])
+                    default='.', metavar='DIR',
+                    help='Base path for filelist relative paths (default: .)')
+    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
+                    help='Prefix substituted for filelist path variables '
+                         '(default: ${PROJPATH})')
+    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
+                    help='Exclude paths matching glob (repeatable)')
 
     ck = p.add_argument_group('checks')
     ck.add_argument('--no-unused', action='store_true',
@@ -712,7 +718,7 @@ Inline waivers (standard SystemVerilog, no config needed):
     out.add_argument('--show-waived', action='store_true',
                      help='List findings suppressed by waivers/disabled rules')
     out.add_argument('--json', action='store_true', help='JSON output')
-    out.add_argument('--no-color', action='store_true')
+    out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
 
     a = p.parse_args()
 
