@@ -1,0 +1,93 @@
+{
+  "tool": "signal-trace",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "filelist_root": ".",
+    "filelist_prefix": "${PROJPATH}",
+    "exclude": [],
+    "signal": "q",
+    "scope": "top.u_dp0",
+    "cross": false,
+    "filter": null,
+    "list": false,
+    "all": false,
+    "fanin": false,
+    "fanout": true,
+    "flow_depth": 4
+  },
+  "data": {
+    "mode": "fanout",
+    "scope": "top.u_dp0",
+    "signal": "q",
+    "start": "top.u_dp0.q",
+    "nodes": [
+      "top.u_dp0.q",
+      "top.u_dp0.u_alu.a",
+      "top.u_dp0.u_alu.u_add.a",
+      "top.u_dp0.u_alu.u_add.y",
+      "top.u_dp0.u_alu.y"
+    ],
+    "edges": [
+      {
+        "source": "top.u_dp0.q",
+        "target": "top.u_dp0.u_alu.a",
+        "kind": "port_connection",
+        "description": "u_alu.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45,
+        "depth": 1
+      },
+      {
+        "source": "top.u_dp0.u_alu.a",
+        "target": "top.u_dp0.u_alu.u_add.a",
+        "kind": "port_connection",
+        "description": "u_add.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24,
+        "depth": 2
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.a",
+        "target": "top.u_dp0.u_alu.u_add.y",
+        "kind": "continuous_assign",
+        "description": "assign",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 16,
+        "depth": 3
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.y",
+        "target": "top.u_dp0.u_alu.y",
+        "kind": "port_connection",
+        "description": "u_add.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24,
+        "depth": 4
+      }
+    ],
+    "max_depth": 4
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "fanout",
+    "results": 1,
+    "nodes": 5,
+    "edges": 4,
+    "max_depth": 4
+  }
+}
