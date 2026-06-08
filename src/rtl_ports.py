@@ -579,33 +579,38 @@ def render_issues_markdown(issues):
 # ── CLI ──────────────────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description='rtl_ports — SV Module Interface & Connectivity Report',
+        prog='rtl-ports',
+        description='rtl-ports — SV Module Interface & Connectivity Report',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Modes:
-  rtl_ports -d ./rtl                  Module interface signatures (default)
-  rtl_ports -d ./rtl --instances      Connectivity per instance
-  rtl_ports -d ./rtl --check          Only connectivity issues
+  rtl-ports -d ./rtl                  Module interface signatures (default)
+  rtl-ports -d ./rtl --instances      Connectivity per instance
+  rtl-ports -d ./rtl --check          Only connectivity issues
 
 Filtering:
-  rtl_ports -d ./rtl --module cpu_*               # filter by module glob
-  rtl_ports -d ./rtl --instances --instance 'top.u_cpu*'
+  rtl-ports -d ./rtl --module cpu_*               # filter by module glob
+  rtl-ports -d ./rtl --instances --instance 'top.u_cpu*'
 
 Output:
-  rtl_ports -d ./rtl --markdown > docs/IFACE.md   # auto-generate docs
-  rtl_ports -d ./rtl --json
+  rtl-ports -d ./rtl --markdown > docs/IFACE.md   # auto-generate docs
+  rtl-ports -d ./rtl --json
 """)
     p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[],
-                   help='Directory to scan (recursive)')
+    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
+                   help='Directory to scan recursively (repeatable)')
 
     fl = p.add_argument_group('filelist')
-    fl.add_argument('--filelist', '-f', action='append', default=[],
+    fl.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
                     help='VCS-style .f filelist (repeatable)')
     fl.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                    default='.', help='Base path for filelist relative paths')
-    fl.add_argument('--filelist-prefix', default='${PROJPATH}')
-    fl.add_argument('--exclude', action='append', default=[])
+                    default='.', metavar='DIR',
+                    help='Base path for filelist relative paths (default: .)')
+    fl.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
+                    help='Prefix substituted for filelist path variables '
+                         '(default: ${PROJPATH})')
+    fl.add_argument('--exclude', action='append', default=[], metavar='GLOB',
+                    help='Exclude paths matching glob (repeatable)')
 
     md = p.add_argument_group('mode')
     g = md.add_mutually_exclusive_group()
@@ -626,7 +631,7 @@ Output:
     out.add_argument('--markdown', action='store_true',
                      help='Render as Markdown tables')
     out.add_argument('--json', action='store_true', help='JSON output')
-    out.add_argument('--no-color', action='store_true')
+    out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
     out.add_argument('--werror', action='store_true',
                      help='Exit 1 when --check reports any warning')
 

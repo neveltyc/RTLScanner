@@ -527,40 +527,47 @@ class SignalTracer:
 # ── Standalone CLI ───────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
-        description='signal_trace \u2014 SV Signal Driver & Load Analyzer',
+        prog='signal-trace',
+        description='signal-trace \u2014 SV Signal Driver & Load Analyzer',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 With filelist (typical debug workflow):
-  signal_trace --filelist rtl.f --signal q --scope top.u_dp
-  signal_trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
-  signal_trace --filelist rtl.f --scope top.u_dp --list
-  signal_trace --filelist rtl.f --scope top.u_dp --all
+  signal-trace --filelist rtl.f --signal q --scope top.u_dp
+  signal-trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
+  signal-trace --filelist rtl.f --scope top.u_dp --list
+  signal-trace --filelist rtl.f --scope top.u_dp --all
 
 With directory scan:
-  signal_trace -d ./rtl --signal q --scope top.u_dp
-  signal_trace -d ./rtl --signal a --scope top --cross
+  signal-trace -d ./rtl --signal q --scope top.u_dp
+  signal-trace -d ./rtl --signal a --scope top --cross
 """)
     # Source inputs — filelist is first-class
     p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[],
-                   help='Directory to scan (recursive)')
-    p.add_argument('--filelist', '-f', action='append', default=[],
-                   help='VCS-style .f filelist (can be repeated)')
+    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
+                   help='Directory to scan recursively (repeatable)')
+    p.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
+                   help='VCS-style .f filelist (repeatable)')
     p.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                   default='.', help='Base path for filelist relative paths')
-    p.add_argument('--filelist-prefix', default='${PROJPATH}')
-    p.add_argument('--exclude', action='append', default=[])
+                   default='.', metavar='DIR',
+                   help='Base path for filelist relative paths (default: .)')
+    p.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
+                   help='Prefix substituted for filelist path variables '
+                        '(default: ${PROJPATH})')
+    p.add_argument('--exclude', action='append', default=[], metavar='GLOB',
+                   help='Exclude paths matching glob (repeatable)')
 
     # Signal tracing
-    p.add_argument('--signal', '-s', default=None, help='Signal name to trace')
-    p.add_argument('--scope', default=None, help='Hierarchical scope (e.g. top.u_dp)')
+    p.add_argument('--signal', '-s', default=None, metavar='NAME',
+                   help='Signal name to trace')
+    p.add_argument('--scope', default=None, metavar='SCOPE',
+                   help='Hierarchical scope (e.g. top.u_dp)')
     p.add_argument('--cross', action='store_true', help='Trace through port boundaries')
     p.add_argument('--filter', default=None, metavar='GLOB',
                    help='Filter loads by instance name glob (e.g. u_fifo*)')
     p.add_argument('--list', action='store_true', help='List all signals in scope')
     p.add_argument('--all', action='store_true', help='Trace every signal in scope')
     p.add_argument('--json', action='store_true', help='JSON output')
-    p.add_argument('--no-color', action='store_true')
+    p.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
 
     a = p.parse_args()
 
