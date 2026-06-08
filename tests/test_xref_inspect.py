@@ -57,6 +57,39 @@ class XrefAnalyzerTests(unittest.TestCase):
         self.assertIn("output", dirs)
         self.assertEqual(data["summary"]["writes"], 1)
 
+    def test_xref_reports_module_definitions_and_instances(self):
+        from rtl_xref import XrefAnalyzer
+
+        xa = XrefAnalyzer(compile_paths("examples/trace"), root=ROOT)
+        result = xa.xref_module("mux2")
+        data = result.to_dict()
+
+        self.assertEqual(data["target"]["kind"], "module")
+        self.assertEqual(data["definitions"][0]["location"]["file"], "./examples/trace/trace_top.sv")
+        self.assertEqual(data["definitions"][0]["line"], 1)
+        self.assertEqual(data["references"][0]["instance_path"], "trace_top.u_dp.u_mux")
+        self.assertEqual(data["references"][0]["location"]["file"], "./examples/trace/trace_top.sv")
+        self.assertEqual(data["summary"]["instances"], 1)
+
+    def test_xref_module_can_filter_instances_by_scope(self):
+        from rtl_xref import XrefAnalyzer
+
+        xa = XrefAnalyzer(compile_paths("examples/trace"), root=ROOT)
+
+        in_scope = xa.xref_module("mux2", scope_path="trace_top.u_dp")
+        out_scope = xa.xref_module("mux2", scope_path="trace_top.u_dp.u_pipe")
+
+        self.assertEqual(len(in_scope.references), 1)
+        self.assertEqual(len(out_scope.references), 0)
+
+    def test_xref_path_style_name(self):
+        from rtl_xref import XrefAnalyzer
+
+        xa = XrefAnalyzer(compile_paths("examples/trace"), root=ROOT, path_style="name")
+        result = xa.xref_module("mux2")
+
+        self.assertEqual(result.definitions[0].file, "trace_top.sv")
+
 
 class ScopeInspectorTests(unittest.TestCase):
     def test_inspect_reports_elaborated_parameter(self):

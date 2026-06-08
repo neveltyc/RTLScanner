@@ -10,7 +10,7 @@ can drive every one of them without per-subcommand parsing.
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.2",
+  "version":     "0.1.3",
   "status":      "ok",
   "command":     { /* echo of parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ },

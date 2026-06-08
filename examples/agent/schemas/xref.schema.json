@@ -37,16 +37,15 @@
         {
           "type": "object",
           "required": [
-            "mode",
-            "scope",
-            "name",
-            "recursive",
-            "matches"
+            "mode"
           ],
           "properties": {
             "mode": {
               "type": "string",
               "const": "xref"
+            },
+            "target": {
+              "type": "object"
             },
             "scope": {
               "type": "string"
@@ -101,6 +100,29 @@
                       },
                       "line": {
                         "type": "integer"
+                      },
+                      "column": {
+                        "type": "integer"
+                      },
+                      "location": {
+                        "type": "object",
+                        "required": [
+                          "file",
+                          "line",
+                          "column"
+                        ],
+                        "properties": {
+                          "file": {
+                            "type": "string"
+                          },
+                          "line": {
+                            "type": "integer"
+                          },
+                          "column": {
+                            "type": "integer"
+                          }
+                        },
+                        "additionalProperties": false
                       }
                     },
                     "additionalProperties": true
@@ -140,6 +162,29 @@
                         },
                         "line": {
                           "type": "integer"
+                        },
+                        "column": {
+                          "type": "integer"
+                        },
+                        "location": {
+                          "type": "object",
+                          "required": [
+                            "file",
+                            "line",
+                            "column"
+                          ],
+                          "properties": {
+                            "file": {
+                              "type": "string"
+                            },
+                            "line": {
+                              "type": "integer"
+                            },
+                            "column": {
+                              "type": "integer"
+                            }
+                          },
+                          "additionalProperties": false
                         }
                       },
                       "additionalProperties": true
@@ -187,6 +232,29 @@
                         },
                         "line": {
                           "type": "integer"
+                        },
+                        "column": {
+                          "type": "integer"
+                        },
+                        "location": {
+                          "type": "object",
+                          "required": [
+                            "file",
+                            "line",
+                            "column"
+                          ],
+                          "properties": {
+                            "file": {
+                              "type": "string"
+                            },
+                            "line": {
+                              "type": "integer"
+                            },
+                            "column": {
+                              "type": "integer"
+                            }
+                          },
+                          "additionalProperties": false
                         }
                       },
                       "additionalProperties": true
@@ -198,8 +266,86 @@
                 },
                 "additionalProperties": true
               }
+            },
+            "definitions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "module"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "column": {
+                    "type": "integer"
+                  },
+                  "location": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "references": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "module",
+                  "instance_path"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "instance",
+                      "top_instance"
+                    ]
+                  },
+                  "module": {
+                    "type": "string"
+                  },
+                  "instance_path": {
+                    "type": "string"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "column": {
+                    "type": "integer"
+                  },
+                  "location": {
+                    "type": "object"
+                  },
+                  "details": {
+                    "type": "object"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "summary": {
+              "type": "object"
             }
-          }
+          },
+          "additionalProperties": true
         },
         {
           "type": "null"
@@ -280,16 +426,19 @@
           "type": "object",
           "required": [
             "mode",
-            "symbols",
             "definitions",
-            "references",
-            "reads",
-            "writes",
-            "port_connections"
+            "references"
           ],
           "properties": {
             "mode": {
               "type": "string"
+            },
+            "target_kind": {
+              "type": "string",
+              "enum": [
+                "signal",
+                "module"
+              ]
             },
             "symbols": {
               "type": "integer"
@@ -307,6 +456,9 @@
               "type": "integer"
             },
             "port_connections": {
+              "type": "integer"
+            },
+            "instances": {
               "type": "integer"
             }
           }
