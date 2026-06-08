@@ -180,6 +180,63 @@ rtl-lint -d ./rtl --json > lint.json
 By default `rtl-lint` runs pyslang's standard semantic checks plus
 unused/undriven analysis.  Pass `--no-unused` to skip the latter.
 
+### Configuring & waiving checks
+
+There are three complementary ways to control what `rtl-lint` reports,
+from coarsest to finest:
+
+**1. Config file** — `.rtllint.toml` (or `.rtllint.json`), auto-discovered
+by walking up from the current directory, or passed via `--config`.
+CLI flags always override the config.
+
+```toml
+# .rtllint.toml
+[lint]
+unused = true        # run unused/undriven analysis (default true)
+shadow = false       # variable-shadowing analysis
+werror = false       # treat all warnings as errors (CI gate)
+
+# Per-rule severity — "off"/"ignore", "warning", or "error". Globs ok.
+[rules]
+"case-default" = "off"      # project doesn't require case defaults
+"width-trunc"  = "error"    # truncation is a real bug here
+"unused-*"     = "warning"
+
+# Location-specific waivers — match by rule (glob), path (glob), and/or line.
+[[waive]]
+rule   = "unused-port"
+path   = "rtl/perips/*.v"
+reason = "third-party IP, frozen"
+
+[[waive]]
+rule = "case-default"
+path = "rtl/core/div.v"
+line = 87
+```
+
+**2. CLI flags** — for one-off runs and CI:
+
+```bash
+rtl-lint -d ./rtl --disable case-default --error width-trunc --werror
+rtl-lint -d ./rtl --config ci/strict.toml
+rtl-lint -d ./rtl --show-waived        # show what got suppressed, and why
+```
+
+**3. Inline `pragma` waivers** — standard SystemVerilog, no config needed.
+`rtl-lint` honors pyslang's `pragma diagnostic` directives, so you can
+waive a finding right where it lives:
+
+```systemverilog
+`pragma diagnostic push
+`pragma diagnostic ignore="-Wwidth-trunc"
+  assign q = wide_bus;          // intentional truncation
+`pragma diagnostic pop
+```
+
+Suppressed findings are counted as `waived` in the summary (and listed
+with `--show-waived` or in the `waived` array of `--json` output), so
+nothing is silently lost.
+
 ### Example
 
 ```bash
@@ -212,7 +269,7 @@ examples/lint/lint_demo.sv
 | `rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
 | `rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
 | `signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
-| `rtl_lint.py` | ~390 | Semantic + unused/shadow lint, rule control, CLI |
+| `rtl_lint.py` | ~580 | Semantic + unused/shadow lint, config/waivers, CLI |
 
 ## Why pyslang?
 

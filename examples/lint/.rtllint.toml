@@ -1,0 +1,23 @@
+# Example rtl-lint configuration.
+#
+# Auto-discovered when rtl-lint runs anywhere at or below this directory,
+# or point at it explicitly with `rtl-lint --config <path>`.
+
+[lint]
+unused = true        # run unused/undriven analysis (default: true)
+shadow = false       # variable-shadowing analysis
+werror = false       # treat all warnings as errors (good for CI gates)
+
+# ── Per-rule severity ────────────────────────────────────────────────
+# Values: "off"/"ignore" (suppress), "warning", or "error".
+# Rule names accept globs.
+[rules]
+"case-default" = "off"      # project doesn't require case defaults
+"width-trunc"  = "error"    # truncation is a real bug here — make it fatal
+
+# ── Location-specific waivers ────────────────────────────────────────
+# Suppress individual findings by rule (glob), path (glob), and/or line.
+[[waive]]
+rule   = "unused-port"
+path   = "lint_demo.sv"
+reason = "demo ports kept for illustration"
