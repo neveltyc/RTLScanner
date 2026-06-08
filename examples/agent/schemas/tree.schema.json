@@ -1,0 +1,229 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rtl-tree agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtl-tree --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "rtl-tree"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "hierarchy",
+            "filelist"
+          ],
+          "properties": {
+            "hierarchy": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/node"
+              }
+            },
+            "filelist": {
+              "type": "object",
+              "required": [
+                "sources",
+                "include_dirs",
+                "defines"
+              ],
+              "properties": {
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "include_dirs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "defines": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "instances",
+            "unique_modules",
+            "max_depth",
+            "files_parsed",
+            "module_counts"
+          ],
+          "properties": {
+            "instances": {
+              "type": "integer"
+            },
+            "unique_modules": {
+              "type": "integer"
+            },
+            "max_depth": {
+              "type": "integer"
+            },
+            "files_parsed": {
+              "type": "integer"
+            },
+            "module_counts": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              }
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": [
+        "instance",
+        "module",
+        "path"
+      ],
+      "properties": {
+        "instance": {
+          "type": "string"
+        },
+        "module": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "is_interface": {
+          "type": "boolean"
+        },
+        "generated_scope": {
+          "type": "string"
+        },
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

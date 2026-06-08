@@ -1,0 +1,131 @@
+{
+  "tool": "rtl-tree",
+  "version": "0.1.0",
+  "status": "ok",
+  "command": {
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "write_filelist": null,
+    "filelist_only": false,
+    "filelist_root": ".",
+    "filelist_path": "rel",
+    "filelist_prefix": "${PROJPATH}",
+    "exclude": [],
+    "top": null,
+    "depth": -1,
+    "no_params": false,
+    "path": false,
+    "stats": false,
+    "flat": false,
+    "trace": null,
+    "scope": null,
+    "trace_list": false,
+    "trace_all": false,
+    "cross": false,
+    "filter": null
+  },
+  "data": {
+    "hierarchy": [
+      {
+        "instance": "top",
+        "module": "top",
+        "path": "top",
+        "children": [
+          {
+            "instance": "u_dp0",
+            "module": "datapath",
+            "path": "top.u_dp0",
+            "children": [
+              {
+                "instance": "u_reg",
+                "module": "register",
+                "path": "top.u_dp0.u_reg",
+                "parameters": {
+                  "WIDTH": "8"
+                }
+              },
+              {
+                "instance": "u_alu",
+                "module": "alu",
+                "path": "top.u_dp0.u_alu",
+                "children": [
+                  {
+                    "instance": "u_add",
+                    "module": "adder",
+                    "path": "top.u_dp0.u_alu.u_add",
+                    "parameters": {
+                      "WIDTH": "8"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "instance": "u_dp1",
+            "module": "datapath",
+            "path": "top.u_dp1",
+            "children": [
+              {
+                "instance": "u_reg",
+                "module": "register",
+                "path": "top.u_dp1.u_reg",
+                "parameters": {
+                  "WIDTH": "8"
+                }
+              },
+              {
+                "instance": "u_alu",
+                "module": "alu",
+                "path": "top.u_dp1.u_alu",
+                "children": [
+                  {
+                    "instance": "u_add",
+                    "module": "adder",
+                    "path": "top.u_dp1.u_alu.u_add",
+                    "parameters": {
+                      "WIDTH": "8"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "instance": "u_extra_reg",
+            "module": "register",
+            "path": "top.u_extra_reg",
+            "parameters": {
+              "WIDTH": "8"
+            }
+          }
+        ]
+      }
+    ],
+    "filelist": {
+      "sources": [
+        "/home/user/RTLScanner/examples/basic/top.sv"
+      ],
+      "include_dirs": [],
+      "defines": {}
+    }
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "instances": 10,
+    "unique_modules": 5,
+    "max_depth": 3,
+    "files_parsed": 1,
+    "module_counts": {
+      "top": 1,
+      "datapath": 2,
+      "register": 3,
+      "alu": 2,
+      "adder": 2
+    }
+  }
+}

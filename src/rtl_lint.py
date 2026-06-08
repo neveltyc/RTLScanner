@@ -57,6 +57,9 @@ from rtl_common import (
     safe_str,
 )
 
+import agent_json
+from agent_json import AgentError, Envelope, filter_command, emit
+
 
 # ── Data Structures ──────────────────────────────────────────────────
 SEVERITY_ORDER = {"error": 3, "warning": 2, "note": 1, "ignored": 0}
@@ -580,15 +583,16 @@ _SEV_COLOR = {
 
 
 def _counts(findings):
-    by_sev, by_rule = {}, {}
+    by_sev, by_rule, by_check = {}, {}, {}
     for f in findings:
         by_sev[f.severity] = by_sev.get(f.severity, 0) + 1
         by_rule[f.rule] = by_rule.get(f.rule, 0) + 1
-    return by_sev, by_rule
+        by_check[f.check] = by_check.get(f.check, 0) + 1
+    return by_sev, by_rule, by_check
 
 
 def print_summary(findings, waived=0):
-    by_sev, by_rule = _counts(findings)
+    by_sev, by_rule, _ = _counts(findings)
     print(f"\n{'─' * 50}\n  {Color.bold('Lint Summary')}\n{'─' * 50}")
     n_err = by_sev.get("error", 0)
     n_warn = by_sev.get("warning", 0)
@@ -718,12 +722,25 @@ Inline waivers (standard SystemVerilog, no config needed):
     out.add_argument('--show-waived', action='store_true',
                      help='List findings suppressed by waivers/disabled rules')
     out.add_argument('--json', action='store_true', help='JSON output')
+    out.add_argument('--schema', action='store_true',
+                     help='Print the JSON Schema for --json output and exit')
     out.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
 
     a = p.parse_args()
 
+    if a.schema:
+        sys.exit(agent_json.print_schema('rtl-lint'))
+
     if a.no_color or not sys.stdout.isatty() or a.json:
         Color.disable()
+
+    env = Envelope('rtl-lint', filter_command(a)) if a.json else None
+
+    def die(msg, code=agent_json.ERR_INTERNAL, exit_code=2):
+        if a.json:
+            sys.exit(emit(env.fail(code, msg)))
+        print(f"Error: {msg}", file=sys.stderr)
+        sys.exit(exit_code)
 
     # ── Load config (CLI overrides config) ──
     cfg = {}
@@ -731,16 +748,15 @@ Inline waivers (standard SystemVerilog, no config needed):
     if not a.no_config:
         cfg_path = Path(a.config) if a.config else discover_config('.')
         if a.config and not Path(a.config).is_file():
-            print(f"Error: config not found: {a.config}", file=sys.stderr)
-            sys.exit(2)
+            die(f"config not found: {a.config}", agent_json.ERR_BAD_CONFIG)
         if cfg_path:
             try:
                 cfg = load_config(cfg_path)
             except SystemExit:
                 raise
             except Exception as e:
-                print(f"Error: failed to parse config {cfg_path}: {e}", file=sys.stderr)
-                sys.exit(2)
+                die(f"failed to parse config {cfg_path}: {e}",
+                    agent_json.ERR_BAD_CONFIG)
     lint_cfg = cfg.get('lint', cfg) if isinstance(cfg, dict) else {}
 
     def cfg_bool(key, cli_flag):
@@ -757,6 +773,9 @@ Inline waivers (standard SystemVerilog, no config needed):
     # ── Resolve sources ──
     all_paths = list(a.files) + list(a.dir)
     if not all_paths and not a.filelist:
+        if a.json:
+            die('no input: pass files, --dir, or --filelist',
+                agent_json.ERR_INPUT_NOT_FOUND)
         p.print_help()
         sys.exit(2)
 
@@ -766,17 +785,18 @@ Inline waivers (standard SystemVerilog, no config needed):
         try:
             parsed.append(parse_filelist(f, fl_root, prefix=a.filelist_prefix))
         except FileNotFoundError as e:
-            print(f"Error: {e}", file=sys.stderr)
-            sys.exit(2)
+            die(str(e), agent_json.ERR_BAD_FILELIST)
     scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
     filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
 
     if not filelist.sources:
-        print("Error: no .v/.sv source files found", file=sys.stderr)
-        sys.exit(2)
+        die('no .v/.sv source files found', agent_json.ERR_INPUT_NOT_FOUND)
 
     # ── Build & lint ──
-    comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    try:
+        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+    except Exception as e:
+        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
     runner = LintRunner(comp, check_unused=check_unused,
                         check_shadow=check_shadow, weverything=weverything,
                         check_cdc=check_cdc, cdc_reset_globs=cdc_reset_globs)
@@ -790,20 +810,25 @@ Inline waivers (standard SystemVerilog, no config needed):
                                    min_severity=min_severity)
 
     # ── Output ──
+    has_error = any(f.severity == "error" for f in findings)
     if a.json:
-        by_sev, by_rule = _counts(findings)
-        print(json.dumps({
-            'config': str(cfg_path) if cfg_path else None,
-            'findings': [f.to_dict() for f in findings],
-            'waived': [f.to_dict() for f in waived],
-            'summary': {
-                'total': len(findings),
-                'by_severity': by_sev,
-                'by_rule': by_rule,
-                'waived': len(waived),
-                'files_linted': len(filelist.sources),
-            },
-        }, indent=2, ensure_ascii=False))
+        by_sev, by_rule, by_check = _counts(findings)
+        data = {
+            'findings':    [f.to_dict() for f in findings],
+            'waived':      [f.to_dict() for f in waived],
+            'config_path': str(cfg_path) if cfg_path else None,
+        }
+        summary = {
+            'total':        len(findings),
+            'by_severity':  by_sev,
+            'by_rule':      by_rule,
+            'by_check':     by_check,
+            'waived':       len(waived),
+            'files_linted': len(filelist.sources),
+            'has_error':    has_error,
+        }
+        rc = emit(env.ok(data, summary))
+        sys.exit(1 if has_error else rc)
     else:
         if not a.summary:
             print_findings(findings)   # prints the all-clear line when empty
@@ -813,7 +838,6 @@ Inline waivers (standard SystemVerilog, no config needed):
             print_summary(findings, waived=len(waived))
 
     # ── Exit code ──
-    has_error = any(f.severity == "error" for f in findings)
     sys.exit(1 if has_error else 0)
 
 

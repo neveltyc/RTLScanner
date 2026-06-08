@@ -1,0 +1,329 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "signal-trace agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `signal-trace --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "signal-trace"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "scope"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "signal",
+                "all",
+                "list"
+              ]
+            },
+            "scope": {
+              "type": "string"
+            },
+            "results": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "signal",
+                  "scope"
+                ],
+                "properties": {
+                  "signal": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "type": "string"
+                  },
+                  "module": {
+                    "type": "string"
+                  },
+                  "driver": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "symbol": {
+                            "type": "string"
+                          },
+                          "symbol_kind": {
+                            "type": "string"
+                          },
+                          "scope_path": {
+                            "type": "string"
+                          },
+                          "file": {
+                            "type": "string"
+                          },
+                          "line": {
+                            "type": "integer"
+                          }
+                        },
+                        "additionalProperties": true
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "extra_drivers": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "symbol": {
+                          "type": "string"
+                        },
+                        "symbol_kind": {
+                          "type": "string"
+                        },
+                        "scope_path": {
+                          "type": "string"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "line": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "multi_driver_warning": {
+                    "type": "boolean"
+                  },
+                  "loads": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string"
+                        },
+                        "description": {
+                          "type": "string"
+                        },
+                        "scope_path": {
+                          "type": "string"
+                        },
+                        "instance": {
+                          "type": "string"
+                        },
+                        "port": {
+                          "type": "string"
+                        },
+                        "direction": {
+                          "type": "string"
+                        },
+                        "file": {
+                          "type": "string"
+                        },
+                        "line": {
+                          "type": "integer"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  },
+                  "load_count": {
+                    "type": "integer"
+                  },
+                  "cross_hierarchy": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": true
+              },
+              "description": "Populated for mode=signal|all."
+            },
+            "signals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": true
+              },
+              "description": "Populated for mode=list."
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "results"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "results": {
+              "type": "integer"
+            },
+            "drivers": {
+              "type": "integer"
+            },
+            "loads": {
+              "type": "integer"
+            },
+            "signals": {
+              "type": "integer"
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}
