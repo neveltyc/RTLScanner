@@ -37,12 +37,7 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    FileList,
     build_compilation,
-    collect_filelist,
-    parse_filelist,
-    merge_filelists,
-    filter_filelist,
 )
 from rtl_slang import (
     analyzed_procedures,
@@ -58,7 +53,8 @@ from rtl_slang import (
 )
 
 import agent_json
-from agent_json import AgentError, Envelope, filter_command, emit
+from agent_json import Envelope, emit
+from rtl_config import build_filelist, load_config, resolve_inputs
 
 
 # ── Display glyphs ───────────────────────────────────────────────────
@@ -742,229 +738,152 @@ class SignalTracer:
             r.pretty_print()
 
 
-# ── Agent-mode helpers ───────────────────────────────────────────────
-def _emit_list(env, tracer, scope) -> int:
-    sigs = tracer.list_signals(scope)
-    if not sigs:
-        return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
-                             f"scope '{scope}' not found or empty"))
-    data = {'mode': 'list', 'scope': scope, 'signals': sigs}
-    summary = {'mode': 'list', 'results': 0, 'signals': len(sigs)}
-    return emit(env.ok(data, summary))
 
+# ── Shared input/dispatch helpers ────────────────────────────────────
+def _prepare(args, env, *, need_signal=False):
+    """Common setup for trace/signals/fanin/fanout: resolve inputs, build
+    compilation, auto-detect scope.  Returns (tracer, scope) or exits."""
+    cfg, cfg_path = load_config()
+    ri = resolve_inputs(
+        cli_files=args.files,
+        cli_dir=args.dir,
+        cli_filelist=args.filelist,
+        cli_exclude=args.exclude,
+        config=cfg,
+        config_path=cfg_path,
+    )
+    for note in ri.notes:
+        print(f"note: {note}", file=sys.stderr)
 
-def _emit_all(env, tracer, scope, cross, load_filter) -> int:
-    results = tracer.trace_all(scope, cross)
-    if not results:
-        return emit(env.fail(agent_json.ERR_SCOPE_NOT_FOUND,
-                             f"no signals in scope '{scope}'"))
-    rdicts = [r.to_dict(load_filter) for r in results]
-    data = {'mode': 'all', 'scope': scope, 'results': rdicts}
-    summary = {
-        'mode':    'all',
-        'results': len(rdicts),
-        'drivers': sum(1 for d in rdicts if d.get('driver')),
-        'loads':   sum(int(d.get('load_count', 0)) for d in rdicts),
-    }
-    return emit(env.ok(data, summary))
-
-
-def _emit_signal(env, tracer, signal, scope, cross, load_filter) -> int:
-    r = tracer.trace(signal, scope, cross)
-    if r is None:
-        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
-                             f"signal '{signal}' not found in scope '{scope}'"))
-    rd = r.to_dict(load_filter)
-    data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
-    summary = {
-        'mode':    'signal',
-        'results': 1,
-        'drivers': 1 if rd.get('driver') else 0,
-        'loads':   int(rd.get('load_count', 0)),
-    }
-    return emit(env.ok(data, summary))
-
-
-def _emit_flow(env, tracer, signal, scope, mode, max_depth) -> int:
-    r = tracer.flow(signal, scope, mode, max_depth)
-    if r is None:
-        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
-                             f"signal '{signal}' not found in scope '{scope}'"))
-    rd = r.to_dict()
-    data = {
-        'mode': mode,
-        'scope': scope,
-        'signal': signal,
-        'start': rd['start'],
-        'nodes': rd['nodes'],
-        'edges': rd['edges'],
-        'max_depth': rd['max_depth'],
-    }
-    summary = {
-        'mode': mode,
-        'results': 1,
-        'nodes': len(rd['nodes']),
-        'edges': len(rd['edges']),
-        'max_depth': rd['max_depth'],
-    }
-    return emit(env.ok(data, summary))
-
-
-# ── Standalone CLI ───────────────────────────────────────────────────
-def main():
-    p = argparse.ArgumentParser(
-        prog='signal-trace',
-        description='signal-trace \u2014 SV Signal Driver & Load Analyzer',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-With filelist (typical debug workflow):
-  signal-trace --filelist rtl.f --signal q --scope top.u_dp
-  signal-trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
-  signal-trace --filelist rtl.f --scope top.u_dp --list
-  signal-trace --filelist rtl.f --scope top.u_dp --all
-  signal-trace --filelist rtl.f --signal result --scope top.u_dp --fanin
-  signal-trace --filelist rtl.f --signal valid --scope top.u_dp --fanout
-
-With directory scan:
-  signal-trace -d ./rtl --signal q --scope top.u_dp
-  signal-trace -d ./rtl --signal a --scope top --cross
-""")
-    # Source inputs — filelist is first-class
-    p.add_argument('files', nargs='*', help='Verilog/SV source files')
-    p.add_argument('-d', '--dir', action='append', default=[], metavar='DIR',
-                   help='Directory to scan recursively (repeatable)')
-    p.add_argument('--filelist', '-f', action='append', default=[], metavar='FILE',
-                   help='VCS-style .f filelist (repeatable)')
-    p.add_argument('--filelist-root', '--projpath', dest='filelist_root',
-                   default='.', metavar='DIR',
-                   help='Base path for filelist relative paths (default: .)')
-    p.add_argument('--filelist-prefix', default='${PROJPATH}', metavar='STR',
-                   help='Prefix substituted for filelist path variables '
-                        '(default: ${PROJPATH})')
-    p.add_argument('--exclude', action='append', default=[], metavar='GLOB',
-                   help='Exclude paths matching glob (repeatable)')
-
-    # Signal tracing
-    p.add_argument('--signal', '-s', default=None, metavar='NAME',
-                   help='Signal name to trace')
-    p.add_argument('--scope', default=None, metavar='SCOPE',
-                   help='Hierarchical scope (e.g. top.u_dp)')
-    p.add_argument('--cross', action='store_true', help='Trace through port boundaries')
-    p.add_argument('--filter', default=None, metavar='GLOB',
-                   help='Filter loads by instance name glob (e.g. u_fifo*)')
-    p.add_argument('--list', action='store_true', help='List all signals in scope')
-    p.add_argument('--all', action='store_true', help='Trace every signal in scope')
-    flow = p.add_mutually_exclusive_group()
-    flow.add_argument('--fanin', action='store_true',
-                      help='Show upstream dataflow edges feeding --signal')
-    flow.add_argument('--fanout', action='store_true',
-                      help='Show downstream dataflow edges driven by --signal')
-    p.add_argument('--flow-depth', type=int, default=4, metavar='N',
-                   help='Maximum fanin/fanout traversal depth (default: 4)')
-    p.add_argument('--json', action='store_true',
-                   help='Emit trace results as an agent-friendly JSON envelope (see --schema)')
-    p.add_argument('--schema', action='store_true',
-                   help='Print the JSON Schema for --json output and exit')
-    p.add_argument('--no-color', action='store_true', help='Disable ANSI colors')
-
-    a = p.parse_args()
-
-    if a.schema:
-        sys.exit(agent_json.print_schema('signal-trace'))
-
-    if a.no_color or not sys.stdout.isatty() or a.json:
-        Color.disable()
-
-    env: Optional[Envelope] = Envelope('signal-trace', filter_command(a)) if a.json else None
-
-    def die(msg, code=agent_json.ERR_INTERNAL):
-        if a.json:
-            sys.exit(emit(env.fail(code, msg)))
-        print(f"Error: {msg}", file=sys.stderr)
-        sys.exit(1)
-
-    # ── Resolve sources from all input methods ──
-    all_paths = list(a.files) + list(a.dir)
-    if not all_paths and not a.filelist:
-        if a.json:
-            die('no input: pass files, --dir, or --filelist',
-                agent_json.ERR_INPUT_NOT_FOUND)
-        p.print_help()
-        sys.exit(1)
-
-    fl_root = Path(a.filelist_root).expanduser().resolve()
-
-    parsed = []
-    for fl in a.filelist:
-        try:
-            parsed.append(parse_filelist(fl, fl_root, prefix=a.filelist_prefix))
-        except FileNotFoundError as e:
-            die(str(e), agent_json.ERR_BAD_FILELIST)
-
-    scanned = collect_filelist(all_paths, excludes=a.exclude, root=fl_root) if all_paths else FileList()
-    filelist = filter_filelist(merge_filelists(*parsed, scanned), a.exclude, fl_root)
+    try:
+        filelist = build_filelist(ri)
+    except FileNotFoundError as e:
+        _exit(env, str(e), agent_json.ERR_BAD_FILELIST)
+    except ValueError as e:
+        _exit(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
 
     if not filelist.sources:
-        die('no source files found.', agent_json.ERR_INPUT_NOT_FOUND)
+        _exit(env, 'no .v/.sv source files found',
+              agent_json.ERR_INPUT_NOT_FOUND)
 
-    # ── Build compilation ──
     try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
+        comp, _ = build_compilation(filelist.sources, filelist.include_dirs,
+                                    filelist.defines)
     except Exception as e:
-        die(f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
+        _exit(env, f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
     tracer = SignalTracer(comp)
 
-    # ── Auto-detect scope ──
-    scope = a.scope
+    scope = args.scope
     if scope is None:
         tp = tracer.get_top_paths()
         if len(tp) == 1:
             scope = tp[0]
         elif tp:
-            if a.json:
-                die('multiple tops, specify --scope: ' + ', '.join(tp),
-                    agent_json.ERR_SCOPE_NOT_FOUND)
-            print("Multiple tops \u2014 specify --scope:", file=sys.stderr)
-            for t in tp:
-                print(f"  {t}", file=sys.stderr)
-            sys.exit(1)
+            _exit(env, 'multiple tops, specify --scope: ' + ', '.join(tp),
+                  agent_json.ERR_SCOPE_NOT_FOUND)
         else:
-            die('no top modules found.', agent_json.ERR_NO_TOP)
+            _exit(env, 'no top modules found', agent_json.ERR_NO_TOP)
 
-    # ── Dispatch ──
-    if a.json:
-        if a.list:
-            sys.exit(_emit_list(env, tracer, scope))
-        if a.all:
-            sys.exit(_emit_all(env, tracer, scope, a.cross, a.filter))
-        if a.fanin or a.fanout:
-            if not a.signal:
-                die('specify --signal <name> with --fanin/--fanout',
-                    agent_json.ERR_INPUT_NOT_FOUND)
-            mode = 'fanin' if a.fanin else 'fanout'
-            sys.exit(_emit_flow(env, tracer, a.signal, scope,
-                                mode, a.flow_depth))
-        if a.signal:
-            sys.exit(_emit_signal(env, tracer, a.signal, scope, a.cross, a.filter))
-        die('specify --signal <name>, --list, --all, --fanin, or --fanout',
-            agent_json.ERR_INPUT_NOT_FOUND)
+    if need_signal and not getattr(args, 'signal', None):
+        _exit(env, 'specify --signal/-s NAME',
+              agent_json.ERR_INPUT_NOT_FOUND)
 
-    if a.list:
-        tracer.cmd_list(scope, a.json)
-    elif a.all:
-        tracer.cmd_trace_all(scope, a.cross, a.filter, a.json)
-    elif a.fanin or a.fanout:
-        if not a.signal:
-            print("Specify --signal <name> with --fanin/--fanout", file=sys.stderr)
-            sys.exit(1)
-        mode = 'fanin' if a.fanin else 'fanout'
-        tracer.cmd_flow(a.signal, scope, mode, a.flow_depth, a.json)
-    elif a.signal:
-        tracer.cmd_trace(a.signal, scope, a.cross, a.filter, a.json)
-    else:
-        print("Specify --signal <name>, --list, --all, --fanin, or --fanout", file=sys.stderr)
-        sys.exit(1)
+    return tracer, scope
 
 
-if __name__ == '__main__':
-    main()
+def _exit(env, msg, code):
+    if env is not None:
+        sys.exit(emit(env.fail(code, msg)))
+    print(f"Error: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+# ── Subcommand: trace ────────────────────────────────────────────────
+def add_trace_args(p):
+    g = p.add_argument_group('trace')
+    g.add_argument('-s', '--signal', default=None, metavar='NAME',
+                   help='Signal name to trace (required)')
+    g.add_argument('--scope', default=None, metavar='SCOPE',
+                   help='Hierarchical scope; auto-detect when single top')
+    g.add_argument('--cross', action='store_true',
+                   help='Trace through port boundaries')
+    g.add_argument('--filter', default=None, metavar='GLOB',
+                   help='Shell glob on instance names to narrow loads')
+
+
+def run_trace(args, env):
+    tracer, scope = _prepare(args, env, need_signal=True)
+    r = tracer.trace(args.signal, scope, args.cross)
+    if r is None:
+        _exit(env, f"signal '{args.signal}' not found in scope '{scope}'",
+              agent_json.ERR_SIGNAL_NOT_FOUND)
+    if env is not None:
+        rd = r.to_dict(args.filter)
+        data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
+        summary = {
+            'mode': 'signal', 'results': 1,
+            'drivers': 1 if rd.get('driver') else 0,
+            'loads':   int(rd.get('load_count', 0)),
+        }
+        return emit(env.ok(data, summary))
+    r.pretty_print(args.filter)
+    return 0
+
+
+# ── Subcommand: signals ──────────────────────────────────────────────
+def add_signals_args(p):
+    g = p.add_argument_group('signals')
+    g.add_argument('--scope', default=None, metavar='SCOPE',
+                   help='Hierarchical scope; auto-detect when single top')
+
+
+def run_signals(args, env):
+    tracer, scope = _prepare(args, env)
+    sigs = tracer.list_signals(scope)
+    if not sigs:
+        _exit(env, f"scope '{scope}' not found or empty",
+              agent_json.ERR_SCOPE_NOT_FOUND)
+    if env is not None:
+        return emit(env.ok(
+            {'mode': 'list', 'scope': scope, 'signals': sigs},
+            {'mode': 'list', 'signals': len(sigs)},
+        ))
+    print(f"Signals in {Color.cyan(scope)}:\n")
+    for s in sigs:
+        print(f"  {Color.bold(s['name']):24s}  {Color.dim(s['type']):20s}  ({s['kind']})")
+    print(f"\n{Color.dim(str(len(sigs)) + ' signals')}")
+    return 0
+
+
+# ── Subcommands: fanin / fanout ──────────────────────────────────────
+def add_flow_args(p):
+    g = p.add_argument_group('flow')
+    g.add_argument('-s', '--signal', default=None, metavar='NAME',
+                   help='Starting signal (required)')
+    g.add_argument('--scope', default=None, metavar='SCOPE',
+                   help='Hierarchical scope; auto-detect when single top')
+    g.add_argument('--depth', type=int, default=4, metavar='N',
+                   help='Maximum BFS traversal depth (default: 4)')
+
+
+def run_flow(args, env, *, mode):
+    tracer, scope = _prepare(args, env, need_signal=True)
+    r = tracer.flow(args.signal, scope, mode, args.depth)
+    if r is None:
+        _exit(env, f"signal '{args.signal}' not found in scope '{scope}'",
+              agent_json.ERR_SIGNAL_NOT_FOUND)
+    if env is not None:
+        rd = r.to_dict()
+        data = {
+            'mode': mode, 'scope': scope, 'signal': args.signal,
+            'start': rd['start'], 'nodes': rd['nodes'], 'edges': rd['edges'],
+            'max_depth': rd['max_depth'],
+        }
+        summary = {
+            'mode': mode, 'results': 1,
+            'nodes': len(rd['nodes']), 'edges': len(rd['edges']),
+            'max_depth': rd['max_depth'],
+        }
+        return emit(env.ok(data, summary))
+    r.pretty_print()
+    return 0

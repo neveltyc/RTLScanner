@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 # Produces lint.out.json
-rtl-lint -d examples/lint --json
+rtlscanner lint -d examples/lint --json

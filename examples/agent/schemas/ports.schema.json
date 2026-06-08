@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "rtl-ports agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `rtl-ports --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "title": "ports agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `ports --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "rtl-ports"
+      "const": "ports"
     },
     "version": {
       "type": "string"

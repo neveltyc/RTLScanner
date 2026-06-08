@@ -13,11 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-rtl-tree = "rtl_tree:main"
-signal-trace = "signal_trace:main"
-rtl-lint = "rtl_lint:main"
-rtl-ports = "rtl_ports:main"
+rtlscanner = "rtlscanner:main"
 
 [tool.setuptools]
-py-modules = ["rtl_tree", "rtl_common", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "agent_json"]
+py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "agent_json"]
 package-dir = {"" = "src"}

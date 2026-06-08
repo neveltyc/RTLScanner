@@ -1,456 +1,253 @@
 # RTLScanner
 
 A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection,
-signal driver/load tracing, static linting, and module interface
-reporting.
+signal driver/load tracing, dataflow analysis, static linting, and
+module interface reporting.
 
-| Tool | Purpose | Typical stage |
-|------|---------|---------------|
-| `rtl-tree` | Hierarchy viewer & filelist generator | Architecture / code organisation |
-| `signal-trace` | Signal driver & load analyzer | Simulation / debug |
-| `rtl-lint` | Static linter (width, unused, case, latch, …) | Code review / CI |
-| `rtl-ports` | Module interface & connectivity report | Documentation / integration |
+All capabilities are exposed under a single CLI — `rtlscanner` — with
+seven subcommands:
+
+| Subcommand | Purpose | Typical stage |
+|------------|---------|---------------|
+| `tree`     | Hierarchy viewer & filelist exporter      | Architecture / code organisation |
+| `trace`    | Single-signal driver & load analyzer      | Simulation / debug |
+| `signals`  | List signals in a scope                   | Simulation / debug |
+| `fanin`    | Upstream dataflow BFS from a signal       | Simulation / debug |
+| `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
+| `lint`     | Static linter (semantic + unused + shadow + CDC) | Code review / CI |
+| `ports`    | Module interface & connectivity report    | Documentation / integration |
 
 ## Install
 
 ```bash
-pip install -r requirements.txt
-```
-
-For an editable command-line install:
-
-```bash
 pip install -e .
-rtl-tree -d ./examples/basic
-signal-trace --filelist rtl.f --signal clk --scope top
+rtlscanner --help
 ```
 
-You can also run the scripts directly:
+Requires Python 3.8+; pulls in `pyslang>=11.0.0`.
+
+## Configuration
+
+CLI input flags are deliberately minimal — only `-d/--dir`, `-f/--filelist`,
+and `--exclude`. Project-stable inputs (filelist root, prefix tokens, etc.)
+live in env vars or `./.rtlscanner.toml`.
+
+**Priority:** `CLI > env vars > ./.rtlscanner.toml > built-in defaults`
+(field-level override; not whole-layer).
+
+### Environment variables
+
+| Variable                | Maps to                          |
+|-------------------------|----------------------------------|
+| `RTLSCANNER_FILELIST`   | repeat of `-f` (colon-separated) |
+| `RTLSCANNER_DIR`        | repeat of `-d` (colon-separated) |
+| `RTLSCANNER_EXCLUDE`    | repeat of `--exclude` (colon-separated) |
+| `RTLSCANNER_ROOT`       | base for `.f` relative paths (no CLI equivalent) |
+| `RTLSCANNER_PREFIX`     | substituted prefix in `.f` files (default `${PROJPATH}`) |
+
+### `./.rtlscanner.toml`
+
+Auto-discovered in CWD only (no walk-up, no `--config` flag). To switch
+configs, `cd` into the relevant directory.
+
+```toml
+[inputs]
+filelist = ["rtl/top.f"]
+root     = "."
+prefix   = "${PROJPATH}"
+exclude  = ["**/sim/**", "**/dvt/**"]
+
+[lint]
+rules = ["default", "cdc"]            # equivalent to CLI --rules
+skip  = ["case-default"]              # equivalent to CLI --skip
+waive = ["dbg_*", "third_party_*"]    # module-name globs (suppress entire modules)
+
+[lint.severity]                       # promote individual rules
+"width-trunc" = "error"
+
+[lint.cdc]
+reset = ["nrst_*", "por_*"]           # extra reset-signal name globs
+```
+
+### Filelist precedence over dir scan
+
+When a filelist is present (CLI, env, or config), positional sources and
+`-d/--dir` are ignored with a stderr note. This avoids the common mistake
+of running a `-d .` alongside a proper `.f` and pulling sim/testbench
+directories into the compilation.
+
+### List-valued flags
+
+All repeatable flags (`-d`, `-f`, `--exclude`, `--module`, `--instance`,
+`--rules`, `--skip`, `--waive`) accept either a comma-list or repetition:
 
 ```bash
-python3 src/rtl_tree.py -d ./examples/basic
-python3 src/signal_trace.py -d ./examples/basic --signal q --scope top.u_dp0
-python3 src/rtl_lint.py -d ./examples/lint
-python3 src/rtl_ports.py -d ./examples/ports
+rtlscanner tree -d ./rtl,./common
+rtlscanner tree -d ./rtl -d ./common         # equivalent
+rtlscanner lint --rules width-trunc,case-default
+rtlscanner lint --rules '[width-trunc,case-default]'   # bracket-style
 ```
 
-## Hierarchy Viewer (`rtl-tree`)
+## `rtlscanner tree` — hierarchy viewer
 
 ```bash
-# Recursively scan a directory
-rtl-tree -d ./rtl
-
-# Use a VCS-style filelist
-rtl-tree --filelist rtl.f --top cpu_core
-
-# Generate a reusable filelist
-rtl-tree -d ./rtl --write-filelist rtl.f
-
-# Limit depth / emit JSON / show stats
-rtl-tree -d ./rtl --depth 2
-rtl-tree -d ./rtl --json > hier.json
-rtl-tree -d ./rtl --stats
-
-# Exclude paths
-rtl-tree -d ./rtl --exclude '*/tb/*' --exclude '*/postsim/*'
+rtlscanner tree -d ./rtl                           # auto-pick top
+rtlscanner tree -d ./rtl --top cpu --depth 2       # constrain
+rtlscanner tree -d ./rtl --stats                   # module usage stats
+rtlscanner tree -d ./rtl --flat                    # one path per line
+rtlscanner tree -d ./rtl --export rtl.f            # export resolved filelist
+rtlscanner tree -d ./rtl --json                    # agent envelope
 ```
 
-### Example
+`--export FILE` writes the resolved filelist and exits; combine with
+`--path-style {rel,abs,prefix}` to control how paths appear in the output.
+
+## `rtlscanner trace` — single-signal driver/loads
 
 ```bash
-rtl-tree -d examples/basic --no-color
+rtlscanner trace -d ./rtl -s q --scope top.u_dp
+rtlscanner trace -f rtl.f -s clk --scope top --filter 'u_fifo*'
+rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
 ```
 
-```
-top : top
-├── u_dp0 : datapath
-│   ├── u_reg : register #(WIDTH=8)
-│   └── u_alu : alu
-│       └── u_add : adder #(WIDTH=8)
-├── u_dp1 : datapath
-│   ├── u_reg : register #(WIDTH=8)
-│   └── u_alu : alu
-│       └── u_add : adder #(WIDTH=8)
-└── u_extra_reg : register #(WIDTH=8)
+`--scope` auto-detects when there's a single top module.
 
-10 instances, 5 unique modules, 1 files parsed
-```
-
-Generate blocks are elaborated correctly:
+## `rtlscanner signals` — enumerate signals in a scope
 
 ```bash
-rtl-tree -d examples/generate --no-color
+rtlscanner signals -d ./rtl --scope top.u_dp
 ```
 
-```
-gen_top : gen_top
-└── u_mid : mid #(N=3)
-    ├── u_leaf : leaf
-    ├── u_gen_leaf : leaf ← gen_arr[0]
-    ├── u_gen_leaf : leaf ← gen_arr[1]
-    └── u_gen_leaf : leaf ← gen_arr[2]
+Lightweight: no driver/load walk, just signal names + types + kinds.
 
-6 instances, 3 unique modules, 1 files parsed
-```
-
-## Signal Tracer (`signal-trace`)
-
-Designed for the debug/simulation workflow where a VCS-style filelist
-already exists.  RTL convention: each signal has exactly **one driver**
-but potentially **many loads**.
+## `rtlscanner fanin` / `fanout` — dataflow BFS
 
 ```bash
-# Primary usage — with an existing filelist
-signal-trace --filelist rtl.f --signal q --scope top.u_dp
-
-# Scan a directory instead
-signal-trace -d ./rtl --signal clk --scope top
-
-# List all signals in a scope
-signal-trace --filelist rtl.f --scope top.u_dp --list
-
-# Trace all signals in a scope
-signal-trace --filelist rtl.f --scope top.u_dp --all
-
-# Filter loads by instance name glob
-signal-trace --filelist rtl.f --signal data --scope top --filter 'u_fifo*'
-
-# Trace through port boundaries
-signal-trace --filelist rtl.f --signal q --scope top.u_dp --cross
-
-# Dataflow fanin / fanout
-signal-trace --filelist rtl.f --signal result --scope top.u_dp --fanin
-signal-trace --filelist rtl.f --signal valid --scope top.u_dp --fanout --flow-depth 6
-
-# JSON output (for scripting / IDE integration)
-signal-trace --filelist rtl.f --signal q --scope top.u_dp --json
+rtlscanner fanin  -d ./rtl -s result --scope top.u_dp
+rtlscanner fanout -d ./rtl -s sel    --scope top.u_dp --depth 6
 ```
 
-You can also invoke signal tracing via `rtl-tree`:
-
-```bash
-rtl-tree --filelist rtl.f --trace q --scope top.u_dp
-rtl-tree --filelist rtl.f --trace-list --scope top.u_dp
-rtl-tree -d ./rtl --trace clk --scope top --filter 'u_dp*'
-```
-
-### Example
-
-```bash
-signal-trace -d examples/trace --signal mux_out --scope trace_top.u_dp --no-color
-```
-
-```
-Signal: mux_out  logic[7:0]
-Scope:  trace_top.u_dp  [datapath_v2]
-────────────────────────────────────────────────────────────
-
-  ◀ DRIVER
-    ← output port of instance u_mux  examples/trace/trace_top.sv:36
-
-  ▶ LOADS (2)
-    ── Instance port connections (1) ──
-    → u_pipe.d (input)  examples/trace/trace_top.sv:37
-    ── Continuous assignments (1) ──
-    → assign → sum  examples/trace/trace_top.sv:35
-```
-
-### Fanin / fanout example
-
-`--fanin` walks upstream from a signal (everything that feeds it),
-`--fanout` walks downstream (everything it drives). Both report a
-breadth-first set of dataflow edges grouped by traversal depth, and
-both honor `--flow-depth N` (default `4`) for the maximum number of
-hops to chase.
-
-```bash
-signal-trace -d examples/trace --signal mux_out --scope trace_top.u_dp --fanin --no-color
-```
-
-```
-Signal: mux_out  logic[7:0]
-Scope:  trace_top.u_dp  [datapath_v2]
-Mode:   FANIN  depth <= 4
-────────────────────────────────────────────────────────────
-
-  depth 1
-    trace_top.u_dp.u_mux.y → trace_top.u_dp.mux_out  port_connection u_mux.y output  examples/trace/trace_top.sv:36
-
-  depth 2
-    trace_top.u_dp.u_mux.a → trace_top.u_dp.u_mux.y    continuous_assign assign  examples/trace/trace_top.sv:6
-    trace_top.u_dp.u_mux.b → trace_top.u_dp.u_mux.y    continuous_assign assign  examples/trace/trace_top.sv:6
-    trace_top.u_dp.u_mux.sel → trace_top.u_dp.u_mux.y  continuous_assign assign  examples/trace/trace_top.sv:6
-
-  depth 3
-    trace_top.u_dp.data_a → trace_top.u_dp.u_mux.a    port_connection u_mux.a   input
-    trace_top.u_dp.data_b → trace_top.u_dp.u_mux.b    port_connection u_mux.b   input
-    trace_top.u_dp.sel    → trace_top.u_dp.u_mux.sel  port_connection u_mux.sel input
-
-  depth 4
-    trace_top.in_a → trace_top.u_dp.data_a  port_connection u_dp.data_a input
-    trace_top.in_b → trace_top.u_dp.data_b  port_connection u_dp.data_b input
-    trace_top.mode → trace_top.u_dp.sel     port_connection u_dp.sel    input
-```
+BFS over `port_connection`, `continuous_assign`, and `procedural` edges
+from the starting signal. `--depth` (default 4) caps traversal.
 
 Reading the output:
 
-| Term      | Meaning                                                                 |
-|-----------|-------------------------------------------------------------------------|
-| **node**  | A signal at one elaborated hierarchical path (e.g. `trace_top.u_dp.sel`). The starting signal is depth 0; everything else surfaces because some edge connected it. |
-| **edge**  | One directed dataflow link `source → target`. Its `kind` is `port_connection`, `continuous_assign`, or `procedural`; `description` and `file:line` point at the RTL site it came from. |
-| **depth** | BFS distance in hops from the starting signal. Depth 1 is the immediate upstream/downstream neighbors; depth N requires N consecutive edges to reach. Traversal stops at `--flow-depth`. |
+| Term      | Meaning |
+|-----------|---------|
+| **node**  | A signal at one elaborated hierarchical path. The starting signal is depth 0. |
+| **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. |
+| **depth** | BFS distance in hops from the starting signal. |
 
-The `--json` form returns the same information in the shared agent
-envelope, with `data.nodes` (flat list of hierarchical paths) and
-`data.edges` (each carrying a `depth` field) — see
-`examples/agent/schemas/trace.schema.json`.
+## `rtlscanner lint` — static linter
 
-## Static Linter (`rtl-lint`)
-
-A fast linter built on pyslang's elaboration + analysis engine.  It
-catches real semantic problems that regex linters miss — width
+Built on pyslang's elaboration + analysis engine. Catches width
 mismatches, unused/undriven signals and ports, missing case defaults,
-inferred latches, multi-driven nets — using the same filelist
-infrastructure as the other tools.  Designed to drop straight into CI.
+inferred latches, multi-driven nets, plus opt-in CDC analysis.
 
 ```bash
-# Lint a design via filelist or directory scan
-rtl-lint --filelist rtl.f
-rtl-lint -d ./rtl
-
-# Fail the build (exit 1) on any warning — ideal for CI gates
-rtl-lint -d ./rtl --werror
-
-# Suppress or promote individual rules (name or glob)
-rtl-lint -d ./rtl --disable case-default --disable 'width-*'
-rtl-lint -d ./rtl --error width-trunc
-
-# Focus on a rule family, or show only the summary
-rtl-lint -d ./rtl --rule 'unused-*'
-rtl-lint -d ./rtl --summary
-
-# Opt-in checks and machine-readable output
-rtl-lint -d ./rtl --shadow            # variable-shadowing analysis
-rtl-lint -d ./rtl --cdc               # clock-domain-crossing detection
-rtl-lint -d ./rtl --weverything       # enable every pyslang warning
-rtl-lint -d ./rtl --json > lint.json
+rtlscanner lint -d ./rtl                              # default rule set
+rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
+rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
+rtlscanner lint -d ./rtl --rules default --skip case-default
+rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip modules
+rtlscanner lint -d ./rtl --strict                     # CI gate: warning → error
+rtlscanner lint -d ./rtl --min-severity error         # display floor
 ```
 
-By default `rtl-lint` runs pyslang's standard semantic checks plus
-unused/undriven analysis.  Pass `--no-unused` to skip the latter.
+### Rule selection model
 
-### Clock-domain-crossing check (`--cdc`)
+`--rules SPEC[,SPEC...]` — white list. SPEC can be:
 
-Opt-in flop-to-flop CDC analysis. When enabled, `rtl-lint` walks every
-`always_ff` block, infers its primary clock from the timing event list
-(treating `rst*`/`reset*`/`*_n` signals as resets so async-reset
-domains don't get flagged), then maps which clock each signal is
-written and read in. A signal written in clock domain A and read in
-clock domain B ≠ A is reported as rule `cdc-crossing`, with the
-location pointing at the unsafe read.
+- a rule name: `width-trunc`, `unused-port`, …
+- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `everything`
+- a glob: `width-*`
+- a meta value: `default` (= `semantic + unused`), `all`, `none`
 
-```bash
-rtl-lint -d ./rtl --cdc                      # one-off
-rtl-lint -d ./rtl --cdc --cdc-reset 'arst*'  # extra reset-name globs
-```
+`--skip RULE[,...]` — subtract from the resulting set (glob ok).
 
-```toml
-# Or via config:
-[lint]
-cdc = true
-cdc_reset = ["arst*"]      # extra reset patterns
-```
+### Waivers
 
-`cdc-crossing` flows through the same severity/waiver pipeline as
-every other rule — disable it project-wide with
-`[rules] "cdc-crossing" = "off"`, or waive a specific reviewed crossing
-(e.g. the first flop of a 2-FF synchronizer) with a `[[waive]]` entry.
-Inline `` `pragma `` waivers do **not** apply to `cdc-crossing`
-(pyslang's pragma engine only knows its native diagnostic codes); use
-a `[[waive]]` block instead.
+`--waive MODULE[,MODULE...]` suppresses every finding in matching modules
+(file-basename glob). For project-permanent waivers, put the list in
+`[lint] waive = [...]` in `.rtlscanner.toml`.
 
-### Configuring & waiving checks
+### CDC
 
-There are three complementary ways to control what `rtl-lint` reports,
-from coarsest to finest:
+`--rules cdc` enables flop-to-flop clock-domain-crossing detection.
+Findings appear as regular entries with `rule="cdc-crossing"`,
+`check="cdc"`. Customize the reset-signal recognition in
+`[lint.cdc] reset = [...]`.
 
-**1. Config file** — `.rtllint.toml` (or `.rtllint.json`), auto-discovered
-by walking up from the current directory, or passed via `--config`.
-CLI flags always override the config.
-
-```toml
-# .rtllint.toml
-[lint]
-unused = true        # run unused/undriven analysis (default true)
-shadow = false       # variable-shadowing analysis
-werror = false       # treat all warnings as errors (CI gate)
-
-# Per-rule severity — "off"/"ignore", "warning", or "error". Globs ok.
-[rules]
-"case-default" = "off"      # project doesn't require case defaults
-"width-trunc"  = "error"    # truncation is a real bug here
-"unused-*"     = "warning"
-
-# Location-specific waivers — match by rule (glob), path (glob), and/or line.
-[[waive]]
-rule   = "unused-port"
-path   = "rtl/perips/*.v"
-reason = "third-party IP, frozen"
-
-[[waive]]
-rule = "case-default"
-path = "rtl/core/div.v"
-line = 87
-```
-
-**2. CLI flags** — for one-off runs and CI:
-
-```bash
-rtl-lint -d ./rtl --disable case-default --error width-trunc --werror
-rtl-lint -d ./rtl --config ci/strict.toml
-rtl-lint -d ./rtl --show-waived        # show what got suppressed, and why
-```
-
-**3. Inline `pragma` waivers** — standard SystemVerilog, no config needed.
-`rtl-lint` honors pyslang's `pragma diagnostic` directives, so you can
-waive a finding right where it lives:
-
-```systemverilog
-`pragma diagnostic push
-`pragma diagnostic ignore="-Wwidth-trunc"
-  assign q = wide_bus;          // intentional truncation
-`pragma diagnostic pop
-```
-
-Suppressed findings are counted as `waived` in the summary (and listed
-with `--show-waived` or in the `waived` array of `--json` output), so
-nothing is silently lost.
-
-### Example
-
-```bash
-rtl-lint -d examples/lint --no-color
-```
-
-```
-examples/lint/lint_demo.sv
-        8:24  warning   unused port signal 'b'  [unused-port]
-       12:17  warning   variable 'dead' is assigned but its value is never used  [unused-but-set-variable]
-       15:18  warning   implicit conversion truncates from 8 to 4 bits  [width-trunc]
-       29:17  warning   variable 'mode' is never assigned a value  [unassigned-variable]
-        32:9  warning   'case' missing 'default' label  [case-default]
-       33:20  warning   latch inferred for 'result' because it is not assigned on all control paths  [inferred-latch]
-       45:10  warning   output port 'y' is explicitly connected to nothing  [empty-output-connection]
-```
+Note: `` `pragma diagnostic ignore `` does **not** suppress
+`cdc-crossing` — pyslang's pragma engine only handles its native diag
+codes. Use `--waive` or `[lint] waive` instead.
 
 ### Exit codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | clean (no error-level findings) |
-| `1` | one or more error-level findings (or warnings with `--werror`) |
-| `2` | usage / source error |
+- `0` — no error-level findings
+- `1` — one or more error-level findings, or `--strict` with any finding
+- `2` — usage / source error
 
-## Port Reporter (`rtl-ports`)
-
-Auto-generates module interface documentation and finds connectivity
-issues at instance sites — useful for IP integration, design reviews,
-and onboarding.
+## `rtlscanner ports` — module interface report
 
 ```bash
-# Module interface signatures (default)
-rtl-ports -d ./rtl
-
-# Connectivity per instance
-rtl-ports -d ./rtl --instances
-
-# Only connectivity issues (unconnected ports, width mismatches)
-rtl-ports -d ./rtl --check
-rtl-ports -d ./rtl --check --werror      # CI gate
-
-# Filter by module or instance name (glob)
-rtl-ports -d ./rtl --module cpu_*
-rtl-ports -d ./rtl --instances --instance 'top.u_cpu*'
-
-# Export Markdown docs / machine-readable JSON
-rtl-ports -d ./rtl --markdown > docs/INTERFACES.md
-rtl-ports -d ./rtl --json
+rtlscanner ports -d ./rtl                            # module interfaces (default)
+rtlscanner ports -d ./rtl --instances                # per-instance connectivity
+rtlscanner ports -d ./rtl --check --strict           # CI: fail on issues
+rtlscanner ports -d ./rtl --module 'cpu_*' --markdown > IFACE.md
 ```
 
-### Example
-
-```bash
-rtl-ports -d examples/ports --check --no-color
-```
-
-```
-top.u_alu
-  note      output port 'zero' is unconnected  [unconnected]
-
-top.u_fifo
-  note      output port 'count' is unconnected  [unconnected]
-  note      output port 'empty' is unconnected  [unconnected]
-  warning   width mismatch on .wr_data: port is 8 bits, connection is 32 bits  [width_mismatch]
-```
-
-Unconnected **inputs** are reported as warnings (genuinely undriven);
-unconnected **outputs** are reported as notes (intentionally discarding
-an output is a common, benign idiom).
+`--strict` makes `--check` exit non-zero when warnings are found.
 
 ## Agent / JSON Mode
 
-All four tools share a single, predictable JSON envelope when invoked
-with `--json`, designed to be safe to consume from LLM agents, MCP
-servers, or any script that wants structured output:
+All seven subcommands accept `--json`, producing a single uniform
+envelope shape:
 
 ```json
 {
-  "tool":        "rtl-tree",
+  "tool":        "tree",
   "version":     "0.1.0",
   "status":      "ok" | "error",
-  "command":     { /* echo of parsed args, output flags stripped */ },
-  "data":        { /* tool-specific payload */ } | null,
-  "diagnostics": [ {severity, file, line, col, message}, ... ],
-  "errors":      [ {code, message}, ... ],
-  "summary":     { /* tool-specific counts */ } | null
+  "command":     { /* parsed CLI args, output flags stripped */ },
+  "data":        { /* subcommand-specific payload */ } | null,
+  "diagnostics": [ /* parser warnings/notes */ ],
+  "errors":      [ /* structured errors when status == "error" */ ],
+  "summary":     { /* subcommand-specific counts */ } | null
 }
 ```
 
-Each tool ships a JSON Schema (draft-07) for its envelope; dump it with:
-
-```bash
-rtl-tree     --schema
-signal-trace --schema
-rtl-lint     --schema
-rtl-ports    --schema
-```
+Each subcommand ships a JSON Schema (draft-07) — dump it with
+`rtlscanner <subcmd> --schema`. See `examples/agent/README.md` and the
+`examples/agent/schemas/` directory for the full contract and pre-baked
+schemas.
 
 Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
 `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND` / `BAD_FILELIST` / `BAD_CONFIG`
 / `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
-non-zero exit code), never a raw stack trace. See
-`examples/agent/README.md` for the full contract and worked examples.
-
-**CDC findings** (`rtl-lint --cdc`) appear as ordinary entries in
-`data.findings` with `rule="cdc-crossing"` and `check="cdc"`; the count
-is mirrored in `summary.by_check.cdc`. Note that
-`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` —
-waive it via a `[[waive]]` entry in `.rtllint.toml` instead.
+non-zero exit code), never a raw stack trace.
 
 ## Code structure
 
 | File | Lines | Responsibility |
 |------|-------|----------------|
-| `src/rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
-| `src/agent_json.py` | ~440 | Shared JSON envelope, error codes, per-tool JSON schemas |
-| `src/rtl_tree.py` | ~400 | Hierarchy building, tree display, CLI |
-| `src/signal_trace.py` | ~670 | Driver/load analysis, signal tracing, CLI |
-| `src/rtl_lint.py` | ~830 | Semantic + unused/shadow lint + CDC analyzer, config/waivers, CLI |
-| `src/rtl_ports.py` | ~720 | Module interface report, instance connectivity, width-mismatch check, CLI |
+| `src/rtlscanner.py` | ~80 | Subcommand dispatch (entry point) |
+| `src/rtl_common.py` | ~490 | Color, filelist parsing, compilation builder |
+| `src/rtl_config.py` | ~190 | CLI/env/config resolution, `.rtlscanner.toml` loader |
+| `src/agent_json.py` | ~480 | Shared JSON envelope, error codes, schemas, CommaListAction |
+| `src/rtl_tree.py`   | ~360 | Hierarchy building + tree display |
+| `src/signal_trace.py` | ~890 | Driver/load + fanin/fanout |
+| `src/rtl_lint.py`   | ~760 | Semantic + unused/shadow + CDC + rule-selection model |
+| `src/rtl_ports.py`  | ~700 | Module interface & connectivity report |
+| `src/rtl_slang.py`  | ~200 | pyslang query helpers shared by the above |
 
 ## Why pyslang?
 
-SystemVerilog hierarchy and driver analysis depend on elaboration
-details such as `generate` loops, parameters, and interfaces.
-`pyslang` gives these tools a real parser and elaborator, which makes
-them much more reliable than regex matching for non-trivial RTL.
+[pyslang](https://github.com/MikePopoloski/slang) is a real
+SystemVerilog elaborator — same engine as `slang` the CLI compiler —
+so it understands generate blocks, parameterised modules, interfaces,
+packages, and the rest of the language. Regex-based RTL tools that
+predate pyslang can't see inside `generate`, can't resolve parameter
+values, and can't tell unused-but-set from never-driven. This toolkit
+piggybacks on pyslang's analysis manager to make all of that available
+in a small set of focused subcommands.
