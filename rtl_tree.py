@@ -16,6 +16,8 @@ Install dependency:
     pip install pyslang
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import sys
@@ -85,7 +87,7 @@ def build_hierarchy(
                 params={p.name: str(p.value) for p in (inst.body.parameters or [])},
                 is_interface=getattr(inst, 'isInterface', False),
             )
-        except (UnicodeDecodeError, Exception):
+        except Exception:
             continue  # skip phantom instances from `include compilation
 
     for path, node in node_map.items():
@@ -148,7 +150,9 @@ def print_tree(node, prefix="", is_last=True, is_root=False,
     if 0 <= max_depth <= cur:
         if node.children:
             cp = prefix + ("    " if is_last else "│   ") if not is_root else "    "
-            print(f"{cp}{Color.dim(f'... ({len(node.children)} children)')}")
+            n = len(node.children)
+            noun = "child" if n == 1 else "children"
+            print(f"{cp}{Color.dim(f'... ({n} {noun})')}")
         return
     cp = "" if is_root else prefix + ("    " if is_last else "│   ")
     for i, child in enumerate(node.children):

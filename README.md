@@ -1,4 +1,4 @@
-# RTLHierScanner
+# RTLScanner
 
 A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection
 and signal driver/load tracing.

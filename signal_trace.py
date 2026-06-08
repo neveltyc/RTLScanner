@@ -18,6 +18,8 @@ Install dependency:
     pip install pyslang
 """
 
+from __future__ import annotations
+
 import argparse
 import fnmatch
 import json
@@ -42,6 +44,21 @@ from rtl_common import (
     merge_filelists,
     filter_filelist,
 )
+
+
+# ── Display glyphs ───────────────────────────────────────────────────
+# Defined as named constants so they can be referenced inside f-string
+# expressions.  Python < 3.12 forbids backslash escapes (e.g. "◀")
+# inside the "{...}" part of an f-string, which would be a SyntaxError.
+GLYPH_DRIVER = "◀"
+GLYPH_LOADS = "▶"
+GLYPH_CROSS = "⇅"
+GLYPH_PORT = "↕"
+GLYPH_WARN = "⚠"
+GLYPH_DASH = "—"
+GLYPH_HR = "─"
+GLYPH_ARROW_L = "←"
+GLYPH_CORNER = "└"
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -143,20 +160,20 @@ class TraceResult:
         # ── Driver (singular in RTL) ──
         drivers = self.all_drivers
         if not drivers:
-            print(f"\n  {C.red('\u25c0 DRIVER')}  {C.dim('(none \u2014 undriven)')}")
+            print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.dim('(none ' + GLYPH_DASH + ' undriven)')}")
         elif len(drivers) == 1:
             d = drivers[0]
             loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
-            print(f"\n  {C.red('\u25c0 DRIVER')}")
-            print(f"    \u2190 {d.description}{loc}")
+            print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}")
+            print(f"    {GLYPH_ARROW_L} {d.description}{loc}")
         else:
-            print(f"\n  {C.red('\u25c0 DRIVER')}  {C.red('\u26a0 MULTI-DRIVER (' + str(len(drivers)) + ')')}")
+            print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.red(GLYPH_WARN + ' MULTI-DRIVER (' + str(len(drivers)) + ')')}")
             for d in drivers:
                 loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
                 print(f"    \u2190 {d.description}{loc}")
 
         # ── Loads (many) ──
-        hdr = f"\n  {C.green('\u25b6 LOADS')} ({len(loads)})"
+        hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({len(loads)})"
         if load_filter:
             hdr += f"  {C.dim('filter: ' + load_filter)}"
         print(hdr)
@@ -175,13 +192,13 @@ class TraceResult:
             for kind_key, kind_loads in by_kind.items():
                 if len(by_kind) > 1:
                     lbl = kind_labels.get(kind_key, kind_key)
-                    print(f"    {C.dim('\u2500\u2500 ' + lbl + ' (' + str(len(kind_loads)) + ') \u2500\u2500')}")
+                    print(f"    {C.dim(GLYPH_HR + GLYPH_HR + ' ' + lbl + ' (' + str(len(kind_loads)) + ') ' + GLYPH_HR + GLYPH_HR)}")
                 for ld in kind_loads:
                     loc = f"  {C.dim(ld.file + ':' + str(ld.line))}" if ld.file else ""
                     print(f"    \u2192 {ld.description}{loc}")
 
         if self.cross_hier:
-            print(f"\n  {C.blue('\u21c5 CROSS-HIERARCHY')} ({len(self.cross_hier)})")
+            print(f"\n  {C.blue(GLYPH_CROSS + ' CROSS-HIERARCHY')} ({len(self.cross_hier)})")
             for ch in self.cross_hier:
                 print(f"    {ch}")
         print()
@@ -209,7 +226,7 @@ class SignalTracer:
                 if top.name == parts[0] or top.body.name == parts[0]:
                     current = top
                     break
-            except (UnicodeDecodeError, Exception):
+            except Exception:
                 continue
         if current is None:
             return None
@@ -321,7 +338,7 @@ class SignalTracer:
                 pcs = inst.portConnections
                 inst_name = inst.name
                 inst_path = inst.hierarchicalPath
-            except (UnicodeDecodeError, Exception):
+            except Exception:
                 continue
             for pc in pcs:
                 try:
@@ -339,7 +356,7 @@ class SignalTracer:
                         instance_name=inst_name, port_name=port.name,
                         port_direction=port.direction.name,
                         scope_path=inst_path, file=f, line=ln))
-                except (UnicodeDecodeError, Exception):
+                except Exception:
                     continue
 
         # 2. Continuous assignments (signal on RHS)
@@ -403,11 +420,11 @@ class SignalTracer:
             if isym is None or isym.name != symbol.name:
                 continue
             dw = "input" if port.direction == ast.ArgumentDirection.In else "output"
-            conns.append(f"{C.magenta('\u2195 ' + dw + ' port')} .{C.yellow(port.name)} \u2014 crosses boundary")
+            conns.append(f"{C.magenta(GLYPH_PORT + ' ' + dw + ' port')} .{C.yellow(port.name)} {GLYPH_DASH} crosses boundary")
             try:
                 pc = scope_inst.getPortConnection(port.name)
                 if pc and pc.expression and hasattr(pc.expression, 'symbol'):
-                    conns.append(f"  {C.dim('\u2514\u2500')} connected to {C.cyan(pc.expression.symbol.name)} in parent")
+                    conns.append(f"  {C.dim(GLYPH_CORNER + GLYPH_HR)} connected to {C.cyan(pc.expression.symbol.name)} in parent")
             except Exception:
                 pass
         return conns
