@@ -177,12 +177,43 @@ rtl-lint -d ./rtl --summary
 
 # Opt-in checks and machine-readable output
 rtl-lint -d ./rtl --shadow            # variable-shadowing analysis
+rtl-lint -d ./rtl --cdc               # clock-domain-crossing detection
 rtl-lint -d ./rtl --weverything       # enable every pyslang warning
 rtl-lint -d ./rtl --json > lint.json
 ```
 
 By default `rtl-lint` runs pyslang's standard semantic checks plus
 unused/undriven analysis.  Pass `--no-unused` to skip the latter.
+
+### Clock-domain-crossing check (`--cdc`)
+
+Opt-in flop-to-flop CDC analysis. When enabled, `rtl-lint` walks every
+`always_ff` block, infers its primary clock from the timing event list
+(treating `rst*`/`reset*`/`*_n` signals as resets so async-reset
+domains don't get flagged), then maps which clock each signal is
+written and read in. A signal written in clock domain A and read in
+clock domain B ≠ A is reported as rule `cdc-crossing`, with the
+location pointing at the unsafe read.
+
+```bash
+rtl-lint -d ./rtl --cdc                      # one-off
+rtl-lint -d ./rtl --cdc --cdc-reset 'arst*'  # extra reset-name globs
+```
+
+```toml
+# Or via config:
+[lint]
+cdc = true
+cdc_reset = ["arst*"]      # extra reset patterns
+```
+
+`cdc-crossing` flows through the same severity/waiver pipeline as
+every other rule — disable it project-wide with
+`[rules] "cdc-crossing" = "off"`, or waive a specific reviewed crossing
+(e.g. the first flop of a 2-FF synchronizer) with a `[[waive]]` entry.
+Inline `` `pragma `` waivers do **not** apply to `cdc-crossing`
+(pyslang's pragma engine only knows its native diagnostic codes); use
+a `[[waive]]` block instead.
 
 ### Configuring & waiving checks
 
@@ -319,7 +350,7 @@ an output is a common, benign idiom).
 | `src/rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
 | `src/rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
 | `src/signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
-| `src/rtl_lint.py` | ~580 | Semantic + unused/shadow lint, config/waivers, CLI |
+| `src/rtl_lint.py` | ~810 | Semantic + unused/shadow lint + CDC analyzer, config/waivers, CLI |
 | `src/rtl_ports.py` | ~700 | Module interface report, instance connectivity, width-mismatch check, CLI |
 
 ## Why pyslang?
