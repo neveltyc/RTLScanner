@@ -46,12 +46,15 @@ from rtl_common import (
 )
 from rtl_slang import (
     analyzed_procedures,
+    expr_symbols,
     expr_refs_symbol,
     find_signal,
+    iter_instances,
     procedure_label,
     procedure_reads_symbol,
     resolve_scope,
     scope_visit,
+    symbol_key,
 )
 
 import agent_json
@@ -213,6 +216,90 @@ class TraceResult:
             print(f"\n  {C.blue(GLYPH_CROSS + ' CROSS-HIERARCHY')} ({len(self.cross_hier)})")
             for ch in self.cross_hier:
                 print(f"    {ch}")
+        print()
+
+
+@dataclass
+class FlowEdge:
+    """One dataflow edge between elaborated symbols."""
+    source: str
+    target: str
+    kind: str
+    description: str
+    source_type: str = ""
+    target_type: str = ""
+    file: str = ""
+    line: int = 0
+
+    def key(self):
+        return (self.source, self.target, self.kind, self.file, self.line)
+
+    def to_dict(self, depth=None):
+        d = dict(source=self.source, target=self.target, kind=self.kind,
+                 description=self.description,
+                 source_type=self.source_type, target_type=self.target_type)
+        if self.file:
+            d['file'] = self.file
+            d['line'] = self.line
+        if depth is not None:
+            d['depth'] = depth
+        return d
+
+
+@dataclass
+class FlowResult:
+    """Fanin / fanout result for one starting signal."""
+    mode: str
+    signal_name: str
+    signal_type: str
+    signal_kind: str
+    scope_path: str
+    scope_module: str
+    start: str
+    edges: list = field(default_factory=list)
+    max_depth: int = 0
+
+    @property
+    def nodes(self):
+        out = [self.start]
+        seen = {self.start}
+        for edge, _depth in self.edges:
+            for node in (edge.source, edge.target):
+                if node not in seen:
+                    seen.add(node)
+                    out.append(node)
+        return out
+
+    def to_dict(self):
+        return dict(
+            mode=self.mode, signal=self.signal_name, type=self.signal_type,
+            kind=self.signal_kind, scope=self.scope_path,
+            module=self.scope_module, start=self.start,
+            max_depth=self.max_depth,
+            nodes=self.nodes,
+            edges=[edge.to_dict(depth) for edge, depth in self.edges],
+            edge_count=len(self.edges),
+        )
+
+    def pretty_print(self):
+        C = Color
+        title = "FANIN" if self.mode == "fanin" else "FANOUT"
+        print(f"Signal: {C.bold(self.signal_name)}  {C.dim(self.signal_type)}")
+        print(f"Scope:  {C.cyan(self.scope_path)}  [{C.yellow(self.scope_module)}]")
+        print(f"Mode:   {C.green(title)}  {C.dim('depth <= ' + str(self.max_depth))}")
+        print("\u2500" * 60)
+        if not self.edges:
+            print(f"\n  {C.dim('(no dataflow edges found)')}\n")
+            return
+        cur_depth = None
+        for edge, depth in self.edges:
+            if depth != cur_depth:
+                cur_depth = depth
+                print(f"\n  {C.dim('depth ' + str(depth))}")
+            loc = f"  {C.dim(edge.file + ':' + str(edge.line))}" if edge.file else ""
+            print(f"    {C.cyan(edge.source)} → "
+                  f"{C.cyan(edge.target)}  "
+                  f"{C.yellow(edge.kind)} {C.dim(edge.description)}{loc}")
         print()
 
 
@@ -398,6 +485,158 @@ class SignalTracer:
                 pass
         return conns
 
+    # ── dataflow graph ───────────────────────────────────────────────
+
+    def _sym_path(self, sym):
+        return symbol_key(sym)
+
+    def _sym_type(self, sym):
+        try:
+            return str(sym.type)
+        except Exception:
+            return ""
+
+    def _make_flow_edge(self, source, target, kind, description,
+                        loc_sym=None):
+        if source is None or target is None:
+            return None
+        f, ln = self._loc_sym(loc_sym) if loc_sym is not None else ("", 0)
+        return FlowEdge(
+            source=self._sym_path(source),
+            target=self._sym_path(target),
+            source_type=self._sym_type(source),
+            target_type=self._sym_type(target),
+            kind=kind,
+            description=description,
+            file=f,
+            line=ln,
+        )
+
+    def _port_symbol(self, port):
+        return getattr(port, 'internalSymbol', None) or port
+
+    def _assignment_left_symbols(self, expr):
+        left = getattr(expr, 'left', None)
+        return expr_symbols(left) if left is not None else expr_symbols(expr)
+
+    def _build_flow_edges(self):
+        if hasattr(self, '_flow_edges'):
+            return self._flow_edges
+
+        edges = []
+        seen = set()
+
+        def add(edge):
+            if edge is None:
+                return
+            key = edge.key()
+            if key in seen:
+                return
+            seen.add(key)
+            edges.append(edge)
+
+        for inst in iter_instances(self._root):
+            body = getattr(inst, 'body', None)
+            if body is None:
+                continue
+
+            for proc in analyzed_procedures(self._mgr, body):
+                try:
+                    drivers = [d.symbol for d in (proc.drivers or [])]
+                    reads = [r.symbol for r in (proc.readSet or [])]
+                    if not drivers or not reads:
+                        continue
+                    if proc.analyzedSymbol.kind == ast.SymbolKind.ContinuousAssign:
+                        kind = "continuous_assign"
+                        desc = "assign"
+                    elif proc.analyzedSymbol.kind == ast.SymbolKind.ProceduralBlock:
+                        kind = "procedural"
+                        desc = procedure_label(proc)
+                    else:
+                        kind = "procedure"
+                        desc = str(proc.analyzedSymbol.kind)
+                    for src in reads:
+                        for dst in drivers:
+                            add(self._make_flow_edge(
+                                src, dst, kind, desc, proc.analyzedSymbol))
+                except Exception:
+                    continue
+
+            try:
+                port_connections = inst.portConnections
+            except Exception:
+                port_connections = []
+            for pc in port_connections:
+                try:
+                    port = pc.port
+                    port_sym = self._port_symbol(port)
+                    expr = pc.expression
+                    if expr is None or port_sym is None:
+                        continue
+                    direction = port.direction
+                    if direction in (ast.ArgumentDirection.In,
+                                     ast.ArgumentDirection.InOut):
+                        for src in expr_symbols(expr):
+                            add(self._make_flow_edge(
+                                src, port_sym, "port_connection",
+                                f"{inst.name}.{port.name} input", inst))
+                    if direction in (ast.ArgumentDirection.Out,
+                                     ast.ArgumentDirection.InOut):
+                        for dst in self._assignment_left_symbols(expr):
+                            add(self._make_flow_edge(
+                                port_sym, dst, "port_connection",
+                                f"{inst.name}.{port.name} output", inst))
+                except Exception:
+                    continue
+
+        edges.sort(key=lambda e: (e.source, e.target, e.kind, e.file, e.line))
+        self._flow_edges = edges
+        return edges
+
+    def flow(self, signal_name, scope_path, mode, max_depth=4):
+        inst = self._resolve_scope(scope_path)
+        if inst is None:
+            return None
+        sym = self._find_signal(signal_name, inst.body)
+        if sym is None:
+            return None
+
+        start = self._sym_path(sym)
+        edges = self._build_flow_edges()
+        by_source, by_target = {}, {}
+        for edge in edges:
+            by_source.setdefault(edge.source, []).append(edge)
+            by_target.setdefault(edge.target, []).append(edge)
+
+        edge_map = by_target if mode == "fanin" else by_source
+        traversed = []
+        seen_edges = set()
+        seen_nodes = {start}
+        frontier = [start]
+        depth = 0
+        max_depth = max(0, int(max_depth))
+        while frontier and depth < max_depth:
+            depth += 1
+            next_frontier = []
+            for node in frontier:
+                for edge in edge_map.get(node, []):
+                    ekey = edge.key()
+                    if ekey not in seen_edges:
+                        seen_edges.add(ekey)
+                        traversed.append((edge, depth))
+                    nxt = edge.source if mode == "fanin" else edge.target
+                    if nxt not in seen_nodes:
+                        seen_nodes.add(nxt)
+                        next_frontier.append(nxt)
+            frontier = next_frontier
+
+        return FlowResult(
+            mode=mode, signal_name=signal_name, signal_type=str(sym.type),
+            signal_kind=sym.kind.name, scope_path=scope_path,
+            scope_module=inst.body.name, start=start,
+            edges=traversed, max_depth=max_depth,
+        )
+
     # ── public API ───────────────────────────────────────────────────
 
     def get_top_paths(self):
@@ -492,6 +731,16 @@ class SignalTracer:
             for r in results:
                 r.pretty_print(load_filter)
 
+    def cmd_flow(self, signal, scope, mode, max_depth=4, as_json=False):
+        r = self.flow(signal, scope, mode, max_depth)
+        if r is None:
+            print(f"Error: signal '{signal}' not found in scope '{scope}'", file=sys.stderr)
+            sys.exit(1)
+        if as_json:
+            print(json.dumps(r.to_dict(), indent=2))
+        else:
+            r.pretty_print()
+
 
 # ── Agent-mode helpers ───────────────────────────────────────────────
 def _emit_list(env, tracer, scope) -> int:
@@ -536,6 +785,31 @@ def _emit_signal(env, tracer, signal, scope, cross, load_filter) -> int:
     return emit(env.ok(data, summary))
 
 
+def _emit_flow(env, tracer, signal, scope, mode, max_depth) -> int:
+    r = tracer.flow(signal, scope, mode, max_depth)
+    if r is None:
+        return emit(env.fail(agent_json.ERR_SIGNAL_NOT_FOUND,
+                             f"signal '{signal}' not found in scope '{scope}'"))
+    rd = r.to_dict()
+    data = {
+        'mode': mode,
+        'scope': scope,
+        'signal': signal,
+        'start': rd['start'],
+        'nodes': rd['nodes'],
+        'edges': rd['edges'],
+        'max_depth': rd['max_depth'],
+    }
+    summary = {
+        'mode': mode,
+        'results': 1,
+        'nodes': len(rd['nodes']),
+        'edges': len(rd['edges']),
+        'max_depth': rd['max_depth'],
+    }
+    return emit(env.ok(data, summary))
+
+
 # ── Standalone CLI ───────────────────────────────────────────────────
 def main():
     p = argparse.ArgumentParser(
@@ -548,6 +822,8 @@ With filelist (typical debug workflow):
   signal-trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
   signal-trace --filelist rtl.f --scope top.u_dp --list
   signal-trace --filelist rtl.f --scope top.u_dp --all
+  signal-trace --filelist rtl.f --signal result --scope top.u_dp --fanin
+  signal-trace --filelist rtl.f --signal valid --scope top.u_dp --fanout
 
 With directory scan:
   signal-trace -d ./rtl --signal q --scope top.u_dp
@@ -578,6 +854,13 @@ With directory scan:
                    help='Filter loads by instance name glob (e.g. u_fifo*)')
     p.add_argument('--list', action='store_true', help='List all signals in scope')
     p.add_argument('--all', action='store_true', help='Trace every signal in scope')
+    flow = p.add_mutually_exclusive_group()
+    flow.add_argument('--fanin', action='store_true',
+                      help='Show upstream dataflow edges feeding --signal')
+    flow.add_argument('--fanout', action='store_true',
+                      help='Show downstream dataflow edges driven by --signal')
+    p.add_argument('--flow-depth', type=int, default=4, metavar='N',
+                   help='Maximum fanin/fanout traversal depth (default: 4)')
     p.add_argument('--json', action='store_true',
                    help='Emit trace results as an agent-friendly JSON envelope (see --schema)')
     p.add_argument('--schema', action='store_true',
@@ -654,19 +937,32 @@ With directory scan:
             sys.exit(_emit_list(env, tracer, scope))
         if a.all:
             sys.exit(_emit_all(env, tracer, scope, a.cross, a.filter))
+        if a.fanin or a.fanout:
+            if not a.signal:
+                die('specify --signal <name> with --fanin/--fanout',
+                    agent_json.ERR_INPUT_NOT_FOUND)
+            mode = 'fanin' if a.fanin else 'fanout'
+            sys.exit(_emit_flow(env, tracer, a.signal, scope,
+                                mode, a.flow_depth))
         if a.signal:
             sys.exit(_emit_signal(env, tracer, a.signal, scope, a.cross, a.filter))
-        die('specify --signal <name>, --list, or --all',
+        die('specify --signal <name>, --list, --all, --fanin, or --fanout',
             agent_json.ERR_INPUT_NOT_FOUND)
 
     if a.list:
         tracer.cmd_list(scope, a.json)
     elif a.all:
         tracer.cmd_trace_all(scope, a.cross, a.filter, a.json)
+    elif a.fanin or a.fanout:
+        if not a.signal:
+            print("Specify --signal <name> with --fanin/--fanout", file=sys.stderr)
+            sys.exit(1)
+        mode = 'fanin' if a.fanin else 'fanout'
+        tracer.cmd_flow(a.signal, scope, mode, a.flow_depth, a.json)
     elif a.signal:
         tracer.cmd_trace(a.signal, scope, a.cross, a.filter, a.json)
     else:
-        print("Specify --signal <name>, --list, or --all", file=sys.stderr)
+        print("Specify --signal <name>, --list, --all, --fanin, or --fanout", file=sys.stderr)
         sys.exit(1)
 
 

@@ -320,6 +320,22 @@ _TRACE_SIGNAL_LIST_ITEM = {
     },
     "additionalProperties": True,
 }
+_TRACE_FLOW_EDGE = {
+    "type": "object",
+    "required": ["source", "target", "kind", "description"],
+    "properties": {
+        "source":      {"type": "string"},
+        "target":      {"type": "string"},
+        "kind":        {"type": "string"},
+        "description": {"type": "string"},
+        "source_type": {"type": "string"},
+        "target_type": {"type": "string"},
+        "file":        {"type": "string"},
+        "line":        {"type": "integer"},
+        "depth":       {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
 
 _TRACE_SCHEMA = _envelope_schema(
     "signal-trace",
@@ -327,12 +343,22 @@ _TRACE_SCHEMA = _envelope_schema(
         "type": "object",
         "required": ["mode", "scope"],
         "properties": {
-            "mode":    {"type": "string", "enum": ["signal", "all", "list"]},
+            "mode":    {"type": "string",
+                        "enum": ["signal", "all", "list", "fanin", "fanout"]},
             "scope":   {"type": "string"},
             "results": {"type": "array", "items": _TRACE_RESULT,
                         "description": "Populated for mode=signal|all."},
             "signals": {"type": "array", "items": _TRACE_SIGNAL_LIST_ITEM,
                         "description": "Populated for mode=list."},
+            "signal":  {"type": "string",
+                        "description": "Starting signal for mode=fanin|fanout."},
+            "start":   {"type": "string",
+                        "description": "Elaborated hierarchical path of the starting signal."},
+            "nodes":   {"type": "array", "items": {"type": "string"},
+                        "description": "Populated for mode=fanin|fanout."},
+            "edges":   {"type": "array", "items": _TRACE_FLOW_EDGE,
+                        "description": "Populated for mode=fanin|fanout."},
+            "max_depth": {"type": "integer"},
         },
     },
     summary_schema={
@@ -344,6 +370,9 @@ _TRACE_SCHEMA = _envelope_schema(
             "drivers": {"type": "integer"},
             "loads":   {"type": "integer"},
             "signals": {"type": "integer"},
+            "nodes":   {"type": "integer"},
+            "edges":   {"type": "integer"},
+            "max_depth": {"type": "integer"},
         },
     },
 )

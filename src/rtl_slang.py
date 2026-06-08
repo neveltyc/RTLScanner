@@ -49,6 +49,51 @@ def expr_refs_symbol(expr, symbol) -> bool:
     return bool(hit)
 
 
+def expr_symbols(expr) -> list:
+    """Return unique symbols referenced by an analyzed expression."""
+    out = []
+    seen = set()
+
+    def visit(node):
+        try:
+            sym = node.symbol
+        except Exception:
+            return
+        key = symbol_key(sym)
+        if key not in seen:
+            seen.add(key)
+            out.append(sym)
+
+    try:
+        expr.visit(f=visit)
+    except Exception:
+        pass
+    return out
+
+
+def iter_instances(root):
+    """Yield elaborated instances under root in hierarchy traversal order."""
+    if ast is None:
+        return
+    items = []
+
+    def collect(sym):
+        items.append(sym)
+
+    try:
+        root.visit(lookup_table={ast.SymbolKind.Instance: collect})
+    except Exception:
+        return
+
+    seen = set()
+    for inst in items:
+        key = symbol_key(inst)
+        if key in seen:
+            continue
+        seen.add(key)
+        yield inst
+
+
 def scope_visit(body, kinds):
     """Visit body with a lookup table, skipping child instances by default."""
     if ast is None:
