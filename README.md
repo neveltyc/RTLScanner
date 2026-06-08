@@ -1,12 +1,13 @@
 # RTLScanner
 
-A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection
-and signal driver/load tracing.
+A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection,
+signal driver/load tracing, and static linting.
 
 | Tool | Purpose | Typical stage |
 |------|---------|---------------|
 | `rtl-tree` | Hierarchy viewer & filelist generator | Architecture / code organisation |
 | `signal-trace` | Signal driver & load analyzer | Simulation / debug |
+| `rtl-lint` | Static linter (width, unused, case, latch, …) | Code review / CI |
 
 ## Install
 
@@ -146,6 +147,64 @@ Scope:  trace_top.u_dp  [datapath_v2]
     → assign → sum  examples/trace/trace_top.sv:35
 ```
 
+## Static Linter (`rtl-lint`)
+
+A fast linter built on pyslang's elaboration + analysis engine.  It
+catches real semantic problems that regex linters miss — width
+mismatches, unused/undriven signals and ports, missing case defaults,
+inferred latches, multi-driven nets — using the same filelist
+infrastructure as the other tools.  Designed to drop straight into CI.
+
+```bash
+# Lint a design via filelist or directory scan
+rtl-lint --filelist rtl.f
+rtl-lint -d ./rtl
+
+# Fail the build (exit 1) on any warning — ideal for CI gates
+rtl-lint -d ./rtl --werror
+
+# Suppress or promote individual rules (name or glob)
+rtl-lint -d ./rtl --disable case-default --disable 'width-*'
+rtl-lint -d ./rtl --error width-trunc
+
+# Focus on a rule family, or show only the summary
+rtl-lint -d ./rtl --rule 'unused-*'
+rtl-lint -d ./rtl --summary
+
+# Opt-in checks and machine-readable output
+rtl-lint -d ./rtl --shadow            # variable-shadowing analysis
+rtl-lint -d ./rtl --weverything       # enable every pyslang warning
+rtl-lint -d ./rtl --json > lint.json
+```
+
+By default `rtl-lint` runs pyslang's standard semantic checks plus
+unused/undriven analysis.  Pass `--no-unused` to skip the latter.
+
+### Example
+
+```bash
+rtl-lint -d examples/lint --no-color
+```
+
+```
+examples/lint/lint_demo.sv
+        8:24  warning   unused port signal 'b'  [unused-port]
+       12:17  warning   variable 'dead' is assigned but its value is never used  [unused-but-set-variable]
+       15:18  warning   implicit conversion truncates from 8 to 4 bits  [width-trunc]
+       29:17  warning   variable 'mode' is never assigned a value  [unassigned-variable]
+        32:9  warning   'case' missing 'default' label  [case-default]
+       33:20  warning   latch inferred for 'result' because it is not assigned on all control paths  [inferred-latch]
+       45:10  warning   output port 'y' is explicitly connected to nothing  [empty-output-connection]
+```
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| `0` | clean (no error-level findings) |
+| `1` | one or more error-level findings (or warnings with `--werror`) |
+| `2` | usage / source error |
+
 ## Code structure
 
 | File | Lines | Responsibility |
@@ -153,6 +212,7 @@ Scope:  trace_top.u_dp  [datapath_v2]
 | `rtl_common.py` | ~490 | Shared infra: Color, filelist parsing, compilation builder |
 | `rtl_tree.py` | ~340 | Hierarchy building, tree display, CLI |
 | `signal_trace.py` | ~610 | Driver/load analysis, signal tracing, CLI |
+| `rtl_lint.py` | ~390 | Semantic + unused/shadow lint, rule control, CLI |
 
 ## Why pyslang?
 
