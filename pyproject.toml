@@ -19,5 +19,5 @@ rtl-lint = "rtl_lint:main"
 rtl-ports = "rtl_ports:main"
 
 [tool.setuptools]
-py-modules = ["rtl_tree", "rtl_common", "signal_trace", "rtl_lint", "rtl_ports", "agent_json"]
+py-modules = ["rtl_tree", "rtl_common", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "agent_json"]
 package-dir = {"" = "src"}
