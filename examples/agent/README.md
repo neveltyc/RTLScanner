@@ -71,6 +71,7 @@ Closed enum of error codes:
 |-------------------------------|------------------------------------------------------------------|
 | `tree.out.json`               | `rtl-tree -d examples/basic --json`                              |
 | `trace.out.json`              | `signal-trace -d examples/basic --signal q --scope top.u_dp0 --json` |
+| `flow.out.json`               | `signal-trace -d examples/basic --signal q --scope top.u_dp0 --fanout --json` |
 | `lint.out.json`               | `rtl-lint -d examples/lint --json`                               |
 | `lint-cdc.out.json`           | `rtl-lint examples/lint/cdc_demo.sv --cdc --json`                |
 | `ports.out.json`              | `rtl-ports -d examples/ports --json`                             |
