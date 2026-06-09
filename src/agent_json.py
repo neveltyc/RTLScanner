@@ -3,7 +3,7 @@
 All subcommands share the same top-level envelope when invoked with --json::
 
     {
-      "tool":        "rtl-tree",
+      "tool":        "tree",
       "version":     "0.1.3",
       "status":      "ok" | "error",
       "command":     { <argparse Namespace echo, output flags filtered out> },
@@ -58,7 +58,7 @@ class Envelope:
 
     Typical use in a CLI's --json path::
 
-        env = Envelope("rtl-tree", filter_command(args, {"json","schema","no_color"}))
+        env = Envelope("tree", filter_command(args, {"json","schema","no_color"}))
         try:
             ... build data ...
             for d in diagnostics: env.add_diagnostic(...)

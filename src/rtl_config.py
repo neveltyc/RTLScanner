@@ -188,26 +188,35 @@ def build_filelist(ri: ResolvedInputs) -> FileList:
     Raises FileNotFoundError on missing .f files; raises ValueError if a
     filelist uses the configured prefix token but no root was configured.
     """
+    # Cheap, file-independent guard: is a root configured anywhere?  When it
+    # is, the prefix-without-root heuristic below is irrelevant, so we skip
+    # the (potentially second) read of the filelist entirely.
+    root_unconfigured = (
+        ri.root == Path(".").expanduser().resolve()
+        and not os.environ.get(ENV_ROOT)
+        and not ri.config_path
+    )
+
     parsed = []
     for fl in ri.filelist_files:
-        try:
-            pl = parse_filelist(fl, ri.root, prefix=ri.prefix)
-        except FileNotFoundError:
-            raise
-        # Detect "prefix used but root looks unconfigured"
-        if (
-            ri.prefix
-            and ri.prefix in Path(fl).read_text(errors="ignore")
-            and ri.root == Path(".").expanduser().resolve()
-            and not os.environ.get(ENV_ROOT)
-            and not (ri.config_path)
-        ):
-            # User likely needs to set root somewhere
-            raise ValueError(
-                f"filelist {fl!r} uses {ri.prefix!r} but no root is configured\n"
-                f"  set [inputs].root in ./{CONFIG_NAME}, or\n"
-                f"  export {ENV_ROOT}=<path>"
-            )
+        # parse_filelist raises FileNotFoundError for a missing .f file; that
+        # propagates to the caller (documented), which maps it to BAD_FILELIST.
+        pl = parse_filelist(fl, ri.root, prefix=ri.prefix)
+        # Detect "prefix token used but no root configured anywhere".  Only
+        # reached when root is unconfigured, so `fl` resolves against CWD and
+        # this read matches what parse_filelist just read.  Guard the read so
+        # the heuristic can never raise on its own.
+        if ri.prefix and root_unconfigured:
+            try:
+                uses_prefix = ri.prefix in Path(fl).read_text(errors="ignore")
+            except OSError:
+                uses_prefix = False
+            if uses_prefix:
+                raise ValueError(
+                    f"filelist {fl!r} uses {ri.prefix!r} but no root is configured\n"
+                    f"  set [inputs].root in ./{CONFIG_NAME}, or\n"
+                    f"  export {ENV_ROOT}=<path>"
+                )
         parsed.append(pl)
 
     paths = list(ri.positional_files) + list(ri.dir_paths)
