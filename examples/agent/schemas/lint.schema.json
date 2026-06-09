@@ -87,7 +87,8 @@
                       "semantic",
                       "unused",
                       "shadow",
-                      "cdc"
+                      "cdc",
+                      "port-connect"
                     ]
                   },
                   "waived_reason": {
@@ -142,7 +143,8 @@
                       "semantic",
                       "unused",
                       "shadow",
-                      "cdc"
+                      "cdc",
+                      "port-connect"
                     ]
                   },
                   "waived_reason": {

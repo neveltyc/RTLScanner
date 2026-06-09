@@ -74,12 +74,12 @@ class InputsResolutionTests(unittest.TestCase):
             '[inputs]\ndir = ["examples/basic"]\n'
         )
         env, _, rc = run_json(
-            "signals", "--scope", "lint_demo",
+            "scope", "--signals", "--scope", "lint_demo",
             cwd=self.tmp,
             env={**self._clean_env(), "RTLSCANNER_DIR": "examples/lint"},
         )
         self.assertEqual(rc, 0)
-        # signals fall under lint_demo module ⇒ env-dir worked
+        # Signals fall under lint_demo module, so env-dir worked.
         self.assertGreater(len(env["data"]["signals"]), 0)
 
     def test_cli_overrides_env(self):
@@ -184,7 +184,7 @@ class SharedCliPreparationTests(unittest.TestCase):
     def test_bad_filelist_json_is_shared_by_compiling_commands(self):
         cases = [
             ("tree",),
-            ("ports",),
+            ("scope",),
             ("trace", "--signal", "clk"),
         ]
         for cmd in cases:
@@ -201,7 +201,7 @@ class SharedCliPreparationTests(unittest.TestCase):
 
     def test_no_source_json_uses_input_not_found_envelope(self):
         env, stderr, rc = run_json(
-            "ports", cwd=self.tmp, env=self._clean_env()
+            "scope", cwd=self.tmp, env=self._clean_env()
         )
 
         self.assertEqual(rc, 1)
@@ -213,7 +213,7 @@ class SharedCliPreparationTests(unittest.TestCase):
         cases = [
             ("trace", "-d", "examples/basic", "--signal", "clk"),
             ("xref", "-d", "examples/basic", "--signal", "clk"),
-            ("inspect", "-d", "examples/basic"),
+            ("scope", "-d", "examples/basic"),
         ]
         for cmd in cases:
             with self.subTest(cmd=cmd[0]):
@@ -245,7 +245,7 @@ class SharedCliPreparationTests(unittest.TestCase):
         # honored (and reported as not-found) rather than silently auto-selecting
         # the sole top.  Auto-detection only applies when --scope is omitted.
         env, _, rc = run_json(
-            "inspect", "-d", "examples/basic", "--scope", "",
+            "scope", "-d", "examples/basic", "--scope", "",
             cwd=self.tmp, env=self._clean_env(),
         )
 
@@ -255,7 +255,7 @@ class SharedCliPreparationTests(unittest.TestCase):
 
         # Sanity check the contrast: omitting --scope still auto-detects "top".
         ok_env, _, ok_rc = run_json(
-            "inspect", "-d", "examples/basic",
+            "scope", "-d", "examples/basic",
             cwd=self.tmp, env=self._clean_env(),
         )
         self.assertEqual(ok_rc, 0)
@@ -406,6 +406,26 @@ class LintRuleModelTests(unittest.TestCase):
         self.assertEqual(rc, 1)
         rules = {f["rule"] for f in env["data"]["findings"]}
         self.assertIn("CouldNotOpenIncludeFile", rules)
+
+    def test_port_connect_rule_reports_connection_issues(self):
+        src = self.tmp / "port_connect_demo.sv"
+        src.write_text(
+            "module child(input logic [3:0] a, output logic [3:0] y);\n"
+            "  assign y = a;\n"
+            "endmodule\n"
+            "module top(input logic [7:0] in);\n"
+            "  child u(.a(in), .y());\n"
+            "endmodule\n"
+        )
+
+        env, _, _ = run_json("lint", str(src), "--rules", "port-connect",
+                             cwd=self.tmp, env=self._no_env())
+        rules = {f["rule"] for f in env["data"]["findings"]}
+        checks = {f["check"] for f in env["data"]["findings"]}
+
+        self.assertEqual(checks, {"port-connect"})
+        self.assertIn("port-width-mismatch", rules)
+        self.assertIn("port-unconnected", rules)
 
 
 if __name__ == "__main__":

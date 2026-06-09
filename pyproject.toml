@@ -16,5 +16,5 @@ dependencies = [
 rtlscanner = "rtlscanner:main"
 
 [tool.setuptools]
-py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "rtl_xref", "rtl_inspect", "agent_json"]
+py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang", "signal_trace", "rtl_lint", "rtl_scope", "rtl_xref", "agent_json"]
 package-dir = {"" = "src"}

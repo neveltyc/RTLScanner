@@ -8,7 +8,6 @@ already exists.  Traces the single driver and all loads of a signal.
 Primary usage (with filelist):
     rtlscanner trace --filelist rtl.f --signal q --scope top.u_dp0
     rtlscanner trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
-    rtlscanner signals --filelist rtl.f --scope top.u_dp0
     rtlscanner fanin --filelist rtl.f --signal q --scope top.u_dp0
 
 Also works with directory scan:
@@ -640,17 +639,6 @@ class SignalTracer:
                 continue
         return paths
 
-    def list_signals(self, scope_path):
-        inst = self._resolve_scope(scope_path)
-        if inst is None:
-            return []
-        sigs = []
-        def _c(sym):
-            sigs.append({'name': sym.name, 'kind': sym.kind.name, 'type': str(sym.type)})
-            return ast.VisitAction.Skip
-        self._scope_visit(inst.body, {ast.SymbolKind.Net: _c, ast.SymbolKind.Variable: _c})
-        return sigs
-
     def trace(self, signal_name, scope_path, cross=False):
         inst = self._resolve_scope(scope_path)
         if inst is None:
@@ -677,7 +665,7 @@ class SignalTracer:
 
 # ── Shared input/dispatch helpers ────────────────────────────────────
 def _prepare(args, *, need_signal=False):
-    """Common setup for trace/signals/fanin/fanout: resolve inputs, build
+    """Common setup for trace/fanin/fanout: resolve inputs, build
     compilation, auto-detect scope.  Returns (tracer, scope) or exits."""
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
     tracer = SignalTracer(prepared.comp)
@@ -730,35 +718,6 @@ def run_trace(args, env):
         return emit(env.ok(data, summary))
     r.pretty_print(args.filter)
     return 0
-
-
-# ── Subcommand: signals ──────────────────────────────────────────────
-def add_signals_args(p):
-    g = p.add_argument_group('signals')
-    g.add_argument('--scope', default=None, metavar='SCOPE',
-                   help='Hierarchical scope; auto-detect when single top')
-
-
-def run_signals(args, env):
-    tracer, scope = _prepare(args)
-    sigs = tracer.list_signals(scope)
-    if not sigs:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SCOPE_NOT_FOUND,
-            f"scope '{scope}' not found or empty",
-            1,
-        )
-    if env is not None:
-        return emit(env.ok(
-            {'mode': 'list', 'scope': scope, 'signals': sigs},
-            {'mode': 'list', 'signals': len(sigs)},
-        ))
-    print(f"Signals in {Color.cyan(scope)}:\n")
-    for s in sigs:
-        print(f"  {Color.bold(s['name']):24s}  {Color.dim(s['type']):20s}  ({s['kind']})")
-    print(f"\n{Color.dim(str(len(sigs)) + ' signals')}")
-    return 0
-
 
 # ── Subcommands: fanin / fanout ──────────────────────────────────────
 def add_flow_args(p):

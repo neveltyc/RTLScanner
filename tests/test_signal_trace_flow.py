@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -40,6 +41,67 @@ def edge_keys(envelope):
 
 
 class FlowSubcommandTests(unittest.TestCase):
+    def test_scope_help_describes_sections(self):
+        text = run_help("scope")
+        self.assertIn("--signals", text)
+        self.assertIn("--typedefs", text)
+        self.assertIn("--connections", text)
+
+    def test_scope_default_reports_direct_contents(self):
+        env = run_json(
+            "scope",
+            "-d", "examples/basic",
+            "--scope", "top.u_dp0",
+        )
+
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["data"]["mode"], "scope")
+        self.assertIn("ports", env["data"])
+        self.assertIn("signals", env["data"])
+        self.assertIn("instances", env["data"])
+        self.assertIn("params", env["data"])
+        self.assertNotIn("connections", env["data"])
+        self.assertEqual({s["name"] for s in env["data"]["signals"]}, {"q"})
+
+    def test_scope_connections_are_direct_children(self):
+        env = run_json(
+            "scope",
+            "-d", "examples/basic",
+            "--scope", "top.u_dp0",
+            "--connections",
+        )
+
+        instances = {c["instance"] for c in env["data"]["connections"]}
+        self.assertEqual(instances, {"top.u_dp0.u_reg", "top.u_dp0.u_alu"})
+
+    def test_scope_typedefs_reports_local_type_defs(self):
+        src = Path("/tmp/rtlscanner_scope_typedefs.sv")
+        src.write_text(textwrap.dedent(
+            """
+            module typed(input logic [7:0] in, output logic [7:0] out);
+              typedef enum logic [1:0] {IDLE, BUSY} state_t;
+              typedef struct packed { logic [7:0] data; logic valid; } packet_t;
+              assign out = in;
+            endmodule
+            module top(input logic [7:0] a, output logic [7:0] y);
+              typed u(.in(a), .out(y));
+            endmodule
+            """
+        ))
+
+        env = run_json(
+            "scope",
+            str(src),
+            "--scope", "top.u",
+            "--typedefs",
+        )
+        typedefs = {item["name"]: item for item in env["data"]["typedefs"]}
+
+        self.assertIn("state_t", typedefs)
+        self.assertIn("packet_t", typedefs)
+        self.assertEqual(typedefs["state_t"]["kind"], "enum")
+        self.assertEqual(typedefs["packet_t"]["kind"], "struct")
+
     def test_fanin_help_describes_depth(self):
         text = run_help("fanin")
         self.assertIn("--signal", text)

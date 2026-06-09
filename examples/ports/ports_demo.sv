@@ -1,4 +1,4 @@
-// Demo for rtl_ports — exercises a mix of widths, directions,
+// Demo for port connection checks: exercises a mix of widths, directions,
 // unconnected ports, and width-mismatched connections.
 
 module fifo #(
