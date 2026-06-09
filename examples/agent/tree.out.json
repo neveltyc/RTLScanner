@@ -1,6 +1,6 @@
 {
   "tool": "tree",
-  "version": "0.1.3",
+  "version": "<tool-version>",
   "status": "ok",
   "command": {
     "cmd": "tree",
@@ -99,7 +99,7 @@
     ],
     "filelist": {
       "sources": [
-        "/mnt/data/rtlscanner_work_013/RTLScanner/examples/basic/top.sv"
+        "./examples/basic/top.sv"
       ],
       "include_dirs": [],
       "defines": {}

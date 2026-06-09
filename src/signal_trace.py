@@ -6,13 +6,13 @@ Designed for the debug/simulation workflow where a VCS-style filelist
 already exists.  Traces the single driver and all loads of a signal.
 
 Primary usage (with filelist):
-    signal_trace --filelist rtl.f --signal q --scope top.u_dp0
-    signal_trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
-    signal_trace --filelist rtl.f --scope top.u_dp0 --list
-    signal_trace --filelist rtl.f --scope top.u_dp0 --all
+    rtlscanner trace --filelist rtl.f --signal q --scope top.u_dp0
+    rtlscanner trace --filelist rtl.f --signal clk --scope top --filter 'u_dp*'
+    rtlscanner signals --filelist rtl.f --scope top.u_dp0
+    rtlscanner fanin --filelist rtl.f --signal q --scope top.u_dp0
 
 Also works with directory scan:
-    signal_trace -d ./rtl --signal q --scope top.u_dp0
+    rtlscanner trace -d ./rtl --signal q --scope top.u_dp0
 
 Install dependency:
     pip install pyslang

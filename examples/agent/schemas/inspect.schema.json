@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "inspect agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `inspect --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "description": "Stable agent-mode JSON envelope produced by `inspect --json`. All RTLScanner subcommands share the same top-level shape.",
   "type": "object",
   "required": [
     "tool",
@@ -91,6 +91,18 @@
                   "expression": {
                     "type": "string"
                   },
+                  "bit_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "is_signed": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
                   "hierarchical_path": {
                     "type": "string"
                   },
@@ -105,18 +117,6 @@
                   },
                   "line": {
                     "type": "integer"
-                  },
-                  "bit_width": {
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  },
-                  "is_signed": {
-                    "type": [
-                      "boolean",
-                      "null"
-                    ]
                   }
                 },
                 "additionalProperties": true
@@ -165,12 +165,6 @@
                     "items": {
                       "type": "string"
                     }
-                  },
-                  "file": {
-                    "type": "string"
-                  },
-                  "line": {
-                    "type": "integer"
                   },
                   "member_details": {
                     "type": "array",
@@ -236,6 +230,12 @@
                       },
                       "additionalProperties": true
                     }
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
                   }
                 },
                 "additionalProperties": true

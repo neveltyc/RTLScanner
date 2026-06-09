@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "xref agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `xref --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "description": "Stable agent-mode JSON envelope produced by `xref --json`. All RTLScanner subcommands share the same top-level shape.",
   "type": "object",
   "required": [
     "tool",

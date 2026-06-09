@@ -1,6 +1,6 @@
 {
   "tool": "trace",
-  "version": "0.1.3",
+  "version": "<tool-version>",
   "status": "ok",
   "command": {
     "cmd": "trace",

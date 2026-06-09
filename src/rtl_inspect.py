@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """rtl_inspect — elaborated scope metadata report.
 
-The command intentionally stays source/debug oriented: it exposes the
-parameter and type information that pyslang already elaborated, without
-trying to become a synthesis or formal-analysis backend.
+The command reports parameter and local type information from the
+elaborated design.
 """
 
 from __future__ import annotations

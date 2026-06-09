@@ -1,6 +1,6 @@
 # Agent-Friendly JSON Mode
 
-`rtlscanner` exposes nine subcommands behind a unified JSON envelope when
+`rtlscanner` exposes its subcommands behind a JSON envelope when
 invoked with `--json`. The envelope shape is identical across all
 subcommands, so a single consumer (LLM agent, MCP server, CI script)
 can drive every one of them without per-subcommand parsing.
@@ -10,7 +10,7 @@ can drive every one of them without per-subcommand parsing.
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.3",
+  "version":     "<tool-version>",
   "status":      "ok",
   "command":     { /* echo of parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ },
@@ -20,14 +20,13 @@ can drive every one of them without per-subcommand parsing.
 }
 ```
 
-Top-level keys are **always present** (even when empty). The shape is the
-same across all nine subcommands — only `tool`, `data`, and `summary`
-differ.
+Top-level keys are **always present** (even when empty). Only `tool`,
+`data`, and `summary` differ by subcommand.
 
 ## Discovering a subcommand's schema
 
 Each subcommand exposes its own JSON Schema (draft-07) via `--schema`.
-Cache it once per release, then validate every envelope you receive:
+Use it to validate envelopes:
 
 ```bash
 rtlscanner tree    --schema > schemas/tree.schema.json
@@ -95,8 +94,7 @@ CDC findings appear in `lint` output as regular lint findings:
 
 - Quick count: `data.summary.by_check.cdc`
 - **`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing`.**
-  pyslang's pragma engine only handles its native diag codes. To waive
-  a CDC finding, use `[lint].waive` (module-name glob) in
+  To waive a CDC finding, use `[lint].waive` (module-name glob) in
   `.rtlscanner.toml`:
 
   ```toml
@@ -108,7 +106,8 @@ CDC findings appear in `lint` output as regular lint findings:
 
 Stable across all subcommands:
 
-- File location: `file`, `line`, `col` (never `filename`/`location`/`lineno`)
+- Diagnostics and lint locations use `file`, `line`, `col`
+- `xref` source locations also expose `column` and `location`
 - Severity: `error` | `warning` | `note` (lint also uses `ignored` for waived)
 - Hierarchical paths: `path` (on a node), `scope` (for scope-limited queries)
 - Lists are **always present**, empty becomes `[]`, not absent
@@ -116,7 +115,7 @@ Stable across all subcommands:
 ## Configuration
 
 `rtlscanner` reads `./.rtlscanner.toml` (CWD only, no walk-up, no
-`--config` flag). Five environment variables override the config:
+`--config` flag). These environment variables override the config:
 `RTLSCANNER_FILELIST`, `RTLSCANNER_DIR`, `RTLSCANNER_EXCLUDE`,
 `RTLSCANNER_ROOT`, `RTLSCANNER_PREFIX`. CLI flags override env vars.
 
