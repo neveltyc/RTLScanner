@@ -11,11 +11,11 @@ Three modes:
 Output: pretty (default), --markdown, or --json.
 
 Examples:
-    rtl_ports -d ./rtl                          # all module interfaces
-    rtl_ports -d ./rtl --module cpu_core        # filter by module name
-    rtl_ports -d ./rtl --markdown > IFACE.md    # auto-generate docs
-    rtl_ports -d ./rtl --instances              # connectivity per instance
-    rtl_ports -d ./rtl --check                  # only issues
+    rtlscanner ports -d ./rtl                          # all module interfaces
+    rtlscanner ports -d ./rtl --module cpu_core        # filter by module name
+    rtlscanner ports -d ./rtl --markdown > IFACE.md    # auto-generate docs
+    rtlscanner ports -d ./rtl --instances              # connectivity per instance
+    rtlscanner ports -d ./rtl --check                  # only issues
 
 Install dependency:
     pip install pyslang
@@ -605,7 +605,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                     metavar='GLOB',
                     help='Filter instances by hierarchical path (comma-list or repeat)')
 
-    out = p.add_argument_group('output')
+    out = p.add_argument_group('format & exit')
     out.add_argument('--markdown', action='store_true',
                      help='Render as Markdown tables')
     out.add_argument('--strict', action='store_true',

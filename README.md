@@ -1,11 +1,11 @@
 # RTLScanner
 
-A pyslang-powered toolkit for SystemVerilog RTL hierarchy inspection,
-signal driver/load tracing, dataflow analysis, static linting, and
-module interface reporting.
+RTLScanner wraps pyslang's SystemVerilog parsing, elaboration, and
+analysis capabilities into an agent-friendly CLI for RTL inspection and
+debug. It provides terminal and JSON workflows for hierarchy, signal
+tracing, dataflow, lint findings, ports, xrefs, and elaborated metadata.
 
-All capabilities are exposed under a single CLI — `rtlscanner` — with
-nine subcommands:
+Use `rtlscanner <subcommand>`:
 
 | Subcommand | Purpose | Typical stage |
 |------------|---------|---------------|
@@ -26,13 +26,14 @@ pip install -e .
 rtlscanner --help
 ```
 
-Requires Python 3.8+; pulls in `pyslang>=11.0.0`.
+Requires Python 3.8+ and pyslang. `pip install -e .` installs pyslang
+and the other declared dependencies.
 
 ## Configuration
 
-CLI input flags are deliberately minimal — only `-d/--dir`, `-f/--filelist`,
-and `--exclude`. Project-stable inputs (filelist root, prefix tokens, etc.)
-live in env vars or `./.rtlscanner.toml`.
+Use `-d/--dir`, `-f/--filelist`, and `--exclude` for source inputs.
+Project-stable inputs such as filelist root and prefix tokens can live
+in env vars or `./.rtlscanner.toml`.
 
 **Priority:** `CLI > env vars > ./.rtlscanner.toml > built-in defaults`
 (field-level override; not whole-layer).
@@ -123,7 +124,7 @@ rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
 rtlscanner signals -d ./rtl --scope top.u_dp
 ```
 
-Lightweight: no driver/load walk, just signal names + types + kinds.
+Lists signal names, types, and kinds.
 
 ## `rtlscanner fanin` / `fanout` — dataflow BFS
 
@@ -254,9 +255,8 @@ Findings appear as regular entries with `rule="cdc-crossing"`,
 `check="cdc"`. Customize the reset-signal recognition in
 `[lint.cdc] reset = [...]`.
 
-Note: `` `pragma diagnostic ignore `` does **not** suppress
-`cdc-crossing` — pyslang's pragma engine only handles its native diag
-codes. Use `--waive` or `[lint] waive` instead.
+Note: inline diagnostic pragmas do **not** suppress `cdc-crossing`.
+Use `--waive` or `[lint] waive` instead.
 
 ### Exit codes
 
@@ -277,13 +277,12 @@ rtlscanner ports -d ./rtl --module 'cpu_*' --markdown > IFACE.md
 
 ## Agent / JSON Mode
 
-All nine subcommands accept `--json`, producing a single uniform
-envelope shape:
+All subcommands accept `--json`, producing a single uniform envelope:
 
 ```json
 {
   "tool":        "tree",
-  "version":     "0.1.3",
+  "version":     "<tool-version>",
   "status":      "ok" | "error",
   "command":     { /* parsed CLI args, output flags stripped */ },
   "data":        { /* subcommand-specific payload */ } | null,
@@ -303,29 +302,11 @@ Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
 / `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
 non-zero exit code), never a raw stack trace.
 
-## Code structure
+## Code Structure
 
-| File | Lines | Responsibility |
-|------|-------|----------------|
-| `src/rtlscanner.py` | ~100 | Subcommand dispatch (entry point) |
-| `src/rtl_common.py` | ~490 | Color, filelist parsing, compilation builder |
-| `src/rtl_config.py` | ~190 | CLI/env/config resolution, `.rtlscanner.toml` loader |
-| `src/agent_json.py` | ~620 | Shared JSON envelope, error codes, schemas, CommaListAction |
-| `src/rtl_tree.py`   | ~360 | Hierarchy building + tree display |
-| `src/signal_trace.py` | ~890 | Driver/load + fanin/fanout |
-| `src/rtl_lint.py`   | ~760 | Semantic + unused/shadow + CDC + rule-selection model |
-| `src/rtl_ports.py`  | ~700 | Module interface & connectivity report |
-| `src/rtl_xref.py`   | ~430 | Symbol definition/reference index |
-| `src/rtl_inspect.py` | ~390 | Elaborated parameter/type reports |
-| `src/rtl_slang.py`  | ~200 | pyslang query helpers shared by the above |
-
-## Why pyslang?
-
-[pyslang](https://github.com/MikePopoloski/slang) is a real
-SystemVerilog elaborator — same engine as `slang` the CLI compiler —
-so it understands generate blocks, parameterised modules, interfaces,
-packages, and the rest of the language. Regex-based RTL tools that
-predate pyslang can't see inside `generate`, can't resolve parameter
-values, and can't tell unused-but-set from never-driven. This toolkit
-piggybacks on pyslang's analysis manager to make all of that available
-in a small set of focused subcommands.
+| Area | Files |
+|------|-------|
+| CLI and JSON envelope | `src/rtlscanner.py`, `src/agent_json.py` |
+| Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py` |
+| RTL analysis commands | `src/rtl_tree.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_ports.py`, `src/rtl_xref.py`, `src/rtl_inspect.py` |
+| Agent examples and contracts | `examples/agent/` |

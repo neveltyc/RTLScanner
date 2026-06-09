@@ -4,7 +4,7 @@ All subcommands share the same top-level envelope when invoked with --json::
 
     {
       "tool":        "tree",
-      "version":     "0.1.3",
+      "version":     "<tool-version>",
       "status":      "ok" | "error",
       "command":     { <argparse Namespace echo, output flags filtered out> },
       "data":        { <tool-specific payload, see TOOL_SCHEMAS> } | null,
@@ -238,8 +238,7 @@ def _envelope_schema(tool: str, data_schema: Dict[str, Any],
         "title": f"{tool} agent-mode output envelope",
         "description": description or
             f"Stable agent-mode JSON envelope produced by `{tool} --json`. "
-            "All envelopes share the same top-level shape across the four "
-            "RTLScanner tools.",
+            "All RTLScanner subcommands share the same top-level shape.",
         "type": "object",
         "required": ["tool", "version", "status", "command",
                      "data", "diagnostics", "errors", "summary"],

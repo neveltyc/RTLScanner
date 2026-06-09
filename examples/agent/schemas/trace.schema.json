@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "trace agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `trace --json`. All envelopes share the same top-level shape across the four RTLScanner tools.",
+  "description": "Stable agent-mode JSON envelope produced by `trace --json`. All RTLScanner subcommands share the same top-level shape.",
   "type": "object",
   "required": [
     "tool",
