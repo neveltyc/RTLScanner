@@ -4,13 +4,11 @@
 Subcommands:
     tree     — design hierarchy
     trace    — single-signal driver/loads
-    signals  — list signals in a scope
+    scope    — direct contents of one elaborated scope
     fanin    — upstream dataflow BFS
     fanout   — downstream dataflow BFS
-    lint     — semantic + unused + shadow + CDC checks
-    ports    — module/instance/port reports
+    lint     — semantic + unused + shadow + CDC + port checks
     xref     — signal/module source definitions and references
-    inspect  — elaborated parameters and local types
 """
 
 from __future__ import annotations
@@ -27,9 +25,8 @@ from rtl_common import Color
 import rtl_tree
 import signal_trace
 import rtl_lint
-import rtl_ports
 import rtl_xref
-import rtl_inspect
+import rtl_scope
 
 
 SUBCOMMANDS = {
@@ -37,8 +34,8 @@ SUBCOMMANDS = {
                 "Show design hierarchy"),
     "trace":   (signal_trace.add_trace_args,   signal_trace.run_trace,
                 "Trace a signal's driver and loads"),
-    "signals": (signal_trace.add_signals_args, signal_trace.run_signals,
-                "List signals in a scope"),
+    "scope":   (rtl_scope.add_arguments,        rtl_scope.run,
+                "Show direct contents of an elaborated scope"),
     "fanin":   (signal_trace.add_flow_args,
                 lambda a, e: signal_trace.run_flow(a, e, mode="fanin"),
                 "Walk upstream dataflow BFS from a signal"),
@@ -46,13 +43,9 @@ SUBCOMMANDS = {
                 lambda a, e: signal_trace.run_flow(a, e, mode="fanout"),
                 "Walk downstream dataflow BFS from a signal"),
     "lint":    (rtl_lint.add_arguments,        rtl_lint.run,
-                "Static lint (semantic + unused + shadow + CDC)"),
-    "ports":   (rtl_ports.add_arguments,       rtl_ports.run,
-                "Module interface and instance connectivity report"),
+                "Static lint (semantic + unused + shadow + CDC + port checks)"),
     "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
                 "Show signal/module definitions and references"),
-    "inspect": (rtl_inspect.add_arguments,      rtl_inspect.run,
-                "Show elaborated parameters and local types"),
 }
 
 
@@ -65,13 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
 Examples:
   rtlscanner tree    -d ./rtl
   rtlscanner trace   -d ./rtl -s q --scope top.u_dp
-  rtlscanner signals -d ./rtl --scope top.u_dp
+  rtlscanner scope   -d ./rtl --scope top.u_dp
   rtlscanner fanin   -d ./rtl -s result --scope top.u_dp --depth 3
   rtlscanner fanout  -d ./rtl -s q --scope top.u_dp
   rtlscanner lint    -d ./rtl --rules default,cdc
-  rtlscanner ports   -d ./rtl --check --strict
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
-  rtlscanner inspect -d ./rtl --scope top.u_dp
 
 Configuration:
   ./.rtlscanner.toml is auto-discovered (CWD only).

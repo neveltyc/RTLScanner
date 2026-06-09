@@ -1,0 +1,107 @@
+{
+  "tool": "scope",
+  "version": "0.1.3",
+  "status": "ok",
+  "command": {
+    "cmd": "scope",
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "scope": "top.u_dp0",
+    "ports": false,
+    "signals": false,
+    "instances": false,
+    "params": false,
+    "typedefs": false,
+    "connections": true,
+    "all": false
+  },
+  "data": {
+    "mode": "scope",
+    "scope": "top.u_dp0",
+    "module": "datapath",
+    "connections": [
+      {
+        "instance": "top.u_dp0.u_alu",
+        "module": "alu",
+        "port": "a",
+        "direction": "input",
+        "port_width": 8,
+        "connection": "q",
+        "conn_width": 8,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 45
+      },
+      {
+        "instance": "top.u_dp0.u_alu",
+        "module": "alu",
+        "port": "b",
+        "direction": "input",
+        "port_width": 8,
+        "connection": "b",
+        "conn_width": 8,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 45
+      },
+      {
+        "instance": "top.u_dp0.u_alu",
+        "module": "alu",
+        "port": "y",
+        "direction": "output",
+        "port_width": 8,
+        "connection": "y",
+        "conn_width": 8,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 45
+      },
+      {
+        "instance": "top.u_dp0.u_reg",
+        "module": "register",
+        "port": "clk",
+        "direction": "input",
+        "port_width": 1,
+        "connection": "clk",
+        "conn_width": 1,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 39
+      },
+      {
+        "instance": "top.u_dp0.u_reg",
+        "module": "register",
+        "port": "d",
+        "direction": "input",
+        "port_width": 8,
+        "connection": "a",
+        "conn_width": 8,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 39
+      },
+      {
+        "instance": "top.u_dp0.u_reg",
+        "module": "register",
+        "port": "q",
+        "direction": "output",
+        "port_width": 8,
+        "connection": "q",
+        "conn_width": 8,
+        "unconnected": false,
+        "file": "examples/basic/top.sv",
+        "line": 39
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "scope",
+    "connections": 6
+  }
+}

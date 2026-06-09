@@ -40,6 +40,7 @@ import agent_json
 import rtl_cli
 from agent_json import emit
 from rtl_config import lint_config
+from rtl_scope import ScopeAnalyzer
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -61,7 +62,7 @@ class LintFinding:
     severity: str       # "error" | "warning" | "note"
     rule: str           # warning option name (e.g. "width-trunc") or code name
     message: str
-    check: str          # "semantic" | "unused" | "shadow"
+    check: str          # "semantic" | "unused" | "shadow" | ...
     waived_reason: str = ""  # set when filtered out by a waiver / disabled rule
 
     def to_dict(self):
@@ -85,12 +86,14 @@ class LintRunner:
     """Runs pyslang's semantic + analysis checks and normalizes results."""
 
     def __init__(self, compilation, check_unused=True, check_shadow=False,
-                 weverything=False, check_cdc=False, cdc_reset_globs=None):
+                 weverything=False, check_cdc=False, cdc_reset_globs=None,
+                 check_port_connect=False):
         self._comp = compilation
         self._sm = compilation.sourceManager
         self._check_unused = check_unused
         self._check_shadow = check_shadow
         self._check_cdc = check_cdc
+        self._check_port_connect = check_port_connect
         self._cdc_reset_globs = cdc_reset_globs or []
         self._eng = pyslang.DiagnosticEngine(self._sm)
         if weverything:
@@ -203,6 +206,28 @@ class LintRunner:
                 findings.extend(cdc.findings())
             except Exception as e:
                 print(f"Warning: CDC analysis failed: {e}", file=sys.stderr)
+
+        # 4. Port connection checks (opt-in) -- direct replacement for the
+        # old ports --check surface.
+        if self._check_port_connect:
+            try:
+                analyzer = ScopeAnalyzer(self._comp)
+                for issue in analyzer.connection_issues():
+                    rule = {
+                        "unconnected": "port-unconnected",
+                        "width_mismatch": "port-width-mismatch",
+                    }.get(issue.kind, "port-connect")
+                    findings.append(LintFinding(
+                        file=issue.file,
+                        line=issue.line,
+                        col=0,
+                        severity=issue.severity,
+                        rule=rule,
+                        message=issue.message,
+                        check="port-connect",
+                    ))
+            except Exception as e:
+                print(f"Warning: port connection analysis failed: {e}", file=sys.stderr)
 
         findings.sort(key=lambda f: (f.file, f.line, f.col, f.rule))
         return findings
@@ -422,13 +447,13 @@ class CDCAnalyzer:
 
 # ── Rule selection model ─────────────────────────────────────────────
 # A `--rules SPEC[,...]` spec can contain:
-#   * family alias:  semantic | unused | shadow | cdc
+#   * family alias:  semantic | unused | shadow | cdc | port-connect
 #   * warning opt:   everything      (passes -Weverything to slang)
 #   * meta:          default (= semantic+unused) | all | none
 #   * rule name:     width-trunc | unused-port | ...
 #   * glob:          width-* | unused-*
 
-FAMILIES = {"semantic", "unused", "shadow", "cdc"}
+FAMILIES = {"semantic", "unused", "shadow", "cdc", "port-connect"}
 DEFAULT_FAMILIES = ["semantic", "unused"]
 WARNING_OPTIONS = {"everything"}
 META_KEYWORDS = {"default", "all", "none"}
@@ -439,6 +464,7 @@ _RULE_PREFIX_FAMILY = {
     "unused-": "unused",
     "shadow-": "shadow",
     "cdc-":    "cdc",
+    "port-":   "port-connect",
 }
 
 
@@ -450,7 +476,7 @@ def _expand_meta(specs):
             out.extend(DEFAULT_FAMILIES)
         elif s == "all":
             out.extend(DEFAULT_FAMILIES)
-            out.extend(["shadow", "cdc", "everything"])
+            out.extend(["shadow", "cdc", "port-connect", "everything"])
         elif s == "none":
             return []
         else:
@@ -664,7 +690,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     rs.add_argument("--rules", action=agent_json.CommaListAction, default=[],
                     metavar="SPEC",
                     help="Rule white list. SPEC = rule name | family "
-                         "(semantic/unused/shadow/cdc) | warning option "
+                         "(semantic/unused/shadow/cdc/port-connect) | warning option "
                          "(everything) | glob | "
                          "default/all/none. Comma-list or repeat. "
                          "Default: 'default' (semantic + unused).")
@@ -711,6 +737,7 @@ def run(args, env):
         weverything=("everything" in warning_options),
         check_cdc=("cdc" in run_families),
         cdc_reset_globs=cdc_reset_globs,
+        check_port_connect=("port-connect" in run_families),
     )
     findings = runner.run()
 

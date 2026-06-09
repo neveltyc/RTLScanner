@@ -357,16 +357,6 @@ _TRACE_RESULT = {
     },
     "additionalProperties": True,
 }
-_TRACE_SIGNAL_LIST_ITEM = {
-    "type": "object",
-    "required": ["name"],
-    "properties": {
-        "name": {"type": "string"},
-        "type": {"type": "string"},
-        "kind": {"type": "string"},
-    },
-    "additionalProperties": True,
-}
 _TRACE_FLOW_EDGE = {
     "type": "object",
     "required": ["source", "target", "kind", "description"],
@@ -403,27 +393,6 @@ _TRACE_SCHEMA = _envelope_schema(
             "results": {"type": "integer"},
             "drivers": {"type": "integer"},
             "loads":   {"type": "integer"},
-        },
-    },
-)
-
-_SIGNALS_SCHEMA = _envelope_schema(
-    "signals",
-    data_schema={
-        "type": "object",
-        "required": ["mode", "scope", "signals"],
-        "properties": {
-            "mode":    {"type": "string", "const": "list"},
-            "scope":   {"type": "string"},
-            "signals": {"type": "array", "items": _TRACE_SIGNAL_LIST_ITEM},
-        },
-    },
-    summary_schema={
-        "type": "object",
-        "required": ["mode", "signals"],
-        "properties": {
-            "mode":    {"type": "string"},
-            "signals": {"type": "integer"},
         },
     },
 )
@@ -479,7 +448,8 @@ _LINT_FINDING = {
                      "`case-default`, `latch`, `multi-driven`, `used-before-declared`."},
         "message":  {"type": "string"},
         "check":    {"type": "string",
-                     "enum": ["semantic", "unused", "shadow", "cdc"]},
+                     "enum": ["semantic", "unused", "shadow", "cdc",
+                              "port-connect"]},
         "waived_reason": {"type": "string"},
     },
     "additionalProperties": True,
@@ -521,8 +491,8 @@ _LINT_SCHEMA = _envelope_schema(
 )
 
 
-# ── rtl-ports ──
-_PORT_INFO = {
+# ── rtl-scope ──
+_SCOPE_PORT = {
     "type": "object",
     "required": ["name", "direction", "type", "width"],
     "properties": {
@@ -537,21 +507,105 @@ _PORT_INFO = {
     },
     "additionalProperties": True,
 }
-_PORT_MODULE = {
+_SCOPE_SIGNAL = {
     "type": "object",
-    "required": ["module", "kind", "ports"],
+    "required": ["name", "kind", "type", "width"],
     "properties": {
-        "module":         {"type": "string"},
-        "kind":           {"type": "string"},
-        "parameters":     {"type": "object"},
-        "instance_count": {"type": "integer"},
-        "ports":          {"type": "array", "items": _PORT_INFO},
-        "file":           {"type": "string"},
-        "line":           {"type": "integer"},
+        "name":  {"type": "string"},
+        "kind":  {"type": "string"},
+        "type":  {"type": "string"},
+        "width": {"type": ["integer", "null"]},
+        "file":  {"type": "string"},
+        "line":  {"type": "integer"},
     },
     "additionalProperties": True,
 }
-_PORT_CONNECTION = {
+_SCOPE_INSTANCE = {
+    "type": "object",
+    "required": ["instance", "module", "path", "params"],
+    "properties": {
+        "instance": {"type": "string"},
+        "module":   {"type": "string"},
+        "path":     {"type": "string"},
+        "params":   {"type": "object",
+                     "additionalProperties": {"type": "string"}},
+        "file":     {"type": "string"},
+        "line":     {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_SCOPE_PARAM = {
+    "type": "object",
+    "required": ["name", "kind", "type", "value", "expression",
+                 "hierarchical_path", "lexical_path", "bit_width", "is_signed"],
+    "properties": {
+        "name":              {"type": "string"},
+        "kind":              {"type": "string",
+                              "enum": ["parameter", "localparam", "type_parameter"]},
+        "type":              {"type": "string"},
+        "value":             {"type": ["string", "null"]},
+        "expression":        {"type": "string"},
+        "bit_width":         {"type": ["integer", "null"]},
+        "is_signed":         {"type": ["boolean", "null"]},
+        "hierarchical_path": {"type": "string"},
+        "lexical_path":      {"type": "string"},
+        "is_overridden":     {"type": "boolean"},
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_SCOPE_TYPEDEF = {
+    "type": "object",
+    "required": ["name", "kind", "type", "canonical_type",
+                 "bit_width", "hierarchical_path", "lexical_path"],
+    "properties": {
+        "name":              {"type": "string"},
+        "kind":              {"type": "string"},
+        "type":              {"type": "string"},
+        "canonical_type":    {"type": "string"},
+        "bit_width":         {"type": ["integer", "null"]},
+        "hierarchical_path": {"type": "string"},
+        "lexical_path":      {"type": "string"},
+        "members":           {"type": "array", "items": {"type": "string"}},
+        "member_details": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name"],
+                "properties": {
+                    "name":       {"type": "string"},
+                    "value":      {"type": "string"},
+                    "expression": {"type": "string"},
+                    "file":       {"type": "string"},
+                    "line":       {"type": "integer"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "fields": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["name", "type", "bit_width"],
+                "properties": {
+                    "name":       {"type": "string"},
+                    "type":       {"type": "string"},
+                    "bit_width":  {"type": ["integer", "null"]},
+                    "bit_offset": {"type": "integer"},
+                    "index":      {"type": "integer"},
+                    "file":       {"type": "string"},
+                    "line":       {"type": "integer"},
+                },
+                "additionalProperties": True,
+            },
+        },
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_SCOPE_CONNECTION = {
     "type": "object",
     "required": ["instance", "module", "port", "direction"],
     "properties": {
@@ -568,54 +622,42 @@ _PORT_CONNECTION = {
     },
     "additionalProperties": True,
 }
-_PORT_ISSUE = {
-    "type": "object",
-    "required": ["kind", "severity", "instance", "port", "message"],
-    "properties": {
-        "kind":      {"type": "string"},
-        "severity":  {"type": "string", "enum": ["warning", "note", "error"]},
-        "instance":  {"type": "string"},
-        "port":      {"type": "string"},
-        "direction": {"type": "string"},
-        "message":   {"type": "string"},
-        "file":      {"type": "string"},
-        "line":      {"type": "integer"},
-    },
-    "additionalProperties": True,
-}
 
-_PORTS_SCHEMA = _envelope_schema(
-    "ports",
+_SCOPE_SCHEMA = _envelope_schema(
+    "scope",
     data_schema={
         "type": "object",
-        "required": ["mode"],
+        "required": ["mode", "scope", "module"],
         "properties": {
-            "mode":        {"type": "string",
-                            "enum": ["modules", "instances", "check"]},
-            "modules":     {"type": "array", "items": _PORT_MODULE,
-                            "description": "Populated for mode=modules."},
-            "connections": {"type": "array", "items": _PORT_CONNECTION,
-                            "description": "Populated for mode=instances."},
-            "issues":      {"type": "array", "items": _PORT_ISSUE,
-                            "description": "Populated for mode=check."},
+            "mode":        {"type": "string", "const": "scope"},
+            "scope":       {"type": "string"},
+            "module":      {"type": "string"},
+            "ports":       {"type": "array", "items": _SCOPE_PORT},
+            "signals":     {"type": "array", "items": _SCOPE_SIGNAL},
+            "instances":   {"type": "array", "items": _SCOPE_INSTANCE},
+            "params":      {"type": "array", "items": _SCOPE_PARAM},
+            "typedefs":    {"type": "array", "items": _SCOPE_TYPEDEF},
+            "connections": {"type": "array", "items": _SCOPE_CONNECTION},
         },
+        "additionalProperties": False,
     },
     summary_schema={
         "type": "object",
         "required": ["mode"],
         "properties": {
             "mode":        {"type": "string"},
-            "modules":     {"type": "integer"},
+            "ports":       {"type": "integer"},
+            "signals":     {"type": "integer"},
+            "instances":   {"type": "integer"},
+            "params":      {"type": "integer"},
+            "typedefs":    {"type": "integer"},
             "connections": {"type": "integer"},
-            "issues":      {"type": "integer"},
-            "by_severity": {"type": "object",
-                            "additionalProperties": {"type": "integer"}},
         },
     },
 )
 
 
-# ── rtl-xref / rtl-inspect ──
+# ── rtl-xref ──
 _SYMBOL_INFO = {
     "type": "object",
     "required": ["name", "kind", "type", "hierarchical_path", "lexical_path"],
@@ -743,113 +785,14 @@ _XREF_SCHEMA = _envelope_schema(
     },
 )
 
-_INSPECT_PARAM = {
-    "type": "object",
-    "required": ["name", "kind", "type", "value", "expression",
-                 "hierarchical_path", "lexical_path", "bit_width", "is_signed"],
-    "properties": {
-        "name":              {"type": "string"},
-        "kind":              {"type": "string",
-                              "enum": ["parameter", "localparam", "type_parameter"]},
-        "type":              {"type": "string"},
-        "value":             {"type": ["string", "null"]},
-        "expression":        {"type": "string"},
-        "bit_width":         {"type": ["integer", "null"]},
-        "is_signed":         {"type": ["boolean", "null"]},
-        "hierarchical_path": {"type": "string"},
-        "lexical_path":      {"type": "string"},
-        "is_overridden":     {"type": "boolean"},
-        "file":              {"type": "string"},
-        "line":              {"type": "integer"},
-    },
-    "additionalProperties": True,
-}
-_INSPECT_TYPE = {
-    "type": "object",
-    "required": ["name", "kind", "type", "canonical_type",
-                 "bit_width", "hierarchical_path", "lexical_path"],
-    "properties": {
-        "name":              {"type": "string"},
-        "kind":              {"type": "string"},
-        "type":              {"type": "string"},
-        "canonical_type":    {"type": "string"},
-        "bit_width":         {"type": ["integer", "null"]},
-        "hierarchical_path": {"type": "string"},
-        "lexical_path":      {"type": "string"},
-        "members":           {"type": "array", "items": {"type": "string"}},
-        "member_details": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["name"],
-                "properties": {
-                    "name":       {"type": "string"},
-                    "value":      {"type": "string"},
-                    "expression": {"type": "string"},
-                    "file":       {"type": "string"},
-                    "line":       {"type": "integer"},
-                },
-                "additionalProperties": True,
-            },
-        },
-        "fields": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "required": ["name", "type", "bit_width"],
-                "properties": {
-                    "name":       {"type": "string"},
-                    "type":       {"type": "string"},
-                    "bit_width":  {"type": ["integer", "null"]},
-                    "bit_offset": {"type": "integer"},
-                    "index":      {"type": "integer"},
-                    "file":       {"type": "string"},
-                    "line":       {"type": "integer"},
-                },
-                "additionalProperties": True,
-            },
-        },
-        "file":              {"type": "string"},
-        "line":              {"type": "integer"},
-    },
-    "additionalProperties": True,
-}
-_INSPECT_SCHEMA = _envelope_schema(
-    "inspect",
-    data_schema={
-        "type": "object",
-        "required": ["mode", "scope", "module"],
-        "properties": {
-            "mode":       {"type": "string", "const": "inspect"},
-            "scope":      {"type": "string"},
-            "module":     {"type": "string"},
-            "parameters": {"type": "array", "items": _INSPECT_PARAM},
-            "types":      {"type": "array", "items": _INSPECT_TYPE},
-        },
-        "additionalProperties": False,
-    },
-    summary_schema={
-        "type": "object",
-        "required": ["mode", "parameters", "types"],
-        "properties": {
-            "mode":       {"type": "string"},
-            "parameters": {"type": "integer"},
-            "types":      {"type": "integer"},
-        },
-    },
-)
-
-
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "tree":    _TREE_SCHEMA,
     "trace":   _TRACE_SCHEMA,
-    "signals": _SIGNALS_SCHEMA,
+    "scope":   _SCOPE_SCHEMA,
     "fanin":   _FANIN_SCHEMA,
     "fanout":  _FANOUT_SCHEMA,
     "lint":    _LINT_SCHEMA,
-    "ports":   _PORTS_SCHEMA,
     "xref":    _XREF_SCHEMA,
-    "inspect": _INSPECT_SCHEMA,
 }
 
 

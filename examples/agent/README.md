@@ -31,13 +31,11 @@ Use it to validate envelopes:
 ```bash
 rtlscanner tree    --schema > schemas/tree.schema.json
 rtlscanner trace   --schema > schemas/trace.schema.json
-rtlscanner signals --schema > schemas/signals.schema.json
+rtlscanner scope   --schema > schemas/scope.schema.json
 rtlscanner fanin   --schema > schemas/fanin.schema.json
 rtlscanner fanout  --schema > schemas/fanout.schema.json
 rtlscanner lint    --schema > schemas/lint.schema.json
-rtlscanner ports   --schema > schemas/ports.schema.json
 rtlscanner xref    --schema > schemas/xref.schema.json
-rtlscanner inspect --schema > schemas/inspect.schema.json
 ```
 
 Pre-generated schemas live in `examples/agent/schemas/`.
@@ -76,13 +74,11 @@ Closed enum of error codes:
 |-----------------------|------------------------------------------------------------------|
 | `tree.out.json`       | `rtlscanner tree -d examples/basic --json`                       |
 | `trace.out.json`      | `rtlscanner trace -d examples/basic --signal q --scope top.u_dp0 --json` |
-| `signals.out.json`    | `rtlscanner signals -d examples/basic --scope top.u_dp0 --json`  |
+| `scope.out.json`      | `rtlscanner scope -d examples/basic --scope top.u_dp0 --connections --json` |
 | `flow.out.json`       | `rtlscanner fanout -d examples/basic --signal q --scope top.u_dp0 --json` |
 | `lint.out.json`       | `rtlscanner lint -d examples/lint --json`                        |
 | `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules default,cdc --json` |
-| `ports.out.json`      | `rtlscanner ports -d examples/ports --json`                      |
 | `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
-| `inspect.out.json`    | `rtlscanner inspect -d examples/trace --scope trace_top.u_dp.u_pipe --json` |
 
 ## CDC notes for agents
 
@@ -110,7 +106,7 @@ Stable across all subcommands:
 - `xref` source locations also expose `column` and `location`
 - Severity: `error` | `warning` | `note` (lint also uses `ignored` for waived)
 - Hierarchical paths: `path` (on a node), `scope` (for scope-limited queries)
-- Lists are **always present**, empty becomes `[]`, not absent
+- Reported lists are arrays; when selected but empty, they appear as `[]`
 
 ## Configuration
 

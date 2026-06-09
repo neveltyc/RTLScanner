@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "inspect agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `inspect --json`. All RTLScanner subcommands share the same top-level shape.",
+  "title": "scope agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `scope --json`. All RTLScanner subcommands share the same top-level shape.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "inspect"
+      "const": "scope"
     },
     "version": {
       "type": "string"
@@ -44,7 +44,7 @@
           "properties": {
             "mode": {
               "type": "string",
-              "const": "inspect"
+              "const": "scope"
             },
             "scope": {
               "type": "string"
@@ -52,7 +52,124 @@
             "module": {
               "type": "string"
             },
-            "parameters": {
+            "ports": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "direction",
+                  "type",
+                  "width"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "direction": {
+                    "type": "string",
+                    "enum": [
+                      "input",
+                      "output",
+                      "inout",
+                      "ref"
+                    ]
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "is_interface": {
+                    "type": "boolean"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "signals": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "kind",
+                  "type",
+                  "width"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "type": "string"
+                  },
+                  "width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "instances": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "instance",
+                  "module",
+                  "path",
+                  "params"
+                ],
+                "properties": {
+                  "instance": {
+                    "type": "string"
+                  },
+                  "module": {
+                    "type": "string"
+                  },
+                  "path": {
+                    "type": "string"
+                  },
+                  "params": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "params": {
               "type": "array",
               "items": {
                 "type": "object",
@@ -122,7 +239,7 @@
                 "additionalProperties": true
               }
             },
-            "types": {
+            "typedefs": {
               "type": "array",
               "items": {
                 "type": "object",
@@ -240,6 +357,60 @@
                 },
                 "additionalProperties": true
               }
+            },
+            "connections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "instance",
+                  "module",
+                  "port",
+                  "direction"
+                ],
+                "properties": {
+                  "instance": {
+                    "type": "string"
+                  },
+                  "module": {
+                    "type": "string"
+                  },
+                  "port": {
+                    "type": "string"
+                  },
+                  "direction": {
+                    "type": "string"
+                  },
+                  "port_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "connection": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "conn_width": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "unconnected": {
+                    "type": "boolean"
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  }
+                },
+                "additionalProperties": true
+              }
             }
           },
           "additionalProperties": false
@@ -322,18 +493,28 @@
         {
           "type": "object",
           "required": [
-            "mode",
-            "parameters",
-            "types"
+            "mode"
           ],
           "properties": {
             "mode": {
               "type": "string"
             },
-            "parameters": {
+            "ports": {
               "type": "integer"
             },
-            "types": {
+            "signals": {
+              "type": "integer"
+            },
+            "instances": {
+              "type": "integer"
+            },
+            "params": {
+              "type": "integer"
+            },
+            "typedefs": {
+              "type": "integer"
+            },
+            "connections": {
               "type": "integer"
             }
           }

@@ -2,22 +2,20 @@
 
 RTLScanner wraps pyslang's SystemVerilog parsing, elaboration, and
 analysis capabilities into an agent-friendly CLI for RTL inspection and
-debug. It provides terminal and JSON workflows for hierarchy, signal
-tracing, dataflow, lint findings, ports, xrefs, and elaborated metadata.
+debug. It provides terminal and JSON workflows for hierarchy, scope
+contents, signal tracing, dataflow, lint findings, and xrefs.
 
 Use `rtlscanner <subcommand>`:
 
 | Subcommand | Purpose | Typical stage |
 |------------|---------|---------------|
 | `tree`     | Hierarchy viewer & filelist exporter      | Architecture / code organisation |
+| `scope`    | Direct contents of one elaborated scope    | Architecture / debug |
 | `trace`    | Single-signal driver & load analyzer      | Simulation / debug |
-| `signals`  | List signals in a scope                   | Simulation / debug |
 | `fanin`    | Upstream dataflow BFS from a signal       | Simulation / debug |
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
-| `lint`     | Static linter (semantic + unused + shadow + CDC) | Code review / CI |
-| `ports`    | Module interface & connectivity report    | Documentation / integration |
+| `lint`     | Static linter (semantic + analysis + port checks) | Code review / CI |
 | `xref`     | Symbol definitions and references         | Simulation / debug / code review |
-| `inspect`  | Elaborated parameters and local types     | Integration / debug |
 
 ## Install
 
@@ -84,8 +82,8 @@ directories into the compilation.
 
 ### List-valued flags
 
-All repeatable flags (`-d`, `-f`, `--exclude`, `--module`, `--instance`,
-`--rules`, `--skip`, `--waive`) accept either a comma-list or repetition:
+All repeatable flags (`-d`, `-f`, `--exclude`, `--rules`, `--skip`,
+`--waive`) accept either a comma-list or repetition:
 
 ```bash
 rtlscanner tree -d ./rtl,./common
@@ -118,13 +116,20 @@ rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
 
 `--scope` auto-detects when there's a single top module.
 
-## `rtlscanner signals` — enumerate signals in a scope
+## `rtlscanner scope` — direct scope contents
 
 ```bash
-rtlscanner signals -d ./rtl --scope top.u_dp
+rtlscanner scope -d ./rtl --scope top.u_dp
+rtlscanner scope -d ./rtl --scope top.u_dp --signals
+rtlscanner scope -d ./rtl --scope top.u_dp --connections
+rtlscanner scope -d ./rtl --scope top.u_dp --typedefs
 ```
 
-Lists signal names, types, and kinds.
+With no section flag, `scope` reports the selected scope's ports, local
+non-port signals, direct child instances, and elaborated params. Add a
+section flag to narrow the output. `--connections` reports direct child
+instance port maps; `--typedefs` reports local typedef, enum, struct, and
+union declarations.
 
 ## `rtlscanner fanin` / `fanout` — dataflow BFS
 
@@ -188,30 +193,12 @@ Typical use: after a waveform search finds a suspicious signal, ask
 `xref` where that signal is declared, which procedural/continuous blocks
 read or write it, and which child instance ports it feeds or is driven by.
 
-## `rtlscanner inspect` — elaborated parameters and local types
-
-```bash
-rtlscanner inspect -d ./rtl --scope top.u_phy
-rtlscanner inspect -d ./rtl --scope top.u_phy --params
-rtlscanner inspect -d ./rtl --scope top.u_phy --types
-```
-
-`inspect` groups related scope metadata under one command instead of
-splitting parameters, localparams, type parameters, typedefs, enums,
-structs, and unions into separate subcommands. With no section flag it
-shows both `parameters` and `types`; `--params` or `--types` narrows the
-report. Values are read from pyslang's elaborated symbols, so overridden
-parameters and generated localparams are shown after elaboration. For
-plain Verilog, `--params` reports ordinary `parameter` / `localparam`
-metadata. For synthesizable SystemVerilog, `--types` also exposes common
-local type metadata such as enum member values and packed struct / union
-fields when pyslang provides them.
-
 ## `rtlscanner lint` — static linter
 
 Built on pyslang's elaboration + analysis engine. Catches width
 mismatches, unused/undriven signals and ports, missing case defaults,
-inferred latches, multi-driven nets, plus opt-in CDC analysis.
+inferred latches, multi-driven nets, plus opt-in CDC and port connection
+analysis.
 
 ```bash
 rtlscanner lint -d ./rtl                              # default rule set
@@ -221,6 +208,7 @@ rtlscanner lint -d ./rtl --rules default --skip case-default
 rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip modules
 rtlscanner lint -d ./rtl --strict                     # CI gate: warning → error
 rtlscanner lint -d ./rtl --min-severity error         # display floor
+rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
 ```
 
 ### Rule selection model
@@ -228,7 +216,7 @@ rtlscanner lint -d ./rtl --min-severity error         # display floor
 `--rules SPEC[,SPEC...]` — white list. SPEC can be:
 
 - a rule name: `width-trunc`, `unused-port`, …
-- a family alias: `semantic`, `unused`, `shadow`, `cdc`
+- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `port-connect`
 - a warning option: `everything` (enable slang's broader warning set)
 - a glob: `width-*`
 - a meta value: `default` (= `semantic + unused`), `all`, `none`
@@ -258,22 +246,16 @@ Findings appear as regular entries with `rule="cdc-crossing"`,
 Note: inline diagnostic pragmas do **not** suppress `cdc-crossing`.
 Use `--waive` or `[lint] waive` instead.
 
+### Port connections
+
+`--rules port-connect` reports unconnected child instance ports and port
+width mismatches as lint findings.
+
 ### Exit codes
 
 - `0` — no error-level findings
 - `1` — one or more error-level findings, or `--strict` with any finding
 - `2` — usage / source error
-
-## `rtlscanner ports` — module interface report
-
-```bash
-rtlscanner ports -d ./rtl                            # module interfaces (default)
-rtlscanner ports -d ./rtl --instances                # per-instance connectivity
-rtlscanner ports -d ./rtl --check --strict           # CI: fail on issues
-rtlscanner ports -d ./rtl --module 'cpu_*' --markdown > IFACE.md
-```
-
-`--strict` makes `--check` exit non-zero when warnings are found.
 
 ## Agent / JSON Mode
 
@@ -308,5 +290,5 @@ non-zero exit code), never a raw stack trace.
 |------|-------|
 | CLI and JSON envelope | `src/rtlscanner.py`, `src/rtl_cli.py`, `src/agent_json.py` |
 | Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py` |
-| RTL analysis commands | `src/rtl_tree.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_ports.py`, `src/rtl_xref.py`, `src/rtl_inspect.py` |
+| RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_xref.py` |
 | Agent examples and contracts | `examples/agent/` |
