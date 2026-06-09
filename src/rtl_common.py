@@ -214,11 +214,13 @@ def parse_filelist(
     root: Path,
     prefix: str = None,
     seen: set[str] = None,
+    current_dir: Path = None,
 ) -> FileList:
     """Parse a VCS-style .f file into normalized sources, dirs, and defines."""
     root = root.resolve()
+    base_dir = (current_dir or root).resolve()
     seen = seen or set()
-    filelist_path = resolve_filelist_path(path, root, root, prefix).resolve()
+    filelist_path = resolve_filelist_path(path, root, base_dir, prefix).resolve()
     if str(filelist_path) in seen:
         return FileList()
     seen.add(str(filelist_path))
@@ -262,22 +264,26 @@ def parse_filelist(
 
             if token in ('-f', '-F'):
                 if i + 1 < len(tokens):
-                    nested = parse_filelist(tokens[i + 1], root, prefix, seen)
+                    nested = parse_filelist(
+                        tokens[i + 1], root, prefix=prefix,
+                        seen=seen, current_dir=current_dir)
                     result.include_dirs.extend(nested.include_dirs)
                     result.defines.extend(nested.defines)
                     result.sources.extend(nested.sources)
                     i += 2
                     continue
             elif token.startswith('-f') and len(token) > 2:
-                nested = parse_filelist(token[2:], root, prefix, seen)
+                nested = parse_filelist(
+                    token[2:], root, prefix=prefix,
+                    seen=seen, current_dir=current_dir)
                 result.include_dirs.extend(nested.include_dirs)
                 result.defines.extend(nested.defines)
                 result.sources.extend(nested.sources)
                 i += 1
                 continue
             elif token.startswith('+incdir+'):
-                inc = token[len('+incdir+'):]
-                if inc:
+                incs = [part for part in token[len('+incdir+'):].split('+') if part]
+                for inc in incs:
                     inc_path = resolve_filelist_path(inc, root, current_dir, prefix)
                     result.include_dirs.append(_norm_abs(inc_path))
                 i += 1
