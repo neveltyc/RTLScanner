@@ -240,6 +240,27 @@ class SharedCliPreparationTests(unittest.TestCase):
         self.assertTrue(exported.is_file())
         self.assertIn("not_a_design.sv", exported.read_text())
 
+    def test_explicit_empty_scope_is_not_auto_detected(self):
+        # An explicitly provided --scope "" is a value, not "unset": it must be
+        # honored (and reported as not-found) rather than silently auto-selecting
+        # the sole top.  Auto-detection only applies when --scope is omitted.
+        env, _, rc = run_json(
+            "inspect", "-d", "examples/basic", "--scope", "",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(env["errors"][0]["code"], "SCOPE_NOT_FOUND")
+
+        # Sanity check the contrast: omitting --scope still auto-detects "top".
+        ok_env, _, ok_rc = run_json(
+            "inspect", "-d", "examples/basic",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+        self.assertEqual(ok_rc, 0)
+        self.assertEqual(ok_env["data"]["scope"], "top")
+
 
 class CommaListTests(unittest.TestCase):
     def setUp(self):

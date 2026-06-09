@@ -123,7 +123,7 @@ def resolve_scope(
     human_error_rc: int = 2,
 ) -> str:
     """Return a provided scope or auto-select the sole top scope."""
-    if provided_scope:
+    if provided_scope is not None:
         return provided_scope
 
     tops = list(top_paths or [])
