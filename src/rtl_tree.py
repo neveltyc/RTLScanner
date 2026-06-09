@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import sys
-from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -29,8 +28,8 @@ from rtl_common import (
 )
 
 import agent_json
-from agent_json import Envelope, filter_command, emit
-from rtl_config import build_filelist
+import rtl_cli
+from agent_json import Envelope, emit
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -56,6 +55,14 @@ def build_hierarchy(
 ):
     """Parse files with pyslang, elaborate, and return the instance tree."""
     comp, diag_messages = build_compilation(files, include_dirs, defines)
+    tops = build_hierarchy_from_comp(comp, top_module)
+    if return_compilation:
+        return tops, diag_messages, comp
+    return tops, diag_messages
+
+
+def build_hierarchy_from_comp(comp, top_module: Optional[str] = None):
+    """Build the instance hierarchy from an existing pyslang compilation."""
     root = comp.getRoot()
 
     all_instances = []
@@ -104,9 +111,7 @@ def build_hierarchy(
             if path in node_map:
                 tops.append(node_map[path])
 
-    if return_compilation:
-        return tops, diag_messages, comp
-    return tops, diag_messages
+    return tops
 
 
 # ── Tree Display ─────────────────────────────────────────────────────
@@ -253,37 +258,20 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
-    from rtl_config import resolve_inputs, load_config
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files,
-        cli_dir=args.dir,
-        cli_filelist=args.filelist,
-        cli_exclude=args.exclude,
-        config=cfg,
-        config_path=cfg_path,
-    )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-
     # --export FILE: write filelist and exit
     if args.export:
-        if not filelist.sources:
-            return _die(env, 'no .v/.sv source files found',
-                        agent_json.ERR_INPUT_NOT_FOUND)
+        prepared = rtl_cli.prepare_inputs(args, human_error_rc=1)
+        filelist = prepared.filelist
+        ri = prepared.resolved_inputs
         try:
             write_filelist_file(args.export, filelist, ri.root,
                                 args.path_style, ri.prefix)
         except Exception as e:
-            return _die(env, f"failed to write filelist: {e}",
-                        agent_json.ERR_INTERNAL)
+            raise rtl_cli.CliError(
+                agent_json.ERR_INTERNAL,
+                f"failed to write filelist: {e}",
+                1,
+            )
         if args.export != '-':
             print(f"Wrote filelist: {args.export}", file=sys.stderr)
         if env is not None:
@@ -294,17 +282,10 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
             ))
         return 0
 
-    if not filelist.sources:
-        return _die(env, 'no .v/.sv source files found',
-                    agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        tops, diags = build_hierarchy(
-            filelist.sources, args.top,
-            filelist.include_dirs, filelist.defines)
-    except Exception as e:
-        return _die(env, f'compilation failed: {e}',
-                    agent_json.ERR_COMPILE_FAILED)
+    prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
+    filelist = prepared.filelist
+    tops = build_hierarchy_from_comp(prepared.comp, args.top)
+    diags = prepared.diagnostics
 
     if env is not None:
         for d in diags[:50]:
@@ -318,7 +299,7 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
         msg = "no top-level modules found"
         if args.top:
             msg += f" (--top {args.top})"
-        return _die(env, msg, agent_json.ERR_NO_TOP)
+        raise rtl_cli.CliError(agent_json.ERR_NO_TOP, msg, 1)
 
     if env is not None:
         hier = [node_to_dict(t, args.depth) for t in tops]
@@ -342,10 +323,3 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
         mods = len(set(n.module_name for n in _walk(tops)))
         print(f"\n{Color.dim(f'{total} instances, {mods} unique modules, {len(filelist.sources)} files parsed')}")
     return 0
-
-
-def _die(env: Optional[Envelope], msg: str, code: str) -> int:
-    if env is not None:
-        return emit(env.fail(code, msg))
-    print(f"Error: {msg}", file=sys.stderr)
-    return 1

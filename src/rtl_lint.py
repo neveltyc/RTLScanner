@@ -33,13 +33,13 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    build_compilation,
     safe_str,
 )
 
 import agent_json
+import rtl_cli
 from agent_json import emit
-from rtl_config import build_filelist, lint_config, load_config, resolve_inputs
+from rtl_config import lint_config
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -689,16 +689,9 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def run(args, env):
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files, cli_dir=args.dir,
-        cli_filelist=args.filelist, cli_exclude=args.exclude,
-        config=cfg, config_path=cfg_path,
-    )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
-    lint_cfg = lint_config(cfg)
+    prepared = rtl_cli.prepare_compilation(args)
+    lint_cfg = lint_config(prepared.config)
+    filelist = prepared.filelist
 
     # CLI > config (field-level)
     rules_specs = list(args.rules) or list(lint_cfg.get("rules") or [])
@@ -709,25 +702,8 @@ def run(args, env):
 
     run_families, _, _, warning_options, _ = resolve_rules(rules_specs)
 
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-    if not filelist.sources:
-        return _die(env, 'no .v/.sv source files found',
-                    agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        comp, _ = build_compilation(
-            filelist.sources, filelist.include_dirs, filelist.defines)
-    except Exception as e:
-        return _die(env, f'compilation failed: {e}',
-                    agent_json.ERR_COMPILE_FAILED)
-
     runner = LintRunner(
-        comp,
+        prepared.comp,
         check_unused=("unused" in run_families),
         check_shadow=("shadow" in run_families),
         weverything=("everything" in warning_options),
@@ -754,7 +730,7 @@ def run(args, env):
         data = {
             'findings':    [f.to_dict() for f in findings],
             'waived':      [f.to_dict() for f in waived],
-            'config_path': str(cfg_path) if cfg_path else None,
+            'config_path': str(prepared.config_path) if prepared.config_path else None,
         }
         summary = {
             'total':        len(findings),
@@ -774,10 +750,3 @@ def run(args, env):
     if findings:
         print_summary(findings, waived=len(waived))
     return 1 if (has_error or strict_fail) else 0
-
-
-def _die(env, msg, code):
-    if env is not None:
-        return emit(env.fail(code, msg))
-    print(f"Error: {msg}", file=sys.stderr)
-    return 2

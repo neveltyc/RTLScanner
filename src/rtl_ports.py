@@ -25,14 +25,12 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 try:
-    import pyslang
     import pyslang.ast as ast
 except ImportError:
     print("Error: pyslang is required.  pip install pyslang", file=sys.stderr)
@@ -40,13 +38,12 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    build_compilation,
     safe_str,
 )
 
 import agent_json
+import rtl_cli
 from agent_json import emit
-from rtl_config import build_filelist, load_config, resolve_inputs
 
 
 # A single instance/module glob may match multiple patterns when the user
@@ -613,36 +610,12 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def run(args, env):
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files, cli_dir=args.dir,
-        cli_filelist=args.filelist, cli_exclude=args.exclude,
-        config=cfg, config_path=cfg_path,
-    )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
     # Markdown output suppresses ANSI just like JSON
     if args.markdown:
         Color.disable()
 
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-    if not filelist.sources:
-        return _die(env, 'no .v/.sv source files found',
-                    agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs,
-                                    filelist.defines)
-    except Exception as e:
-        return _die(env, f'compilation failed: {e}',
-                    agent_json.ERR_COMPILE_FAILED)
-    pa = PortAnalyzer(comp)
+    prepared = rtl_cli.prepare_compilation(args)
+    pa = PortAnalyzer(prepared.comp)
 
     module_globs = list(args.module)
     instance_globs = list(args.instance)
@@ -693,10 +666,3 @@ def run(args, env):
     else:
         print_modules_pretty(items)
     return 0
-
-
-def _die(env, msg, code):
-    if env is not None:
-        return emit(env.fail(code, msg))
-    print(f"Error: {msg}", file=sys.stderr)
-    return 2
