@@ -443,7 +443,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Show all inspect sections (default)")
 
 
-def _prepare(args, env):
+def _prepare(args):
     prepared = rtl_cli.prepare_compilation(args)
     inspector = ScopeInspector(prepared.comp)
     scope = rtl_cli.resolve_scope(args.scope, inspector.get_top_paths())
@@ -487,7 +487,7 @@ def _print_pretty(data):
 
 
 def run(args, env):
-    inspector, scope = _prepare(args, env)
+    inspector, scope = _prepare(args)
     want_params, want_types = _section_flags(args)
     data = inspector.inspect(scope, want_params=want_params, want_types=want_types)
     if data is None:

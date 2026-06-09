@@ -674,7 +674,7 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Show detailed context in human-readable output")
 
 
-def _prepare(args, env):
+def _prepare(args):
     prepared = rtl_cli.prepare_compilation(args)
     xcfg = xref_config(prepared.config)
     xa = XrefAnalyzer(
@@ -771,7 +771,7 @@ def run(args, env):
             "specify --signal/-s NAME, --name NAME, or --module MODULE",
         )
 
-    xa, scope = _prepare(args, env)
+    xa, scope = _prepare(args)
 
     if args.module:
         result = xa.xref_module(args.module, scope_path=scope or "")
