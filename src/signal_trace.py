@@ -20,12 +20,9 @@ Install dependency:
 
 from __future__ import annotations
 
-import argparse
 import fnmatch
-import json
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
 
 try:
@@ -37,7 +34,6 @@ except ImportError:
 
 from rtl_common import (
     Color,
-    build_compilation,
 )
 from rtl_slang import (
     analyzed_procedures,
@@ -53,8 +49,8 @@ from rtl_slang import (
 )
 
 import agent_json
-from agent_json import Envelope, emit
-from rtl_config import build_filelist, load_config, resolve_inputs
+import rtl_cli
+from agent_json import emit
 
 
 # ── Display glyphs ───────────────────────────────────────────────────
@@ -679,123 +675,26 @@ class SignalTracer:
         r.loads = loads
         return r
 
-    def trace_all(self, scope_path, cross=False):
-        sigs = self.list_signals(scope_path)
-        results, seen = [], set()
-        for s in sigs:
-            if s['name'] in seen:
-                continue
-            seen.add(s['name'])
-            r = self.trace(s['name'], scope_path, cross)
-            if r:
-                results.append(r)
-        return results
-
-    # ── CLI helpers ──────────────────────────────────────────────────
-
-    def cmd_list(self, scope, as_json=False):
-        sigs = self.list_signals(scope)
-        if not sigs:
-            print(f"Error: scope '{scope}' not found or empty", file=sys.stderr)
-            sys.exit(1)
-        if as_json:
-            print(json.dumps(sigs, indent=2))
-        else:
-            print(f"Signals in {Color.cyan(scope)}:\n")
-            for s in sigs:
-                print(f"  {Color.bold(s['name']):24s}  {Color.dim(s['type']):20s}  ({s['kind']})")
-            print(f"\n{Color.dim(str(len(sigs)) + ' signals')}")
-
-    def cmd_trace(self, signal, scope, cross=False, load_filter=None, as_json=False):
-        r = self.trace(signal, scope, cross)
-        if r is None:
-            print(f"Error: signal '{signal}' not found in scope '{scope}'", file=sys.stderr)
-            sys.exit(1)
-        if as_json:
-            print(json.dumps(r.to_dict(load_filter), indent=2))
-        else:
-            r.pretty_print(load_filter)
-
-    def cmd_trace_all(self, scope, cross=False, load_filter=None, as_json=False):
-        results = self.trace_all(scope, cross)
-        if not results:
-            print(f"Error: no signals in scope '{scope}'", file=sys.stderr)
-            sys.exit(1)
-        if as_json:
-            print(json.dumps([r.to_dict(load_filter) for r in results], indent=2))
-        else:
-            for r in results:
-                r.pretty_print(load_filter)
-
-    def cmd_flow(self, signal, scope, mode, max_depth=4, as_json=False):
-        r = self.flow(signal, scope, mode, max_depth)
-        if r is None:
-            print(f"Error: signal '{signal}' not found in scope '{scope}'", file=sys.stderr)
-            sys.exit(1)
-        if as_json:
-            print(json.dumps(r.to_dict(), indent=2))
-        else:
-            r.pretty_print()
-
-
-
 # ── Shared input/dispatch helpers ────────────────────────────────────
 def _prepare(args, env, *, need_signal=False):
     """Common setup for trace/signals/fanin/fanout: resolve inputs, build
     compilation, auto-detect scope.  Returns (tracer, scope) or exits."""
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files,
-        cli_dir=args.dir,
-        cli_filelist=args.filelist,
-        cli_exclude=args.exclude,
-        config=cfg,
-        config_path=cfg_path,
+    prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
+    tracer = SignalTracer(prepared.comp)
+    scope = rtl_cli.resolve_scope(
+        args.scope,
+        tracer.get_top_paths(),
+        human_error_rc=1,
     )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        _exit(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        _exit(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-
-    if not filelist.sources:
-        _exit(env, 'no .v/.sv source files found',
-              agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs,
-                                    filelist.defines)
-    except Exception as e:
-        _exit(env, f'compilation failed: {e}', agent_json.ERR_COMPILE_FAILED)
-    tracer = SignalTracer(comp)
-
-    scope = args.scope
-    if scope is None:
-        tp = tracer.get_top_paths()
-        if len(tp) == 1:
-            scope = tp[0]
-        elif tp:
-            _exit(env, 'multiple tops, specify --scope: ' + ', '.join(tp),
-                  agent_json.ERR_SCOPE_NOT_FOUND)
-        else:
-            _exit(env, 'no top modules found', agent_json.ERR_NO_TOP)
 
     if need_signal and not getattr(args, 'signal', None):
-        _exit(env, 'specify --signal/-s NAME',
-              agent_json.ERR_INPUT_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_INPUT_NOT_FOUND,
+            'specify --signal/-s NAME',
+            1,
+        )
 
     return tracer, scope
-
-
-def _exit(env, msg, code):
-    if env is not None:
-        sys.exit(emit(env.fail(code, msg)))
-    print(f"Error: {msg}", file=sys.stderr)
-    sys.exit(1)
 
 
 # ── Subcommand: trace ────────────────────────────────────────────────
@@ -815,8 +714,11 @@ def run_trace(args, env):
     tracer, scope = _prepare(args, env, need_signal=True)
     r = tracer.trace(args.signal, scope, args.cross)
     if r is None:
-        _exit(env, f"signal '{args.signal}' not found in scope '{scope}'",
-              agent_json.ERR_SIGNAL_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SIGNAL_NOT_FOUND,
+            f"signal '{args.signal}' not found in scope '{scope}'",
+            1,
+        )
     if env is not None:
         rd = r.to_dict(args.filter)
         data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
@@ -841,8 +743,11 @@ def run_signals(args, env):
     tracer, scope = _prepare(args, env)
     sigs = tracer.list_signals(scope)
     if not sigs:
-        _exit(env, f"scope '{scope}' not found or empty",
-              agent_json.ERR_SCOPE_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SCOPE_NOT_FOUND,
+            f"scope '{scope}' not found or empty",
+            1,
+        )
     if env is not None:
         return emit(env.ok(
             {'mode': 'list', 'scope': scope, 'signals': sigs},
@@ -870,8 +775,11 @@ def run_flow(args, env, *, mode):
     tracer, scope = _prepare(args, env, need_signal=True)
     r = tracer.flow(args.signal, scope, mode, args.depth)
     if r is None:
-        _exit(env, f"signal '{args.signal}' not found in scope '{scope}'",
-              agent_json.ERR_SIGNAL_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SIGNAL_NOT_FOUND,
+            f"signal '{args.signal}' not found in scope '{scope}'",
+            1,
+        )
     if env is not None:
         rd = r.to_dict()
         data = {

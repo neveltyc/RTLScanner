@@ -306,7 +306,7 @@ non-zero exit code), never a raw stack trace.
 
 | Area | Files |
 |------|-------|
-| CLI and JSON envelope | `src/rtlscanner.py`, `src/agent_json.py` |
+| CLI and JSON envelope | `src/rtlscanner.py`, `src/rtl_cli.py`, `src/agent_json.py` |
 | Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py` |
 | RTL analysis commands | `src/rtl_tree.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_ports.py`, `src/rtl_xref.py`, `src/rtl_inspect.py` |
 | Agent examples and contracts | `examples/agent/` |

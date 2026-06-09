@@ -18,13 +18,13 @@ except ImportError:
     sys.exit(1)
 
 import agent_json
+import rtl_cli
 from agent_json import emit
-from rtl_common import Color, build_compilation, safe_str
-from rtl_config import build_filelist, load_config, resolve_inputs, xref_config
+from rtl_common import Color, safe_str
+from rtl_config import xref_config
 from rtl_slang import (
     analyzed_procedures,
     expr_refs_symbol,
-    expr_symbols,
     iter_instances,
     procedure_label,
     procedure_reads_symbol,
@@ -675,52 +675,17 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def _prepare(args, env):
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files,
-        cli_dir=args.dir,
-        cli_filelist=args.filelist,
-        cli_exclude=args.exclude,
-        config=cfg,
-        config_path=cfg_path,
+    prepared = rtl_cli.prepare_compilation(args)
+    xcfg = xref_config(prepared.config)
+    xa = XrefAnalyzer(
+        prepared.comp,
+        root=prepared.resolved_inputs.root,
+        path_style=xcfg["path_style"],
     )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-    if not filelist.sources:
-        return _die(env, "no .v/.sv source files found", agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
-    except Exception as e:
-        return _die(env, f"compilation failed: {e}", agent_json.ERR_COMPILE_FAILED)
-
-    xcfg = xref_config(cfg)
-    xa = XrefAnalyzer(comp, root=ri.root, path_style=xcfg["path_style"])
     scope = args.scope
     if scope is None and not args.module:
-        tops = xa.get_top_paths()
-        if len(tops) == 1:
-            scope = tops[0]
-        elif tops:
-            return _die(env, "multiple tops, specify --scope: " + ", ".join(tops),
-                        agent_json.ERR_SCOPE_NOT_FOUND)
-        else:
-            return _die(env, "no top modules found", agent_json.ERR_NO_TOP)
+        scope = rtl_cli.resolve_scope(scope, xa.get_top_paths())
     return xa, scope
-
-
-def _die(env, msg, code):
-    if env is not None:
-        return emit(env.fail(code, msg))
-    print(f"Error: {msg}", file=sys.stderr)
-    return 2
 
 
 def _fmt_loc(file: str, line: int, column: int) -> str:
@@ -796,21 +761,30 @@ def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False):
 def run(args, env):
     name = args.name_alt or args.name
     if args.module and name:
-        return _die(env, "specify either --signal/--name or --module, not both", agent_json.ERR_INPUT_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_INPUT_NOT_FOUND,
+            "specify either --signal/--name or --module, not both",
+        )
     if not name and not args.module:
-        return _die(env, "specify --signal/-s NAME, --name NAME, or --module MODULE", agent_json.ERR_INPUT_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_INPUT_NOT_FOUND,
+            "specify --signal/-s NAME, --name NAME, or --module MODULE",
+        )
 
-    prepared = _prepare(args, env)
-    if not isinstance(prepared, tuple):
-        return prepared
-    xa, scope = prepared
+    xa, scope = _prepare(args, env)
 
     if args.module:
         result = xa.xref_module(args.module, scope_path=scope or "")
         if result is None:
-            return _die(env, f"scope '{scope}' not found", agent_json.ERR_SCOPE_NOT_FOUND)
+            raise rtl_cli.CliError(
+                agent_json.ERR_SCOPE_NOT_FOUND,
+                f"scope '{scope}' not found",
+            )
         if not result.definitions and not result.references:
-            return _die(env, f"module '{args.module}' not found", agent_json.ERR_SIGNAL_NOT_FOUND)
+            raise rtl_cli.CliError(
+                agent_json.ERR_SIGNAL_NOT_FOUND,
+                f"module '{args.module}' not found",
+            )
         data = result.to_dict()
         data["scope"] = scope or ""
         summary = dict(data["summary"])
@@ -823,9 +797,15 @@ def run(args, env):
 
     matches = xa.xref(scope, name, recursive=args.recursive)
     if matches is None:
-        return _die(env, f"scope '{scope}' not found", agent_json.ERR_SCOPE_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SCOPE_NOT_FOUND,
+            f"scope '{scope}' not found",
+        )
     if not matches:
-        return _die(env, f"symbol '{name}' not found in scope '{scope}'", agent_json.ERR_SIGNAL_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SIGNAL_NOT_FOUND,
+            f"symbol '{name}' not found in scope '{scope}'",
+        )
 
     data_matches = [m.to_dict() for m in matches]
     total_refs = sum(m["summary"]["references"] for m in data_matches)

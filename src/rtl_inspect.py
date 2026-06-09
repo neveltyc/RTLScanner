@@ -20,9 +20,9 @@ except ImportError:
     sys.exit(1)
 
 import agent_json
+import rtl_cli
 from agent_json import emit
-from rtl_common import Color, build_compilation, safe_str
-from rtl_config import build_filelist, load_config, resolve_inputs
+from rtl_common import Color, safe_str
 from rtl_slang import resolve_scope, scope_visit, symbol_key
 
 
@@ -444,51 +444,10 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
 
 def _prepare(args, env):
-    cfg, cfg_path = load_config()
-    ri = resolve_inputs(
-        cli_files=args.files,
-        cli_dir=args.dir,
-        cli_filelist=args.filelist,
-        cli_exclude=args.exclude,
-        config=cfg,
-        config_path=cfg_path,
-    )
-    for note in ri.notes:
-        print(f"note: {note}", file=sys.stderr)
-
-    try:
-        filelist = build_filelist(ri)
-    except FileNotFoundError as e:
-        return _die(env, str(e), agent_json.ERR_BAD_FILELIST)
-    except ValueError as e:
-        return _die(env, str(e), agent_json.ERR_INPUT_NOT_FOUND)
-    if not filelist.sources:
-        return _die(env, "no .v/.sv source files found", agent_json.ERR_INPUT_NOT_FOUND)
-
-    try:
-        comp, _ = build_compilation(filelist.sources, filelist.include_dirs, filelist.defines)
-    except Exception as e:
-        return _die(env, f"compilation failed: {e}", agent_json.ERR_COMPILE_FAILED)
-
-    inspector = ScopeInspector(comp)
-    scope = args.scope
-    if scope is None:
-        tops = inspector.get_top_paths()
-        if len(tops) == 1:
-            scope = tops[0]
-        elif tops:
-            return _die(env, "multiple tops, specify --scope: " + ", ".join(tops),
-                        agent_json.ERR_SCOPE_NOT_FOUND)
-        else:
-            return _die(env, "no top modules found", agent_json.ERR_NO_TOP)
+    prepared = rtl_cli.prepare_compilation(args)
+    inspector = ScopeInspector(prepared.comp)
+    scope = rtl_cli.resolve_scope(args.scope, inspector.get_top_paths())
     return inspector, scope
-
-
-def _die(env, msg, code):
-    if env is not None:
-        return emit(env.fail(code, msg))
-    print(f"Error: {msg}", file=sys.stderr)
-    return 2
 
 
 def _section_flags(args):
@@ -528,14 +487,14 @@ def _print_pretty(data):
 
 
 def run(args, env):
-    prepared = _prepare(args, env)
-    if not isinstance(prepared, tuple):
-        return prepared
-    inspector, scope = prepared
+    inspector, scope = _prepare(args, env)
     want_params, want_types = _section_flags(args)
     data = inspector.inspect(scope, want_params=want_params, want_types=want_types)
     if data is None:
-        return _die(env, f"scope '{scope}' not found", agent_json.ERR_SCOPE_NOT_FOUND)
+        raise rtl_cli.CliError(
+            agent_json.ERR_SCOPE_NOT_FOUND,
+            f"scope '{scope}' not found",
+        )
 
     if not want_params:
         data.pop("parameters", None)

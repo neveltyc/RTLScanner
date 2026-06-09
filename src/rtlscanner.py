@@ -111,7 +111,7 @@ def main(argv=None) -> int:
         if env is not None:
             return emit(env.fail(e.code, e.message))
         print(f"Error: {e.message}", file=sys.stderr)
-        return 2
+        return int(getattr(e, "exit_code", 2))
     except Exception as e:
         # Last-resort guard: in --json mode an unexpected failure must still
         # reach the agent as a structured envelope on stdout, never a raw

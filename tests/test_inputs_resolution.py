@@ -160,6 +160,87 @@ class InputsResolutionTests(unittest.TestCase):
         self.assertEqual(env["data"]["findings"], [])
 
 
+class SharedCliPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path("/tmp/rtl_test_cli_prepare")
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp)
+        self.tmp.mkdir()
+        shutil.copytree(ROOT / "examples", self.tmp / "examples")
+
+    def tearDown(self):
+        if self.tmp.exists():
+            shutil.rmtree(self.tmp)
+
+    def _clean_env(self):
+        return {
+            "RTLSCANNER_FILELIST": "",
+            "RTLSCANNER_DIR": "",
+            "RTLSCANNER_EXCLUDE": "",
+            "RTLSCANNER_ROOT": "",
+            "RTLSCANNER_PREFIX": "",
+        }
+
+    def test_bad_filelist_json_is_shared_by_compiling_commands(self):
+        cases = [
+            ("tree",),
+            ("ports",),
+            ("trace", "--signal", "clk"),
+        ]
+        for cmd in cases:
+            with self.subTest(cmd=cmd[0]):
+                env, stderr, rc = run_json(
+                    *cmd, "-f", "missing.f",
+                    cwd=self.tmp, env=self._clean_env(),
+                )
+
+                self.assertEqual(rc, 1)
+                self.assertEqual(stderr, "")
+                self.assertEqual(env["status"], "error")
+                self.assertEqual(env["errors"][0]["code"], "BAD_FILELIST")
+
+    def test_no_source_json_uses_input_not_found_envelope(self):
+        env, stderr, rc = run_json(
+            "ports", cwd=self.tmp, env=self._clean_env()
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(stderr, "")
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(env["errors"][0]["code"], "INPUT_NOT_FOUND")
+
+    def test_single_top_scope_auto_detection_survives_refactor(self):
+        cases = [
+            ("trace", "-d", "examples/basic", "--signal", "clk"),
+            ("xref", "-d", "examples/basic", "--signal", "clk"),
+            ("inspect", "-d", "examples/basic"),
+        ]
+        for cmd in cases:
+            with self.subTest(cmd=cmd[0]):
+                env, _, rc = run_json(
+                    *cmd, cwd=self.tmp, env=self._clean_env()
+                )
+
+                self.assertEqual(rc, 0)
+                self.assertEqual(env["status"], "ok")
+                self.assertEqual(env["data"]["scope"], "top")
+
+    def test_tree_export_only_needs_resolved_filelist(self):
+        (self.tmp / "not_a_design.sv").write_text("module not_a_design(\n")
+        (self.tmp / "files.f").write_text("not_a_design.sv\n")
+        exported = self.tmp / "exported.f"
+
+        env, _, rc = run_json(
+            "tree", "-f", "files.f", "--export", str(exported),
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(env["status"], "ok")
+        self.assertTrue(exported.is_file())
+        self.assertIn("not_a_design.sv", exported.read_text())
+
+
 class CommaListTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path("/tmp/rtl_test_commalist")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rtlscanner"
 version = "0.1.3"
-description = "A pyslang-powered SystemVerilog RTL hierarchy viewer."
+description = "Agent-friendly SystemVerilog RTL analysis powered by pyslang."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
@@ -16,5 +16,5 @@ dependencies = [
 rtlscanner = "rtlscanner:main"
 
 [tool.setuptools]
-py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "rtl_xref", "rtl_inspect", "agent_json"]
+py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang", "signal_trace", "rtl_lint", "rtl_ports", "rtl_xref", "rtl_inspect", "agent_json"]
 package-dir = {"" = "src"}
