@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import agent_json
 from rtl_common import (
     FileList,
     collect_filelist,
@@ -33,8 +34,9 @@ def _load_toml(text: str) -> dict:
             return __import__(mod).loads(text)
         except ModuleNotFoundError:
             continue
-    raise SystemExit(
-        "Error: reading TOML config needs Python 3.11+ (tomllib) or `pip install tomli`."
+    raise agent_json.AgentError(
+        agent_json.ERR_BAD_CONFIG,
+        "reading TOML config needs Python 3.11+ (tomllib) or `pip install tomli`.",
     )
 
 
@@ -58,10 +60,13 @@ def load_config(cwd: Optional[Path] = None) -> Tuple[dict, Optional[Path]]:
         return {}, None
     try:
         return _load_toml(cfg_path.read_text(errors="ignore")), cfg_path
-    except SystemExit:
+    except agent_json.AgentError:
         raise
     except Exception as e:
-        raise SystemExit(f"Error: failed to parse {cfg_path}: {e}")
+        raise agent_json.AgentError(
+            agent_json.ERR_BAD_CONFIG,
+            f"failed to parse {cfg_path}: {e}",
+        )
 
 
 # ── Env var helpers ─────────────────────────────────────────────────

@@ -180,10 +180,15 @@ class LintRunner:
                 opts.flags = flags
                 mgr = analysis.AnalysisManager(opts)
                 mgr.analyze(self._comp)
-                check = "unused" if self._check_unused else "shadow"
                 for d in mgr.getDiagnostics():
-                    f = self._finding(d, check)
+                    f = self._finding(
+                        d, "unused" if self._check_unused else "shadow")
                     if f is not None:
+                        if self._check_unused and self._check_shadow:
+                            if f.rule.startswith("shadow-"):
+                                f.check = "shadow"
+                            elif f.rule.startswith("unused-"):
+                                f.check = "unused"
                         findings.append(f)
             except Exception as e:
                 print(f"Warning: analysis pass failed: {e}", file=sys.stderr)

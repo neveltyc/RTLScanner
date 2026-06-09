@@ -117,6 +117,48 @@ class InputsResolutionTests(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("no .v/.sv source files found", proc.stderr + proc.stdout)
 
+    def test_bad_config_emits_json_error_envelope(self):
+        (self.tmp / ".rtlscanner.toml").write_text("[inputs\n")
+        env, stderr, rc = run_json("tree", cwd=self.tmp, env=self._clean_env())
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(env["errors"][0]["code"], "BAD_CONFIG")
+        self.assertEqual(stderr, "")
+
+    def test_nested_filelist_resolves_relative_to_parent_filelist(self):
+        (self.tmp / "lists").mkdir()
+        (self.tmp / "lists" / "nested.f").write_text("examples/basic/top.sv\n")
+        (self.tmp / "lists" / "top.f").write_text("-f nested.f\n")
+
+        env, _, rc = run_json(
+            "tree", "-f", "lists/top.f", cwd=self.tmp, env=self._clean_env()
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(env["status"], "ok")
+        modules = {n["module"] for n in env["data"]["hierarchy"]}
+        self.assertIn("top", modules)
+
+    def test_plus_incdir_list_splits_into_multiple_include_dirs(self):
+        (self.tmp / "inc1").mkdir()
+        (self.tmp / "inc2").mkdir()
+        (self.tmp / "rtl").mkdir()
+        (self.tmp / "inc2" / "defs.vh").write_text("`define WIDTH 8\n")
+        (self.tmp / "rtl" / "top.sv").write_text(
+            '`include "defs.vh"\nmodule top; logic [`WIDTH-1:0] x; endmodule\n'
+        )
+        (self.tmp / "files.f").write_text("+incdir+inc1+inc2\nrtl/top.sv\n")
+
+        env, _, rc = run_json(
+            "lint", "-f", "files.f", "--rules", "semantic",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(env["status"], "ok")
+        self.assertEqual(env["data"]["findings"], [])
+
 
 class CommaListTests(unittest.TestCase):
     def setUp(self):
@@ -230,6 +272,29 @@ class LintRuleModelTests(unittest.TestCase):
         self.assertIn("unused", checks)
         self.assertIn("cdc", checks)
         self.assertNotIn("everything", checks)
+
+    def test_rules_all_keeps_shadow_findings_under_shadow_check(self):
+        src = self.tmp / "shadow_demo.sv"
+        src.write_text(
+            "module shadow_demo(input logic a, output logic y);\n"
+            "  logic x;\n"
+            "  always_comb begin\n"
+            "    logic x;\n"
+            "    x = a;\n"
+            "    y = x;\n"
+            "  end\n"
+            "endmodule\n"
+        )
+
+        env, _, _ = run_json("lint", str(src), "--rules", "all",
+                             cwd=self.tmp, env=self._no_env())
+        shadow = [
+            f for f in env["data"]["findings"]
+            if f["rule"].startswith("shadow-")
+        ]
+
+        self.assertTrue(shadow)
+        self.assertEqual({f["check"] for f in shadow}, {"shadow"})
 
     def test_semantic_includes_frontend_diagnostics(self):
         bad = self.tmp / "bad_include.v"
