@@ -38,13 +38,11 @@ from rtl_common import (
 )
 
 import agent_json
-from agent_json import Envelope, emit
+from agent_json import emit
 from rtl_config import build_filelist, lint_config, load_config, resolve_inputs
 
 
 # ── Data Structures ──────────────────────────────────────────────────
-SEVERITY_ORDER = {"error": 3, "warning": 2, "note": 1, "ignored": 0}
-
 _SEVERITY_NAME = {
     pyslang.DiagnosticSeverity.Fatal: "error",
     pyslang.DiagnosticSeverity.Error: "error",
@@ -581,10 +579,13 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
         # --strict: warning → error
         if strict and f.severity == "warning":
             f.severity = "error"
-        # Display floor
+        # Display floor: below --min-severity is suppressed, but recorded as
+        # waived (never silently dropped) so summary.waived stays honest.
         if (min_severity
                 and SEVERITY_RANK.get(f.severity, 0)
                 < SEVERITY_RANK.get(min_severity, 0)):
+            f.waived_reason = "below-min-severity"
+            waived.append(f)
             continue
         kept.append(f)
     return kept, waived

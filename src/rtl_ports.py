@@ -45,7 +45,7 @@ from rtl_common import (
 )
 
 import agent_json
-from agent_json import Envelope, emit
+from agent_json import emit
 from rtl_config import build_filelist, load_config, resolve_inputs
 
 

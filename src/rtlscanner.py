@@ -20,7 +20,7 @@ import sys
 
 import agent_json
 from agent_json import (
-    Envelope, add_input_args, add_output_args, filter_command,
+    Envelope, add_input_args, add_output_args, emit, filter_command,
 )
 from rtl_common import Color
 
@@ -106,6 +106,20 @@ def main(argv=None) -> int:
         return run_fn(args, env) or 0
     except KeyboardInterrupt:
         return 130
+    except agent_json.AgentError as e:
+        # Structured error raised from deep in a subcommand.
+        if env is not None:
+            return emit(env.fail(e.code, e.message))
+        print(f"Error: {e.message}", file=sys.stderr)
+        return 2
+    except Exception as e:
+        # Last-resort guard: in --json mode an unexpected failure must still
+        # reach the agent as a structured envelope on stdout, never a raw
+        # traceback on stderr.  In human mode, let the traceback surface so
+        # developers can debug it.
+        if env is not None:
+            return emit(env.fail(agent_json.ERR_INTERNAL, f"internal error: {e}"))
+        raise
 
 
 if __name__ == "__main__":
