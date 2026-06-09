@@ -676,7 +676,7 @@ class SignalTracer:
         return r
 
 # ── Shared input/dispatch helpers ────────────────────────────────────
-def _prepare(args, env, *, need_signal=False):
+def _prepare(args, *, need_signal=False):
     """Common setup for trace/signals/fanin/fanout: resolve inputs, build
     compilation, auto-detect scope.  Returns (tracer, scope) or exits."""
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
@@ -711,7 +711,7 @@ def add_trace_args(p):
 
 
 def run_trace(args, env):
-    tracer, scope = _prepare(args, env, need_signal=True)
+    tracer, scope = _prepare(args, need_signal=True)
     r = tracer.trace(args.signal, scope, args.cross)
     if r is None:
         raise rtl_cli.CliError(
@@ -740,7 +740,7 @@ def add_signals_args(p):
 
 
 def run_signals(args, env):
-    tracer, scope = _prepare(args, env)
+    tracer, scope = _prepare(args)
     sigs = tracer.list_signals(scope)
     if not sigs:
         raise rtl_cli.CliError(
@@ -772,7 +772,7 @@ def add_flow_args(p):
 
 
 def run_flow(args, env, *, mode):
-    tracer, scope = _prepare(args, env, need_signal=True)
+    tracer, scope = _prepare(args, need_signal=True)
     r = tracer.flow(args.signal, scope, mode, args.depth)
     if r is None:
         raise rtl_cli.CliError(
