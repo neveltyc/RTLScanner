@@ -93,8 +93,15 @@ def prepare_compilation(
     *,
     require_sources: bool = True,
     human_error_rc: int = 2,
+    collect_diagnostics: bool = False,
 ) -> PreparedCompilation:
-    """Prepare inputs and build a pyslang compilation."""
+    """Prepare inputs and build a pyslang compilation.
+
+    ``collect_diagnostics`` defaults to False: most subcommands never read
+    ``PreparedCompilation.diagnostics`` and only need a walkable (elaborated)
+    design, so they skip stringifying every diagnostic.  ``tree`` (the one
+    command that surfaces them) passes ``collect_diagnostics=True``.
+    """
     prepared = prepare_inputs(
         args,
         require_sources=require_sources,
@@ -106,6 +113,7 @@ def prepare_compilation(
             fl.sources,
             fl.include_dirs,
             fl.defines,
+            collect_diagnostics=collect_diagnostics,
         )
     except Exception as e:
         raise CliError(
