@@ -31,15 +31,16 @@ and the other declared dependencies.
 
 Use `-d/--dir`, `-f/--filelist`, and `--exclude` for source inputs.
 Project-stable inputs such as filelist root and prefix tokens can live
-in env vars or `./.rtlscanner.toml`.
+in env vars or a project config file.
 
-**Priority:** `CLI > env vars > ./.rtlscanner.toml > built-in defaults`
+**Priority:** `CLI > env vars > selected config > built-in defaults`
 (field-level override; not whole-layer).
 
 ### Environment variables
 
 | Variable                | Maps to                          |
 |-------------------------|----------------------------------|
+| `RTLSCANNER_CONFIG`     | project config `.toml` file      |
 | `RTLSCANNER_FILELIST`   | repeat of `-f` (colon-separated) |
 | `RTLSCANNER_DIR`        | repeat of `-d` (colon-separated) |
 | `RTLSCANNER_EXCLUDE`    | repeat of `--exclude` (colon-separated) |
@@ -48,8 +49,12 @@ in env vars or `./.rtlscanner.toml`.
 
 ### `./.rtlscanner.toml`
 
-Auto-discovered in CWD only (no walk-up, no `--config` flag). To switch
-configs, `cd` into the relevant directory.
+Use `--config FILE` or `RTLSCANNER_CONFIG` to select a project config
+file. If neither is set, `rtlscanner` tries `./.rtlscanner.toml` in CWD
+(no walk-up). Config files provide shared defaults for all subcommands
+so repeated project arguments do not need to be typed every run. The
+`--config` flag is a subcommand option, for example
+`rtlscanner tree --config rtlscanner.toml`.
 
 ```toml
 [inputs]

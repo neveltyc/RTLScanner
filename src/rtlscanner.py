@@ -65,10 +65,11 @@ Examples:
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
 
 Configuration:
-  ./.rtlscanner.toml is auto-discovered (CWD only).
+  Use rtlscanner <cmd> --config FILE to select a project config .toml file.
+  Otherwise, ./.rtlscanner.toml is auto-discovered (CWD only).
   Env vars: RTLSCANNER_FILELIST, RTLSCANNER_DIR, RTLSCANNER_EXCLUDE,
-            RTLSCANNER_ROOT, RTLSCANNER_PREFIX
-  Priority: CLI > env > config > built-in defaults.
+            RTLSCANNER_ROOT, RTLSCANNER_PREFIX, RTLSCANNER_CONFIG
+  Priority: CLI > env > selected config > built-in defaults.
 """,
     )
     sub = p.add_subparsers(dest="cmd", required=True, metavar="SUBCMD")

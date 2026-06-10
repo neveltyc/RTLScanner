@@ -47,7 +47,7 @@ def prepare_inputs(
 ) -> PreparedInputs:
     """Load config, resolve inputs, and build the effective filelist."""
     try:
-        cfg, cfg_path = load_config()
+        cfg, cfg_path = load_config(config_path=getattr(args, "config", None))
     except agent_json.AgentError as e:
         # load_config raises a bare AgentError (e.g. BAD_CONFIG) which has no
         # exit_code, so it would fall through main()'s getattr(e, "exit_code", 2)

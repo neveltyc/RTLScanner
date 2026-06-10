@@ -58,6 +58,7 @@ class InputsResolutionTests(unittest.TestCase):
             "RTLSCANNER_EXCLUDE": "",
             "RTLSCANNER_ROOT": "",
             "RTLSCANNER_PREFIX": "",
+            "RTLSCANNER_CONFIG": "",
         }
 
     def test_config_inputs_drive_tree(self):
@@ -68,6 +69,53 @@ class InputsResolutionTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(env["status"], "ok")
         self.assertTrue(env["data"]["hierarchy"])
+
+    def test_explicit_config_inputs_drive_tree(self):
+        (self.tmp / "custom.toml").write_text(
+            '[inputs]\ndir = ["examples/basic"]\n'
+        )
+        env, _, rc = run_json(
+            "tree", "--config", "custom.toml",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(env["status"], "ok")
+        self.assertNotIn("config", env["command"])
+        modules = {n["module"] for n in env["data"]["hierarchy"]}
+        self.assertIn("top", modules)
+
+    def test_env_config_inputs_drive_scope(self):
+        (self.tmp / "custom.toml").write_text(
+            '[inputs]\ndir = ["examples/lint"]\n'
+        )
+        env, _, rc = run_json(
+            "scope", "--signals", "--scope", "lint_demo",
+            cwd=self.tmp,
+            env={**self._clean_env(), "RTLSCANNER_CONFIG": "custom.toml"},
+        )
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(env["status"], "ok")
+        self.assertGreater(len(env["data"]["signals"]), 0)
+
+    def test_cli_config_overrides_env_config(self):
+        (self.tmp / "cli.toml").write_text(
+            '[inputs]\ndir = ["examples/basic"]\n'
+        )
+        (self.tmp / "env.toml").write_text(
+            '[inputs]\ndir = ["examples/lint"]\n'
+        )
+        env, _, rc = run_json(
+            "tree", "--config", "cli.toml",
+            cwd=self.tmp,
+            env={**self._clean_env(), "RTLSCANNER_CONFIG": "env.toml"},
+        )
+
+        self.assertEqual(rc, 0)
+        modules = {n["module"] for n in env["data"]["hierarchy"]}
+        self.assertIn("top", modules)
+        self.assertNotIn("lint_demo", modules)
 
     def test_env_overrides_config(self):
         (self.tmp / ".rtlscanner.toml").write_text(
@@ -126,6 +174,29 @@ class InputsResolutionTests(unittest.TestCase):
         self.assertEqual(env["errors"][0]["code"], "BAD_CONFIG")
         self.assertEqual(stderr, "")
 
+    def test_missing_explicit_config_emits_json_error_envelope(self):
+        env, stderr, rc = run_json(
+            "tree", "--config", "missing.toml",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(env["errors"][0]["code"], "BAD_CONFIG")
+        self.assertEqual(stderr, "")
+
+    def test_explicit_config_directory_emits_json_error_envelope(self):
+        (self.tmp / "cfgdir").mkdir()
+        env, stderr, rc = run_json(
+            "tree", "--config", "cfgdir",
+            cwd=self.tmp, env=self._clean_env(),
+        )
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(env["errors"][0]["code"], "BAD_CONFIG")
+        self.assertEqual(stderr, "")
+
     def test_bad_config_human_mode_uses_command_exit_code(self):
         # A malformed config is raised as a bare AgentError by load_config; it
         # must be re-wrapped so the human-mode exit code matches the command's
@@ -139,6 +210,23 @@ class InputsResolutionTests(unittest.TestCase):
 
         scope_proc = run(
             "scope", "-d", "examples/basic",
+            cwd=self.tmp, env=self._clean_env(), check=False,
+        )
+        self.assertEqual(scope_proc.returncode, 2)
+        self.assertIn("failed to parse", scope_proc.stderr)
+
+    def test_bad_explicit_config_human_mode_uses_command_exit_code(self):
+        (self.tmp / "bad.toml").write_text("[inputs\n")
+
+        tree_proc = run(
+            "tree", "--config", "bad.toml",
+            cwd=self.tmp, env=self._clean_env(), check=False,
+        )
+        self.assertEqual(tree_proc.returncode, 1)
+        self.assertIn("failed to parse", tree_proc.stderr)
+
+        scope_proc = run(
+            "scope", "--config", "bad.toml", "-d", "examples/basic",
             cwd=self.tmp, env=self._clean_env(), check=False,
         )
         self.assertEqual(scope_proc.returncode, 2)
@@ -197,6 +285,7 @@ class SharedCliPreparationTests(unittest.TestCase):
             "RTLSCANNER_EXCLUDE": "",
             "RTLSCANNER_ROOT": "",
             "RTLSCANNER_PREFIX": "",
+            "RTLSCANNER_CONFIG": "",
         }
 
     def test_bad_filelist_json_is_shared_by_compiling_commands(self):
@@ -295,7 +384,7 @@ class CommaListTests(unittest.TestCase):
     def _no_env(self):
         return {k: "" for k in (
             "RTLSCANNER_FILELIST", "RTLSCANNER_DIR", "RTLSCANNER_EXCLUDE",
-            "RTLSCANNER_ROOT", "RTLSCANNER_PREFIX",
+            "RTLSCANNER_ROOT", "RTLSCANNER_PREFIX", "RTLSCANNER_CONFIG",
         )}
 
     def test_dir_comma_equals_repeats(self):
@@ -338,7 +427,7 @@ class LintRuleModelTests(unittest.TestCase):
     def _no_env(self):
         return {k: "" for k in (
             "RTLSCANNER_FILELIST", "RTLSCANNER_DIR", "RTLSCANNER_EXCLUDE",
-            "RTLSCANNER_ROOT", "RTLSCANNER_PREFIX",
+            "RTLSCANNER_ROOT", "RTLSCANNER_PREFIX", "RTLSCANNER_CONFIG",
         )}
 
     def test_rules_none_suppresses_all(self):
