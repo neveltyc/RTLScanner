@@ -272,10 +272,9 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
     try:
         tops = build_hierarchy_from_comp(prepared.comp, args.top)
     except Exception as e:
-        # The elaboration walk (getRoot/visit/topInstances) can still raise on
-        # pathological designs.  prepare_compilation only guards the compile, so
-        # without this the walk would escape as a raw traceback (human mode) or a
-        # generic INTERNAL_ERROR (json), regressing the old COMPILE_FAILED contract.
+        # The elaboration walk (getRoot/visit/topInstances) can raise on
+        # pathological designs; report it as COMPILE_FAILED instead of letting it
+        # surface as a raw traceback (human) or a generic INTERNAL_ERROR (json).
         raise rtl_cli.CliError(
             agent_json.ERR_COMPILE_FAILED,
             f"compilation failed: {e}",

@@ -484,8 +484,8 @@ def build_compilation(files, include_dirs=None, defines=None,
         except Exception:
             pass
     else:
-        # Force elaboration without gathering/formatting diagnostics the caller
-        # would discard.  getRoot() produces the same elaborated design.
+        # Elaborate the design without gathering/formatting diagnostics;
+        # getRoot() yields the same elaborated AST as getAllDiagnostics().
         try:
             comp.getRoot()
         except Exception:
