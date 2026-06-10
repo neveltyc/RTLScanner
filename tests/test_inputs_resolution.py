@@ -126,6 +126,24 @@ class InputsResolutionTests(unittest.TestCase):
         self.assertEqual(env["errors"][0]["code"], "BAD_CONFIG")
         self.assertEqual(stderr, "")
 
+    def test_bad_config_human_mode_uses_command_exit_code(self):
+        # A malformed config is raised as a bare AgentError by load_config; it
+        # must be re-wrapped so the human-mode exit code matches the command's
+        # convention (tree standardizes on 1, scope on 2) rather than falling
+        # back to the generic getattr(e, "exit_code", 2) default for everyone.
+        (self.tmp / ".rtlscanner.toml").write_text("[inputs\n")
+
+        tree_proc = run("tree", cwd=self.tmp, env=self._clean_env(), check=False)
+        self.assertEqual(tree_proc.returncode, 1)
+        self.assertIn("failed to parse", tree_proc.stderr)
+
+        scope_proc = run(
+            "scope", "-d", "examples/basic",
+            cwd=self.tmp, env=self._clean_env(), check=False,
+        )
+        self.assertEqual(scope_proc.returncode, 2)
+        self.assertIn("failed to parse", scope_proc.stderr)
+
     def test_nested_filelist_resolves_relative_to_parent_filelist(self):
         (self.tmp / "lists").mkdir()
         (self.tmp / "lists" / "nested.f").write_text("examples/basic/top.sv\n")

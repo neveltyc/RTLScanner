@@ -420,6 +420,12 @@ class CompilationResult:
         self._keep_alive = refs
 
     def __getattr__(self, name):
+        # Guard the slot names: if this instance is ever created without
+        # __init__ running (copy/deepcopy/pickle), self.comp is unset and a
+        # naive delegation would recurse __getattr__('comp') forever.  Raising
+        # AttributeError here keeps the failure a normal one.
+        if name in ('comp', '_keep_alive'):
+            raise AttributeError(name)
         return getattr(self.comp, name)
 
 
