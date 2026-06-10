@@ -46,7 +46,15 @@ def prepare_inputs(
     human_error_rc: int = 2,
 ) -> PreparedInputs:
     """Load config, resolve inputs, and build the effective filelist."""
-    cfg, cfg_path = load_config()
+    try:
+        cfg, cfg_path = load_config()
+    except agent_json.AgentError as e:
+        # load_config raises a bare AgentError (e.g. BAD_CONFIG) which has no
+        # exit_code, so it would fall through main()'s getattr(e, "exit_code", 2)
+        # default and ignore this command's human_error_rc.  Re-wrap it as a
+        # CliError so a malformed config exits with the same human-mode code the
+        # command uses for every other input failure.
+        raise CliError(e.code, e.message, human_error_rc)
     ri = resolve_inputs(
         cli_files=list(getattr(args, "files", []) or []),
         cli_dir=list(getattr(args, "dir", []) or []),
