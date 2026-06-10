@@ -302,6 +302,10 @@ class SignalTracer:
         self._comp = compilation
         self._root = compilation.getRoot()
         self._sm = compilation.sourceManager
+        # AnalysisManager.analyze() requires a FULLY-elaborated compilation, and
+        # only getAllDiagnostics() finalizes that state — getRoot() alone is not
+        # enough (analyze() then raises "Compilation must be elaborated before
+        # analysis").  So this call is load-bearing, not a redundant trigger.
         _ = compilation.getAllDiagnostics()
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)

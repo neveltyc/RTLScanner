@@ -266,7 +266,8 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
             ))
         return 0
 
-    prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
+    prepared = rtl_cli.prepare_compilation(
+        args, human_error_rc=1, collect_diagnostics=True)
     filelist = prepared.filelist
     try:
         tops = build_hierarchy_from_comp(prepared.comp, args.top)

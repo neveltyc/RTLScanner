@@ -429,7 +429,8 @@ class CompilationResult:
         return getattr(self.comp, name)
 
 
-def build_compilation(files, include_dirs=None, defines=None):
+def build_compilation(files, include_dirs=None, defines=None,
+                      collect_diagnostics=True):
     """
     Create a pyslang Compilation from source files.
 
@@ -440,6 +441,14 @@ def build_compilation(files, include_dirs=None, defines=None):
     element is a :class:`CompilationResult` that transparently
     delegates to the underlying ``ast.Compilation`` while preventing
     premature garbage collection.
+
+    The returned compilation is always elaborated, so callers receive a
+    walkable design either way.  Gathering the diagnostic *strings* is a
+    separate concern controlled by ``collect_diagnostics``: when False, the
+    design is elaborated via ``getRoot()`` (which yields the same elaborated
+    AST as ``getAllDiagnostics()`` but skips the per-message ``str()`` work),
+    and ``diag_messages`` comes back empty.  Only callers that surface
+    diagnostics (``tree``) need to pay for collection.
     """
     comp = ast.Compilation()
     source_manager = pyslang.SourceManager()
@@ -466,11 +475,21 @@ def build_compilation(files, include_dirs=None, defines=None):
         print(f"Warning: parse error: {e}", file=sys.stderr)
 
     diag_messages = []
-    try:
-        for d in comp.getAllDiagnostics():
-            diag_messages.append(str(d))
-    except Exception:
-        pass
+    if collect_diagnostics:
+        # getAllDiagnostics() both elaborates the design and yields its
+        # diagnostics; stringify them for the caller to surface.
+        try:
+            for d in comp.getAllDiagnostics():
+                diag_messages.append(str(d))
+        except Exception:
+            pass
+    else:
+        # Force elaboration without gathering/formatting diagnostics the caller
+        # would discard.  getRoot() produces the same elaborated design.
+        try:
+            comp.getRoot()
+        except Exception:
+            pass
 
     return CompilationResult(comp, source_manager, tree), diag_messages
 
