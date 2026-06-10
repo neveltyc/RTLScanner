@@ -776,9 +776,12 @@ def run(args, env):
     if args.module:
         result = xa.xref_module(args.module, scope_path=scope or "")
         if result is None:
+            # In --module mode scope is auto-detection-exempt and may be None
+            # (search from the design root); avoid rendering the literal "None".
             raise rtl_cli.CliError(
                 agent_json.ERR_SCOPE_NOT_FOUND,
-                f"scope '{scope}' not found",
+                f"scope '{scope}' not found" if scope
+                else "could not resolve the design root scope",
             )
         if not result.definitions and not result.references:
             raise rtl_cli.CliError(

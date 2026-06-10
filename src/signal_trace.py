@@ -666,7 +666,8 @@ class SignalTracer:
 # ── Shared input/dispatch helpers ────────────────────────────────────
 def _prepare(args, *, need_signal=False):
     """Common setup for trace/fanin/fanout: resolve inputs, build
-    compilation, auto-detect scope.  Returns (tracer, scope) or exits."""
+    compilation, auto-detect scope.  Returns (tracer, scope); raises CliError
+    on any input/compile/scope failure."""
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
     tracer = SignalTracer(prepared.comp)
     scope = rtl_cli.resolve_scope(

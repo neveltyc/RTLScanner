@@ -24,7 +24,6 @@ from rtl_common import (
     Color,
     FileList,
     write_filelist_file,
-    build_compilation,
 )
 
 import agent_json
@@ -46,21 +45,6 @@ class InstanceNode:
 
 
 # ── Hierarchy Building ───────────────────────────────────────────────
-def build_hierarchy(
-    files: list,
-    top_module: Optional[str] = None,
-    include_dirs: list = None,
-    defines: list = None,
-    return_compilation: bool = False,
-):
-    """Parse files with pyslang, elaborate, and return the instance tree."""
-    comp, diag_messages = build_compilation(files, include_dirs, defines)
-    tops = build_hierarchy_from_comp(comp, top_module)
-    if return_compilation:
-        return tops, diag_messages, comp
-    return tops, diag_messages
-
-
 def build_hierarchy_from_comp(comp, top_module: Optional[str] = None):
     """Build the instance hierarchy from an existing pyslang compilation."""
     root = comp.getRoot()
@@ -284,7 +268,18 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
 
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
     filelist = prepared.filelist
-    tops = build_hierarchy_from_comp(prepared.comp, args.top)
+    try:
+        tops = build_hierarchy_from_comp(prepared.comp, args.top)
+    except Exception as e:
+        # The elaboration walk (getRoot/visit/topInstances) can still raise on
+        # pathological designs.  prepare_compilation only guards the compile, so
+        # without this the walk would escape as a raw traceback (human mode) or a
+        # generic INTERNAL_ERROR (json), regressing the old COMPILE_FAILED contract.
+        raise rtl_cli.CliError(
+            agent_json.ERR_COMPILE_FAILED,
+            f"compilation failed: {e}",
+            1,
+        )
     diags = prepared.diagnostics
 
     if env is not None:
