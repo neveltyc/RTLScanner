@@ -1,7 +1,7 @@
 """
 RTLScanner config + env var + input resolution.
 
-Three-tier merge: CLI args > RTLSCANNER_* env > ./.rtlscanner.toml > built-in defaults.
+Three-tier merge: CLI args > RTLSCANNER_* env > selected config > built-in defaults.
 The `resolve_inputs` function is the single entry point all subcommands call.
 """
 
@@ -25,6 +25,12 @@ from rtl_common import (
 CONFIG_NAME = ".rtlscanner.toml"
 LEGACY_CONFIG_NAME = ".rtllint.toml"
 DEFAULT_PREFIX = "${PROJPATH}"
+ENV_CONFIG = "RTLSCANNER_CONFIG"
+ENV_FILELIST = "RTLSCANNER_FILELIST"
+ENV_DIR = "RTLSCANNER_DIR"
+ENV_EXCLUDE = "RTLSCANNER_EXCLUDE"
+ENV_ROOT = "RTLSCANNER_ROOT"
+ENV_PREFIX = "RTLSCANNER_PREFIX"
 
 
 # ── Config file loading ─────────────────────────────────────────────
@@ -40,24 +46,41 @@ def _load_toml(text: str) -> dict:
     )
 
 
-def load_config(cwd: Optional[Path] = None) -> Tuple[dict, Optional[Path]]:
-    """Look for ./.rtlscanner.toml; return (config_dict, path_or_None).
+def load_config(
+    cwd: Optional[Path] = None,
+    config_path: Optional[str] = None,
+) -> Tuple[dict, Optional[Path]]:
+    """Load the selected config file; return (config_dict, path_or_None).
 
-    Also emits a stderr note when a legacy .rtllint.toml is found (without
-    reading it).
+    Explicit config selection comes from --config or RTLSCANNER_CONFIG.  When
+    neither is set, fall back to ./.rtlscanner.toml in cwd.
     """
     cwd = (cwd or Path.cwd()).resolve()
-    legacy = cwd / LEGACY_CONFIG_NAME
-    if legacy.is_file():
-        print(
-            f"note: found {LEGACY_CONFIG_NAME}; rename to {CONFIG_NAME} "
-            "(lint config moves under [lint.*])",
-            file=sys.stderr,
-        )
 
-    cfg_path = cwd / CONFIG_NAME
-    if not cfg_path.is_file():
-        return {}, None
+    explicit = config_path or os.environ.get(ENV_CONFIG) or None
+    if explicit:
+        cfg_path = Path(explicit).expanduser()
+        if not cfg_path.is_absolute():
+            cfg_path = cwd / cfg_path
+        cfg_path = cfg_path.resolve()
+        if not cfg_path.is_file():
+            raise agent_json.AgentError(
+                agent_json.ERR_BAD_CONFIG,
+                f"config path is not a file: {cfg_path}",
+            )
+    else:
+        legacy = cwd / LEGACY_CONFIG_NAME
+        if legacy.is_file():
+            print(
+                f"note: found {LEGACY_CONFIG_NAME}; rename to {CONFIG_NAME} "
+                "(lint config moves under [lint.*])",
+                file=sys.stderr,
+            )
+
+        cfg_path = cwd / CONFIG_NAME
+        if not cfg_path.is_file():
+            return {}, None
+
     try:
         return _load_toml(cfg_path.read_text(errors="ignore")), cfg_path
     except agent_json.AgentError:
@@ -70,13 +93,6 @@ def load_config(cwd: Optional[Path] = None) -> Tuple[dict, Optional[Path]]:
 
 
 # ── Env var helpers ─────────────────────────────────────────────────
-ENV_FILELIST = "RTLSCANNER_FILELIST"
-ENV_DIR = "RTLSCANNER_DIR"
-ENV_EXCLUDE = "RTLSCANNER_EXCLUDE"
-ENV_ROOT = "RTLSCANNER_ROOT"
-ENV_PREFIX = "RTLSCANNER_PREFIX"
-
-
 def _env_list(name: str) -> List[str]:
     val = os.environ.get(name, "").strip()
     if not val:

@@ -39,6 +39,7 @@ rtlscanner --help
 ## Common Calls
 
 ```bash
+rtlscanner tree --config .rtlscanner.toml --json
 rtlscanner tree -f rtl.f --json
 rtlscanner trace -f rtl.f -s ready --scope top.u_dma --json
 rtlscanner scope -f rtl.f --scope top.u_phy --json
@@ -53,6 +54,13 @@ rtlscanner lint -f rtl.f --rules default,cdc --json
 Use `-f` when the project has a real filelist. Use `-d` for examples or
 small ad-hoc directories.
 
+## Configuration
+
+Use `rtlscanner <subcommand> --config FILE` or `RTLSCANNER_CONFIG` to select
+one project config file. If neither is set, RTLScanner tries
+`./.rtlscanner.toml` in the current working directory. Config files provide
+shared defaults for all commands; CLI flags still override config values.
+
 ## Workflow Hints
 
 - Start with `tree` when the top or scope path is unknown.
@@ -65,7 +73,7 @@ small ad-hoc directories.
 
 ## Notes
 
-- `./.rtlscanner.toml` is discovered only in the current working directory.
+- `--config` belongs after the subcommand, e.g. `rtlscanner tree --config cfg.toml`.
 - If a filelist is present, directory and positional sources are ignored.
 - `lint` may exit 1 for real findings; still read the JSON envelope.
 - Dump a contract with `rtlscanner <subcommand> --schema`.

@@ -108,12 +108,12 @@ class Envelope:
 
 # ── Helpers ─────────────────────────────────────────────────────────
 
-# argparse fields that describe *output formatting* rather than what was
-# analyzed — these are filtered out of the command echo so the agent sees
-# only the semantic intent of the run.
+# argparse fields that describe output formatting or invocation plumbing rather
+# than what was analyzed.  Filter them so the command echo stays focused on the
+# semantic intent of the run.
 _OUTPUT_FIELDS = frozenset({
     "json", "schema", "no_color", "markdown", "ndjson",
-    "diag", "waived", "verbose",
+    "diag", "waived", "verbose", "config",
 })
 
 
@@ -135,13 +135,11 @@ class CommaListAction(argparse.Action):
 
 
 def add_input_args(p: argparse.ArgumentParser) -> None:
-    """Attach the shared input flags (files / -d / -f / --exclude).
-
-    Root, prefix, and config-path are NOT exposed on the CLI — they come
-    from env vars (RTLSCANNER_ROOT / RTLSCANNER_PREFIX) and ./.rtlscanner.toml.
-    """
+    """Attach the shared input/config flags."""
     g = p.add_argument_group("inputs")
     g.add_argument("files", nargs="*", help="Verilog/SV source files (ad-hoc)")
+    g.add_argument("--config", default=None, metavar="FILE",
+                   help="Project config .toml file (overrides RTLSCANNER_CONFIG and CWD default)")
     g.add_argument("-d", "--dir", action=CommaListAction, default=[],
                    metavar="DIR",
                    help="Directory to scan recursively (comma-list or repeat)")

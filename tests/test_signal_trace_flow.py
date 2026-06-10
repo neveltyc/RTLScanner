@@ -41,6 +41,11 @@ def edge_keys(envelope):
 
 
 class FlowSubcommandTests(unittest.TestCase):
+    def test_shared_help_describes_config(self):
+        text = run_help("tree")
+        self.assertIn("--config FILE", text)
+        self.assertIn("RTLSCANNER_CONFIG", text)
+
     def test_scope_help_describes_sections(self):
         text = run_help("scope")
         self.assertIn("--signals", text)

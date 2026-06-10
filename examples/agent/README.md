@@ -65,7 +65,7 @@ Closed enum of error codes:
 | `NO_TOP`            | No top-level module found                                        |
 | `SCOPE_NOT_FOUND`   | `--scope` does not exist (or ambiguous tops)                     |
 | `SIGNAL_NOT_FOUND`  | `--signal` not present in the requested scope                    |
-| `BAD_CONFIG`        | `.rtlscanner.toml` could not be loaded                           |
+| `BAD_CONFIG`        | Selected config file could not be loaded                         |
 | `INTERNAL_ERROR`    | Catch-all                                                        |
 
 ## Examples
@@ -110,8 +110,11 @@ Stable across all subcommands:
 
 ## Configuration
 
-`rtlscanner` reads `./.rtlscanner.toml` (CWD only, no walk-up, no
-`--config` flag). These environment variables override the config:
+`rtlscanner` uses `--config FILE`, `RTLSCANNER_CONFIG`, then
+`./.rtlscanner.toml` (CWD only, no walk-up) to select a project config.
+Use `--config` after the subcommand, for example
+`rtlscanner tree --config rtlscanner.toml --json`.
+These environment variables override config values:
 `RTLSCANNER_FILELIST`, `RTLSCANNER_DIR`, `RTLSCANNER_EXCLUDE`,
 `RTLSCANNER_ROOT`, `RTLSCANNER_PREFIX`. CLI flags override env vars.
 
