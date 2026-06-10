@@ -238,7 +238,8 @@ class ScopeAnalyzer:
         self._root = compilation.getRoot()
         self._sm = compilation.sourceManager
         self._cwd = Path.cwd().resolve()
-        _ = compilation.getAllDiagnostics()
+        # getRoot() above already elaborated the design; build_compilation also
+        # elaborates, so there's no need to re-gather diagnostics here.
 
     def _rel(self, name: str) -> str:
         if not name:

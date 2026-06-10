@@ -234,6 +234,10 @@ class XrefAnalyzer:
         self._sm = compilation.sourceManager
         self._root_dir = (root or Path.cwd()).expanduser().resolve()
         self._path_style = path_style if path_style in {"relative", "absolute", "name"} else "relative"
+        # AnalysisManager.analyze() requires a FULLY-elaborated compilation, and
+        # only getAllDiagnostics() finalizes that state — getRoot() alone is not
+        # enough (analyze() then raises "Compilation must be elaborated before
+        # analysis").  So this call is load-bearing, not a redundant trigger.
         _ = compilation.getAllDiagnostics()
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)
