@@ -33,12 +33,16 @@ except ImportError:
 
 from rtl_common import (
     Color,
+    safe_str,
 )
 from rtl_slang import (
     analyzed_procedures,
+    canonical_twin,
+    canonical_view,
     expr_symbols,
     expr_refs_symbol,
     find_signal,
+    is_data_symbol,
     iter_instances,
     procedure_label,
     procedure_reads_symbol,
@@ -79,15 +83,39 @@ class DriverInfo:
     scope_path: str = ""
     file: str = ""
     line: int = 0
+    bits: str = ""          # "[3]" / "[7:4]" when the driver covers a sub-range
+    bounds: Optional[tuple] = None  # normalized (lo, hi) bit offsets
+
+    def key(self):
+        return (self.kind, self.source, self.scope_path,
+                self.file, self.line, self.bounds)
 
     def to_dict(self):
         d = dict(kind=self.kind, source=self.source, description=self.description,
                  symbol=self.symbol_name, symbol_kind=self.symbol_kind,
                  scope_path=self.scope_path)
+        if self.bits:
+            d['bits'] = self.bits
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
         return d
+
+
+def drivers_overlap(infos) -> bool:
+    """True when any two drivers cover overlapping bit ranges.
+
+    Multiple drivers over disjoint ranges (per-bit generate outputs, packed
+    struct field assigns) are legal single-driver RTL and must not be flagged.
+    Unknown bounds fall back to the conservative answer.
+    """
+    if len(infos) < 2:
+        return False
+    spans = [i.bounds for i in infos]
+    if any(s is None for s in spans):
+        return True
+    spans = sorted(spans)
+    return any(spans[i][1] >= spans[i + 1][0] for i in range(len(spans) - 1))
 
 
 @dataclass
@@ -125,7 +153,8 @@ class TraceResult:
     scope_path: str
     scope_module: str
     driver: Optional[DriverInfo] = None       # RTL: single driver
-    extra_drivers: list = field(default_factory=list)  # multi-driver → warning
+    extra_drivers: list = field(default_factory=list)  # additional drivers
+    multi_driver: bool = False                # True only on overlapping ranges
     loads: list = field(default_factory=list)
     cross_hier: list = field(default_factory=list)
 
@@ -148,12 +177,21 @@ class TraceResult:
         d['driver'] = self.driver.to_dict() if self.driver else None
         if self.extra_drivers:
             d['extra_drivers'] = [x.to_dict() for x in self.extra_drivers]
-            d['multi_driver_warning'] = True
+            d['multi_driver_warning'] = self.multi_driver
         d['loads'] = [ld.to_dict() for ld in loads]
         d['load_count'] = len(loads)
         if self.cross_hier:
             d['cross_hierarchy'] = self.cross_hier
         return d
+
+    def _driver_line(self, d):
+        C = Color
+        bits = f" {C.yellow(self.signal_name + d.bits)}" if d.bits else ""
+        where = ""
+        if d.scope_path and d.scope_path != self.scope_path:
+            where = f"  {C.dim('@ ' + d.scope_path)}"
+        loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
+        return f"    {GLYPH_ARROW_L} {d.description}{bits}{where}{loc}"
 
     def pretty_print(self, load_filter=None):
         C = Color
@@ -168,15 +206,16 @@ class TraceResult:
         if not drivers:
             print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.dim('(none ' + GLYPH_DASH + ' undriven)')}")
         elif len(drivers) == 1:
-            d = drivers[0]
-            loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
             print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}")
-            print(f"    {GLYPH_ARROW_L} {d.description}{loc}")
-        else:
+            print(self._driver_line(drivers[0]))
+        elif self.multi_driver:
             print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.red(GLYPH_WARN + ' MULTI-DRIVER (' + str(len(drivers)) + ')')}")
             for d in drivers:
-                loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
-                print(f"    \u2190 {d.description}{loc}")
+                print(self._driver_line(d))
+        else:
+            print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVERS')} ({len(drivers)})  {C.dim('disjoint bit ranges')}")
+            for d in drivers:
+                print(self._driver_line(d))
 
         # ── Loads (many) ──
         hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({len(loads)})"
@@ -307,6 +346,7 @@ class SignalTracer:
         _ = compilation.getSemanticDiagnostics()
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)
+        self._proc_edge_cache = {}
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -315,6 +355,40 @@ class SignalTracer:
 
     def _find_signal(self, name, body):
         return find_signal(body, name)
+
+    def _lookup(self, signal_name, scope_path):
+        """Resolve (inst, sym), raising a precise CliError on failure."""
+        inst = self._resolve_scope(scope_path)
+        if inst is None:
+            raise rtl_cli.scope_not_found_error(
+                self._root, scope_path, human_error_rc=1)
+        sym = self._find_signal(signal_name, inst.body)
+        if sym is None:
+            raise rtl_cli.signal_not_found_error(
+                inst.body, signal_name, scope_path, human_error_rc=1)
+        return inst, sym
+
+    def normalize_signal(self, scope, signal):
+        """Support dotted -s forms.
+
+        '<child.path>.<sig>' is reinterpreted relative to scope, then as an
+        absolute hierarchical path, whichever resolves first.  Returns
+        (scope, signal, note) where note describes a reinterpretation.
+        """
+        if not signal or '.' not in signal:
+            return scope, signal, None
+        inst = self._resolve_scope(scope) if scope else None
+        if inst is not None and self._find_signal(signal, inst.body) is not None:
+            return scope, signal, None
+        prefix, leaf = signal.rsplit('.', 1)
+        candidates = ([f"{scope}.{prefix}"] if scope else []) + [prefix]
+        for cand in candidates:
+            cinst = self._resolve_scope(cand)
+            if cinst is not None and self._find_signal(leaf, cinst.body) is not None:
+                note = (f"interpreted signal '{signal}' as '{leaf}' "
+                        f"in scope '{cand}'")
+                return cand, leaf, note
+        return scope, signal, None
 
     def _loc_range(self, sr):
         try:
@@ -337,49 +411,99 @@ class SignalTracer:
 
     # ── driver analysis ──────────────────────────────────────────────
 
-    def _analyze_drivers(self, symbol, scope_inst):
+    def _signal_full_bounds(self, symbol):
+        try:
+            return (0, int(symbol.type.bitWidth) - 1)
+        except Exception:
+            return None
+
+    def _driver_info(self, d, symbol, remap=None):
         C = Color
+        cs = d.containingSymbol
+        cs_name = cs.name or "(anonymous)"
+        f, ln = self._loc_range(d.sourceRange)
+        kind = "continuous" if d.kind == analysis.DriverKind.Continuous else "procedural"
+
+        _SM = {
+            analysis.DriverSource.AlwaysFF: "always_ff",
+            analysis.DriverSource.AlwaysComb: "always_comb",
+            analysis.DriverSource.AlwaysLatch: "always_latch",
+            analysis.DriverSource.Initial: "initial",
+            analysis.DriverSource.Final: "final",
+            analysis.DriverSource.Always: "always",
+            analysis.DriverSource.Subroutine: "subroutine",
+            analysis.DriverSource.Other: "other",
+        }
+        source = _SM.get(d.source, str(d.source))
+
+        if d.flags & analysis.DriverFlags.InputPort:
+            desc = f"{C.magenta('input port')} \u2014 driven from parent scope"
+            source = "input_port"
+        elif d.flags & analysis.DriverFlags.OutputPort:
+            desc = f"{C.yellow('output port')} of instance {C.cyan(cs_name)}"
+            source = "output_port"
+        elif kind == "procedural":
+            desc = f"{C.yellow(source)} block"
+            if cs_name:
+                desc += f" in {C.cyan(cs_name)}"
+        else:
+            desc = f"{C.yellow('assign')} (continuous)"
+            source = "assign"
+
+        sp = ""
+        try:
+            sp = cs.hierarchicalPath
+        except Exception:
+            pass
+        if remap is not None and sp:
+            sp = remap(sp)
+
+        bounds = None
+        try:
+            b = d.bounds
+            bounds = (int(b[0]), int(b[1]))
+        except Exception:
+            pass
+        bits = ""
+        if bounds is not None and bounds != self._signal_full_bounds(symbol):
+            lo, hi = bounds
+            bits = f"[{lo}]" if lo == hi else f"[{hi}:{lo}]"
+
+        return DriverInfo(kind=kind, source=source, description=desc,
+                          symbol_name=cs_name, symbol_kind=cs.kind.name,
+                          scope_path=sp, file=f, line=ln,
+                          bits=bits, bounds=bounds)
+
+    def _analyze_drivers(self, symbol, scope_inst):
         infos = []
+        seen = set()
+
+        def add(d, remap=None):
+            info = self._driver_info(d, symbol, remap)
+            if info.key() not in seen:
+                seen.add(info.key())
+                infos.append(info)
+
         for d in self._mgr.getDrivers(symbol):
-            cs = d.containingSymbol
-            cs_name = cs.name or "(anonymous)"
-            f, ln = self._loc_range(d.sourceRange)
-            kind = "continuous" if d.kind == analysis.DriverKind.Continuous else "procedural"
+            add(d)
 
-            _SM = {
-                analysis.DriverSource.AlwaysFF: "always_ff",
-                analysis.DriverSource.AlwaysComb: "always_comb",
-                analysis.DriverSource.AlwaysLatch: "always_latch",
-                analysis.DriverSource.Initial: "initial",
-                analysis.DriverSource.Final: "final",
-                analysis.DriverSource.Always: "always",
-                analysis.DriverSource.Subroutine: "subroutine",
-                analysis.DriverSource.Other: "other",
-            }
-            source = _SM.get(d.source, str(d.source))
-
-            if d.flags & analysis.DriverFlags.InputPort:
-                desc = f"{C.magenta('input port')} \u2014 driven from parent scope"
-                source = "input_port"
-            elif d.flags & analysis.DriverFlags.OutputPort:
-                desc = f"{C.yellow('output port')} of instance {C.cyan(cs_name)}"
-                source = "output_port"
-            elif kind == "procedural":
-                desc = f"{C.yellow(source)} block"
-                if cs_name:
-                    desc += f" in {C.cyan(cs_name)}"
-            else:
-                desc = f"{C.yellow('assign')} (continuous)"
-                source = "assign"
-
-            sp = ""
-            try:
-                sp = cs.hierarchicalPath
-            except Exception:
-                pass
-            infos.append(DriverInfo(kind=kind, source=source, description=desc,
-                                    symbol_name=cs_name, symbol_kind=cs.kind.name,
-                                    scope_path=sp, file=f, line=ln))
+        # slang's AnalysisManager records drivers only against the canonical
+        # body of deduplicated instances; query the canonical twin and remap
+        # paths back into this instance.  Drivers whose containing symbol
+        # lies outside the canonical subtree are hierarchical references that
+        # target the canonical instance specifically, not this copy.
+        view = canonical_view(self._root, scope_inst)
+        if view.deduped:
+            twin = canonical_twin(view, symbol)
+            if twin is not None and twin is not symbol:
+                for d in self._mgr.getDrivers(twin):
+                    try:
+                        cs_path = safe_str(d.containingSymbol.hierarchicalPath, "")
+                    except Exception:
+                        cs_path = ""
+                    if cs_path and not view.contains(cs_path):
+                        continue
+                    add(d, view.remap)
         return infos
 
     # ── load analysis ────────────────────────────────────────────────
@@ -442,12 +566,19 @@ class SignalTracer:
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
                     file=f, line=ln))
 
-        # 3. Procedural blocks (readSet excludes assignment LHS symbols)
-        for proc in analyzed_procedures(self._mgr, body):
+        # 3. Procedural blocks (readSet excludes assignment LHS symbols).
+        # Analyzed procedures live on the canonical body; read-set membership
+        # must be checked against the canonical twin of the queried symbol.
+        view = canonical_view(self._root, scope_inst) if scope_inst is not None else None
+        proc_body, proc_symbol = body, symbol
+        if view is not None and view.deduped:
+            proc_body = view.body
+            proc_symbol = canonical_twin(view, symbol)
+        for proc in analyzed_procedures(self._mgr, proc_body):
             try:
                 if proc.analyzedSymbol.kind != ast.SymbolKind.ProceduralBlock:
                     continue
-                if not procedure_reads_symbol(proc, symbol):
+                if not procedure_reads_symbol(proc, proc_symbol):
                     continue
                 f, ln = self._loc_sym(proc.analyzedSymbol)
                 desc = f"{C.yellow(procedure_label(proc))}"
@@ -512,6 +643,50 @@ class SignalTracer:
         left = getattr(expr, 'left', None)
         return expr_symbols(left) if left is not None else expr_symbols(expr)
 
+    def _proc_edge_templates(self, view):
+        """Proc-derived edge tuples for one analyzed body, cached per body.
+
+        Endpoint paths are in the canonical namespace; callers stamp them
+        into a specific instance with view.remap.  Caching per canonical
+        body means each unique module is walked once no matter how many
+        times it is instantiated.
+        """
+        key = safe_str(getattr(view.body, 'hierarchicalPath', ''), '') \
+            or str(id(view.body))
+        cached = self._proc_edge_cache.get(key)
+        if cached is not None:
+            return cached
+
+        templates = []
+        for proc in analyzed_procedures(self._mgr, view.body):
+            try:
+                drivers = [d.symbol for d in (proc.drivers or [])
+                           if is_data_symbol(d.symbol)]
+                reads = [r.symbol for r in (proc.readSet or [])
+                         if is_data_symbol(r.symbol)]
+                if not drivers or not reads:
+                    continue
+                if proc.analyzedSymbol.kind == ast.SymbolKind.ContinuousAssign:
+                    kind = "continuous_assign"
+                    desc = "assign"
+                elif proc.analyzedSymbol.kind == ast.SymbolKind.ProceduralBlock:
+                    kind = "procedural"
+                    desc = procedure_label(proc)
+                else:
+                    kind = "procedure"
+                    desc = str(proc.analyzedSymbol.kind)
+                f, ln = self._loc_sym(proc.analyzedSymbol)
+                for src in reads:
+                    for dst in drivers:
+                        templates.append((
+                            self._sym_path(src), self._sym_path(dst),
+                            self._sym_type(src), self._sym_type(dst),
+                            kind, desc, f, ln))
+            except Exception:
+                continue
+        self._proc_edge_cache[key] = templates
+        return templates
+
     def _build_flow_edges(self):
         if hasattr(self, '_flow_edges'):
             return self._flow_edges
@@ -533,27 +708,15 @@ class SignalTracer:
             if body is None:
                 continue
 
-            for proc in analyzed_procedures(self._mgr, body):
-                try:
-                    drivers = [d.symbol for d in (proc.drivers or [])]
-                    reads = [r.symbol for r in (proc.readSet or [])]
-                    if not drivers or not reads:
-                        continue
-                    if proc.analyzedSymbol.kind == ast.SymbolKind.ContinuousAssign:
-                        kind = "continuous_assign"
-                        desc = "assign"
-                    elif proc.analyzedSymbol.kind == ast.SymbolKind.ProceduralBlock:
-                        kind = "procedural"
-                        desc = procedure_label(proc)
-                    else:
-                        kind = "procedure"
-                        desc = str(proc.analyzedSymbol.kind)
-                    for src in reads:
-                        for dst in drivers:
-                            add(self._make_flow_edge(
-                                src, dst, kind, desc, proc.analyzedSymbol))
-                except Exception:
-                    continue
+            # Analyzed procedures live on canonical bodies only; stamp each
+            # body's edges into this instance's namespace so deduplicated
+            # instances (generate arrays, repeated modules) keep their edges.
+            view = canonical_view(self._root, inst)
+            for (src, dst, st, dt, kind, desc, f, ln) in \
+                    self._proc_edge_templates(view):
+                add(FlowEdge(source=view.remap(src), target=view.remap(dst),
+                             source_type=st, target_type=dt, kind=kind,
+                             description=desc, file=f, line=ln))
 
             try:
                 port_connections = inst.portConnections
@@ -570,12 +733,16 @@ class SignalTracer:
                     if direction in (ast.ArgumentDirection.In,
                                      ast.ArgumentDirection.InOut):
                         for src in expr_symbols(expr):
+                            if not is_data_symbol(src):
+                                continue
                             add(self._make_flow_edge(
                                 src, port_sym, "port_connection",
                                 f"{inst.name}.{port.name} input", inst))
                     if direction in (ast.ArgumentDirection.Out,
                                      ast.ArgumentDirection.InOut):
                         for dst in self._assignment_left_symbols(expr):
+                            if not is_data_symbol(dst):
+                                continue
                             add(self._make_flow_edge(
                                 port_sym, dst, "port_connection",
                                 f"{inst.name}.{port.name} output", inst))
@@ -587,12 +754,7 @@ class SignalTracer:
         return edges
 
     def flow(self, signal_name, scope_path, mode, max_depth=4):
-        inst = self._resolve_scope(scope_path)
-        if inst is None:
-            return None
-        sym = self._find_signal(signal_name, inst.body)
-        if sym is None:
-            return None
+        inst, sym = self._lookup(signal_name, scope_path)
 
         start = self._sym_path(sym)
         edges = self._build_flow_edges()
@@ -642,12 +804,7 @@ class SignalTracer:
         return paths
 
     def trace(self, signal_name, scope_path, cross=False):
-        inst = self._resolve_scope(scope_path)
-        if inst is None:
-            return None
-        sym = self._find_signal(signal_name, inst.body)
-        if sym is None:
-            return None
+        inst, sym = self._lookup(signal_name, scope_path)
 
         drivers = self._analyze_drivers(sym, inst)
         loads = self._analyze_loads(sym, inst.body, inst)
@@ -657,6 +814,7 @@ class SignalTracer:
             signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
             scope_module=inst.body.name, cross_hier=xh,
+            multi_driver=drivers_overlap(drivers),
         )
         if len(drivers) >= 1:
             r.driver = drivers[0]
@@ -666,10 +824,11 @@ class SignalTracer:
         return r
 
 # ── Shared input/dispatch helpers ────────────────────────────────────
-def _prepare(args, *, need_signal=False):
+def _prepare(args, env, *, need_signal=False):
     """Common setup for trace/fanin/fanout: resolve inputs, build
-    compilation, auto-detect scope.  Returns (tracer, scope); raises CliError
-    on any input/compile/scope failure."""
+    compilation, auto-detect scope, normalize dotted -s forms.  Returns
+    (tracer, scope, signal); raises CliError on any input/compile/scope
+    failure."""
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
     tracer = SignalTracer(prepared.comp)
     scope = rtl_cli.resolve_scope(
@@ -678,14 +837,23 @@ def _prepare(args, *, need_signal=False):
         human_error_rc=1,
     )
 
-    if need_signal and not getattr(args, 'signal', None):
+    signal = getattr(args, 'signal', None)
+    if need_signal and not signal:
         raise rtl_cli.CliError(
             agent_json.ERR_INPUT_NOT_FOUND,
             'specify --signal/-s NAME',
             1,
         )
 
-    return tracer, scope
+    if signal:
+        scope, signal, note = tracer.normalize_signal(scope, signal)
+        if note:
+            if env is not None:
+                env.add_diagnostic("note", message=note)
+            else:
+                print(f"note: {note}", file=sys.stderr)
+
+    return tracer, scope, signal
 
 
 # ── Subcommand: trace ────────────────────────────────────────────────
@@ -702,14 +870,8 @@ def add_trace_args(p):
 
 
 def run_trace(args, env):
-    tracer, scope = _prepare(args, need_signal=True)
-    r = tracer.trace(args.signal, scope, args.cross)
-    if r is None:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SIGNAL_NOT_FOUND,
-            f"signal '{args.signal}' not found in scope '{scope}'",
-            1,
-        )
+    tracer, scope, signal = _prepare(args, env, need_signal=True)
+    r = tracer.trace(signal, scope, args.cross)
     if env is not None:
         rd = r.to_dict(args.filter)
         data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
@@ -734,18 +896,12 @@ def add_flow_args(p):
 
 
 def run_flow(args, env, *, mode):
-    tracer, scope = _prepare(args, need_signal=True)
-    r = tracer.flow(args.signal, scope, mode, args.depth)
-    if r is None:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SIGNAL_NOT_FOUND,
-            f"signal '{args.signal}' not found in scope '{scope}'",
-            1,
-        )
+    tracer, scope, signal = _prepare(args, env, need_signal=True)
+    r = tracer.flow(signal, scope, mode, args.depth)
     if env is not None:
         rd = r.to_dict()
         data = {
-            'mode': mode, 'scope': scope, 'signal': args.signal,
+            'mode': mode, 'scope': scope, 'signal': signal,
             'start': rd['start'], 'nodes': rd['nodes'], 'edges': rd['edges'],
             'max_depth': rd['max_depth'],
         }

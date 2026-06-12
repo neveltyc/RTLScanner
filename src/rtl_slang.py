@@ -9,6 +9,9 @@ tools can stay focused on their own reporting logic.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Callable
+
 try:
     import pyslang.ast as ast
 except ImportError:  # rtl_common will print the user-facing dependency error.
@@ -146,6 +149,219 @@ def find_signal(body, name):
     if sym and sym.kind in (ast.SymbolKind.Net, ast.SymbolKind.Variable):
         return sym
     return None
+
+
+_NON_DATA_KINDS = frozenset(
+    k for k in (
+        getattr(ast.SymbolKind, name, None)
+        for name in ('Parameter', 'TypeParameter', 'Genvar', 'EnumValue',
+                     'Specparam')
+    ) if k is not None
+) if ast is not None else frozenset()
+
+
+def is_data_symbol(sym) -> bool:
+    """True when sym can carry runtime dataflow (not a param/genvar/enum)."""
+    if ast is None or sym is None:
+        return False
+    return getattr(sym, 'kind', None) not in _NON_DATA_KINDS
+
+
+# ── Canonical-body handling ──────────────────────────────────────────
+#
+# slang's AnalysisManager deduplicates identical instance bodies (same module,
+# same parameters) and records analysis results — drivers, read sets, analyzed
+# procedures — only against one *canonical* body per equivalence class.
+# Dedup is subtree-level: once an instance is deduplicated, analysis never
+# descends into it, so its children carry neither results nor their own
+# canonicalBody link — their analysis twin lives under the *ancestor's*
+# canonical body.  Querying a deduplicated instance through its own body
+# silently returns nothing, which reads as "undriven" / "no procedures".
+# Every analysis-manager consumer must therefore query through the canonical
+# twin and remap reported hierarchical paths back into the queried instance.
+
+@dataclass
+class CanonicalView:
+    """Analysis-capable view of one elaborated instance."""
+    body: object                    # body that carries analysis results
+    remap: Callable[[str], str]     # canonical-namespace path -> inst namespace
+    contains: Callable[[str], bool] # path lies inside the canonical subtree
+    deduped: bool                   # True when inst is not its own canonical
+
+
+def analysis_instance(root, inst):
+    """Follow canonicalBody links of inst and its ancestors to the instance
+    whose body actually carries analysis results."""
+    body = getattr(inst, 'body', None)
+    cur_path = safe_str(getattr(body, 'hierarchicalPath', ''), '')
+    if not cur_path:
+        return inst
+    cur = inst
+    for _ in range(64):  # guard against pathological canonical chains
+        parts = cur_path.split('.')
+        jumped = False
+        for i in range(len(parts), 0, -1):
+            prefix = '.'.join(parts[:i])
+            anc = cur if i == len(parts) else resolve_scope(root, prefix)
+            canon = getattr(anc, 'canonicalBody', None) if anc is not None else None
+            if canon is None:
+                continue
+            canon_prefix = safe_str(getattr(canon, 'hierarchicalPath', ''), '')
+            if not canon_prefix or canon_prefix == prefix:
+                continue
+            nxt = resolve_scope(root, canon_prefix + cur_path[len(prefix):])
+            if nxt is None:
+                continue
+            cur_path = safe_str(
+                getattr(getattr(nxt, 'body', None), 'hierarchicalPath', ''), '')
+            cur = nxt
+            jumped = True
+            break
+        if not jumped or not cur_path:
+            break
+    return cur
+
+
+def canonical_view(root, inst) -> CanonicalView:
+    """Return the CanonicalView for analysis-manager queries on inst."""
+    identity = lambda p: p  # noqa: E731
+    body = getattr(inst, 'body', None)
+    inst_prefix = safe_str(getattr(body, 'hierarchicalPath', ''), '')
+
+    twin = analysis_instance(root, inst)
+    canon_body = getattr(twin, 'body', None) if twin is not None else None
+    canon_prefix = safe_str(getattr(canon_body, 'hierarchicalPath', ''), '')
+
+    if (canon_body is None or not canon_prefix or not inst_prefix
+            or canon_prefix == inst_prefix):
+        prefix = inst_prefix
+        return CanonicalView(
+            body=body, remap=identity,
+            contains=lambda p: bool(prefix) and (p == prefix or p.startswith(prefix + '.')),
+            deduped=False)
+
+    def contains(path: str) -> bool:
+        return path == canon_prefix or path.startswith(canon_prefix + '.')
+
+    def remap(path: str) -> str:
+        if contains(path):
+            return inst_prefix + path[len(canon_prefix):]
+        return path
+
+    return CanonicalView(body=canon_body, remap=remap, contains=contains,
+                         deduped=True)
+
+
+def canonical_twin(view: CanonicalView, symbol):
+    """Return the canonical body's symbol matching `symbol`, or `symbol`.
+
+    Analysis sets (readSet, drivers) reference canonical-body symbols, so
+    membership checks against a symbol from a deduplicated body must use its
+    canonical twin.
+    """
+    if not view.deduped or symbol is None or view.body is None:
+        return symbol
+    name = safe_str(getattr(symbol, 'name', ''), '')
+    if not name:
+        return symbol
+    try:
+        twin = view.body.find(name)
+    except Exception:
+        return symbol
+    if twin is not None and getattr(twin, 'kind', None) == getattr(symbol, 'kind', None):
+        return twin
+    return symbol
+
+
+# ── Name candidates for did-you-mean errors ──────────────────────────
+
+def signal_names(body) -> list:
+    """Names of ports and nets/variables findable in an instance body."""
+    out, seen = [], set()
+
+    def add(name):
+        if name and name not in seen:
+            seen.add(name)
+            out.append(name)
+
+    if ast is None or body is None:
+        return out
+    try:
+        for member in body:
+            if getattr(member, 'kind', None) in (ast.SymbolKind.Net,
+                                                 ast.SymbolKind.Variable):
+                add(safe_str(member.name, ''))
+    except Exception:
+        pass
+    return out
+
+
+def child_scope_names(inst) -> list:
+    """Child instance paths relative to inst (e.g. 'u_reg', 'gen_arr[0].u_leaf')."""
+    out = []
+    body = getattr(inst, 'body', None)
+    if body is None:
+        return out
+    prefix = safe_str(getattr(body, 'hierarchicalPath', ''), '')
+
+    children = []
+
+    def collect(sym):
+        children.append(sym)
+        return ast.VisitAction.Skip
+
+    scope_visit(body, {ast.SymbolKind.Instance: collect})
+    seen = set()
+    for child in children:
+        path = safe_str(getattr(child, 'hierarchicalPath', ''), '')
+        if prefix and path.startswith(prefix + '.'):
+            path = path[len(prefix) + 1:]
+        elif not path:
+            path = safe_str(getattr(child, 'name', ''), '')
+        if path and path not in seen:
+            seen.add(path)
+            out.append(path)
+    return out
+
+
+def scope_suggestions(root, scope_path: str) -> dict:
+    """Describe why scope_path failed to resolve: deepest valid prefix and
+    the child scopes available there."""
+    parts = [p for p in (scope_path or '').split('.') if p]
+    valid_prefix = ''
+    base = None
+    for i in range(len(parts) - 1, 0, -1):
+        candidate = '.'.join(parts[:i])
+        inst = resolve_scope(root, candidate)
+        if inst is not None:
+            valid_prefix = candidate
+            base = inst
+            break
+
+    if base is not None:
+        children = child_scope_names(base)
+        failing = parts[len(valid_prefix.split('.'))] if valid_prefix else ''
+    else:
+        children = []
+        try:
+            for top in root.topInstances:
+                children.append(safe_str(top.name, '') or
+                                safe_str(top.body.name, ''))
+        except Exception:
+            pass
+        failing = parts[0] if parts else ''
+
+    import difflib
+    close = difflib.get_close_matches(failing, children, n=5, cutoff=0.5) \
+        if failing else []
+    return {
+        'scope': scope_path,
+        'valid_prefix': valid_prefix,
+        'failing_component': failing,
+        'close_matches': close,
+        'children': children[:20],
+        'children_truncated': len(children) > 20,
+    }
 
 
 def analyzed_procedures(manager, body):
