@@ -24,6 +24,8 @@ from rtl_common import Color, safe_str
 from rtl_config import xref_config
 from rtl_slang import (
     analyzed_procedures,
+    canonical_twin,
+    canonical_view,
     expr_refs_symbol,
     iter_instances,
     procedure_label,
@@ -399,7 +401,21 @@ class XrefAnalyzer:
             body = getattr(inst, "body", None)
             if body is None:
                 continue
-            for proc in analyzed_procedures(self._mgr, body):
+            # Analyzed procedures live on the canonical body of deduplicated
+            # instances.  When the queried symbol is declared directly in
+            # this instance, compare against its canonical twin; otherwise
+            # keep the original symbol (hierarchical references into other
+            # scopes disqualify slang's dedup, so nothing is lost).
+            view = canonical_view(self._root, inst)
+            target = symbol
+            if view.deduped:
+                try:
+                    local = body.find(safe_str(getattr(symbol, "name", ""), ""))
+                except Exception:
+                    local = None
+                if local is not None and same_symbol(local, symbol):
+                    target = canonical_twin(view, symbol)
+            for proc in analyzed_procedures(self._mgr, view.body):
                 try:
                     psym = proc.analyzedSymbol
                 except Exception:
@@ -407,17 +423,17 @@ class XrefAnalyzer:
                 kind, desc = self._proc_kind_desc(proc)
                 f, ln, col = self._loc(psym)
                 scope_path = self._scope_path(inst)
-                if self._contains_read_symbol(proc, symbol):
+                if self._contains_read_symbol(proc, target):
                     refs.append(ReferenceInfo(
                         access="read", kind=kind, description=desc,
                         scope_path=scope_path, file=f, line=ln, column=col,
                     ))
-                elif procedure_reads_symbol(proc, symbol):
+                elif procedure_reads_symbol(proc, target):
                     refs.append(ReferenceInfo(
                         access="read", kind="timing_control", description=desc,
                         scope_path=scope_path, file=f, line=ln, column=col,
                     ))
-                if self._contains_driver_symbol(proc, symbol):
+                if self._contains_driver_symbol(proc, target):
                     refs.append(ReferenceInfo(
                         access="write", kind=kind, description=desc,
                         scope_path=scope_path, file=f, line=ln, column=col,
@@ -658,6 +674,10 @@ class XrefAnalyzer:
                 continue
         return paths
 
+    @property
+    def root(self):
+        return self._root
+
 
 # ── CLI plumbing ─────────────────────────────────────────────────────
 def add_arguments(p: argparse.ArgumentParser) -> None:
@@ -694,6 +714,31 @@ def _fmt_loc(file: str, line: int, column: int) -> str:
     if not file:
         return "<unknown>"
     return f"{file}:{int(line or 0)}:{int(column or 0)}"
+
+
+def _normalize_dotted_name(xa, scope, name, env):
+    """Reinterpret a dotted -s value as '<scope'>.<leaf>' when that resolves.
+
+    Mirrors trace/fanin/fanout: agents frequently pass hierarchical signal
+    paths; accept them instead of failing the lookup.
+    """
+    if not name or "." not in name:
+        return scope, name
+    base = resolve_scope(xa.root, scope) if scope else None
+    if base is not None and xa._definition_symbols(base.body, name):
+        return scope, name
+    prefix, leaf = name.rsplit(".", 1)
+    candidates = ([f"{scope}.{prefix}"] if scope else []) + [prefix]
+    for cand in candidates:
+        cinst = resolve_scope(xa.root, cand)
+        if cinst is not None and xa._definition_symbols(cinst.body, leaf):
+            note = f"interpreted symbol '{name}' as '{leaf}' in scope '{cand}'"
+            if env is not None:
+                env.add_diagnostic("note", message=note)
+            else:
+                print(f"note: {note}", file=sys.stderr)
+            return cand, leaf
+    return scope, name
 
 
 def _print_signal_pretty(scope, name, matches, *, verbose=False):
@@ -780,10 +825,11 @@ def run(args, env):
         if result is None:
             # In --module mode scope is auto-detection-exempt and may be None
             # (search from the design root); avoid rendering the literal "None".
+            if scope:
+                raise rtl_cli.scope_not_found_error(xa.root, scope)
             raise rtl_cli.CliError(
                 agent_json.ERR_SCOPE_NOT_FOUND,
-                f"scope '{scope}' not found" if scope
-                else "could not resolve the design root scope",
+                "could not resolve the design root scope",
             )
         if not result.definitions and not result.references:
             raise rtl_cli.CliError(
@@ -800,17 +846,14 @@ def run(args, env):
         _print_module_pretty(result, scope=scope or "", verbose=bool(args.verbose))
         return 0
 
+    scope, name = _normalize_dotted_name(xa, scope, name, env)
     matches = xa.xref(scope, name, recursive=args.recursive)
     if matches is None:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SCOPE_NOT_FOUND,
-            f"scope '{scope}' not found",
-        )
+        raise rtl_cli.scope_not_found_error(xa.root, scope)
     if not matches:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SIGNAL_NOT_FOUND,
-            f"symbol '{name}' not found in scope '{scope}'",
-        )
+        base = resolve_scope(xa.root, scope)
+        raise rtl_cli.signal_not_found_error(
+            getattr(base, "body", None), name, scope, noun="symbol")
 
     data_matches = [m.to_dict() for m in matches]
     total_refs = sum(m["summary"]["references"] for m in data_matches)

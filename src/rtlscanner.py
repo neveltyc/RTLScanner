@@ -101,7 +101,7 @@ def main(argv=None) -> int:
     except agent_json.AgentError as e:
         # Structured error raised from deep in a subcommand.
         if env is not None:
-            return emit(env.fail(e.code, e.message))
+            return emit(env.fail(e.code, e.message, getattr(e, "details", None)))
         print(f"Error: {e.message}", file=sys.stderr)
         return int(getattr(e, "exit_code", 2))
     except Exception as e:

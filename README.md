@@ -117,9 +117,23 @@ rtlscanner tree -d ./rtl --json                    # agent envelope
 rtlscanner trace -d ./rtl -s q --scope top.u_dp
 rtlscanner trace -f rtl.f -s clk --scope top --filter 'u_fifo*'
 rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
+rtlscanner trace -d ./rtl -s u_dp.q --scope top       # dotted -s accepted
 ```
 
-`--scope` auto-detects when there's a single top module.
+`--scope` auto-detects when there's a single top module. A dotted `-s`
+value (`u_dp.q`, or an absolute `top.u_dp.q`) is reinterpreted as
+signal + scope, with a note in stderr/`diagnostics`.
+
+Multiple drivers are reported with the bit range each one covers
+(`bits: "[3]"` / `"[7:4]"` in JSON). The `MULTI-DRIVER` warning
+(`multi_driver_warning` in JSON) fires only when ranges actually
+overlap — per-bit generate outputs are legal single-driver RTL.
+
+Analysis results are resolved through slang's canonical instance bodies,
+so identical sibling instances (`u_dp0`/`u_dp1`) and generate-array
+elements (`gen_arr[2].u_lane`) report the same drivers/loads as the
+canonical copy, with hierarchical paths remapped to the queried
+instance.
 
 ## `rtlscanner scope` — direct scope contents
 
@@ -288,6 +302,26 @@ Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
 `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND` / `BAD_FILELIST` / `BAD_CONFIG`
 / `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
 non-zero exit code), never a raw stack trace.
+
+`*_NOT_FOUND` errors carry machine-readable recovery hints in
+`errors[0].details` so one failed call is enough to self-correct:
+
+```json
+{
+  "code": "SCOPE_NOT_FOUND",
+  "message": "scope 'top.u_dpX' not found; did you mean: u_dp0, u_dp1; …",
+  "details": {
+    "valid_prefix": "top",
+    "failing_component": "u_dpX",
+    "close_matches": ["u_dp0", "u_dp1"],
+    "children": ["u_dp0", "u_dp1", "u_extra_reg"]
+  }
+}
+```
+
+`SIGNAL_NOT_FOUND` details list `close_matches` and the `available`
+signal names in the resolved scope (capped at 20). The same hints are
+appended to human-mode error messages.
 
 ## Code Structure
 
