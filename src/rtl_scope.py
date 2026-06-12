@@ -16,7 +16,6 @@ except ImportError:
     print("Error: pyslang is required.  pip install pyslang", file=sys.stderr)
     sys.exit(1)
 
-import agent_json
 import rtl_cli
 from agent_json import emit
 from rtl_common import Color, safe_str
@@ -953,10 +952,7 @@ def run(args, env):
     analyzer, scope = _prepare(args)
     data = analyzer.describe(scope, _sections(args))
     if data is None:
-        raise rtl_cli.CliError(
-            agent_json.ERR_SCOPE_NOT_FOUND,
-            f"scope '{scope}' not found",
-        )
+        raise rtl_cli.scope_not_found_error(analyzer._root, scope)
     if env is not None:
         return emit(env.ok(data, _summary(data)))
     _print_pretty(data)

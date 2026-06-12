@@ -64,7 +64,14 @@ shared defaults for all commands; CLI flags still override config values.
 ## Workflow Hints
 
 - Start with `tree` when the top or scope path is unknown.
-- Use `scope --signals` to confirm a signal name before `trace`, `fanin`, or `fanout`.
+- On `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND`, read `errors[0].details`:
+  it lists `close_matches`, valid scope prefixes/children, and available
+  signal names — correct the call from there instead of re-exploring.
+- `-s` accepts dotted forms (`u_dp.q` relative to `--scope`, or an
+  absolute `top.u_dp.q`) for `trace`, `fanin`, `fanout`, and `xref`.
+- `trace` flags `multi_driver_warning` only for overlapping bit ranges;
+  several drivers with disjoint `bits` (generate per-bit outputs) are
+  normal.
 - Use `scope --connections` for direct child instance port maps.
 - Use `scope --typedefs` for local typedef, enum, struct, and union declarations.
 - Use `xref` when the user asks "where is this declared or referenced?"

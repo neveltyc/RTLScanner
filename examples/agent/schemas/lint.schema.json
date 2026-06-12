@@ -230,6 +230,10 @@
           },
           "message": {
             "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "description": "Machine-readable recovery hints. For SCOPE_NOT_FOUND: valid_prefix, failing_component, close_matches, children. For SIGNAL_NOT_FOUND: close_matches, available."
           }
         },
         "additionalProperties": false

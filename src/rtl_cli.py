@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import difflib
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import agent_json
 from rtl_common import FileList, build_compilation
@@ -20,8 +21,9 @@ from rtl_config import (
 class CliError(agent_json.AgentError):
     """Structured CLI failure with a human-mode exit code."""
 
-    def __init__(self, code: str, message: str, exit_code: int = 2):
-        super().__init__(code, message)
+    def __init__(self, code: str, message: str, exit_code: int = 2,
+                 details: Optional[Dict[str, Any]] = None):
+        super().__init__(code, message, details)
         self.exit_code = int(exit_code)
 
 
@@ -150,9 +152,64 @@ def resolve_scope(
             agent_json.ERR_SCOPE_NOT_FOUND,
             "multiple tops, specify --scope: " + ", ".join(tops),
             human_error_rc,
+            details={"tops": tops},
         )
     raise CliError(
         agent_json.ERR_NO_TOP,
         "no top modules found",
         human_error_rc,
     )
+
+
+# ── Not-found errors with recovery hints ─────────────────────────────
+
+def scope_not_found_error(root, scope_path: str, *,
+                          human_error_rc: int = 2) -> CliError:
+    """Build a SCOPE_NOT_FOUND error with the deepest valid prefix and the
+    child scopes available there, so callers can correct the path without a
+    second exploratory run."""
+    from rtl_slang import scope_suggestions
+
+    details = scope_suggestions(root, scope_path)
+    msg = f"scope '{scope_path}' not found"
+    if details.get("close_matches"):
+        msg += "; did you mean: " + ", ".join(details["close_matches"])
+    if details.get("valid_prefix"):
+        msg += f"; deepest valid prefix: '{details['valid_prefix']}'"
+    children = details.get("children") or []
+    if children:
+        shown = ", ".join(children[:8])
+        if len(children) > 8 or details.get("children_truncated"):
+            shown += ", …"
+        where = details.get("valid_prefix") or "top level"
+        msg += f"; scopes under {where}: {shown}"
+    return CliError(agent_json.ERR_SCOPE_NOT_FOUND, msg, human_error_rc,
+                    details=details)
+
+
+def signal_not_found_error(body, signal: str, scope_path: str, *,
+                           human_error_rc: int = 2,
+                           code: str = agent_json.ERR_SIGNAL_NOT_FOUND,
+                           noun: str = "signal") -> CliError:
+    """Build a SIGNAL_NOT_FOUND error listing close-matching and available
+    signal names in the resolved scope."""
+    from rtl_slang import signal_names
+
+    available = signal_names(body)
+    close = difflib.get_close_matches(signal, available, n=5, cutoff=0.5)
+    details = {
+        "signal": signal,
+        "scope": scope_path,
+        "close_matches": close,
+        "available": available[:20],
+        "available_truncated": len(available) > 20,
+    }
+    msg = f"{noun} '{signal}' not found in scope '{scope_path}'"
+    if close:
+        msg += "; did you mean: " + ", ".join(close)
+    elif available:
+        shown = ", ".join(available[:8])
+        if len(available) > 8:
+            shown += ", …"
+        msg += f"; signals here: {shown}"
+    return CliError(code, msg, human_error_rc, details=details)

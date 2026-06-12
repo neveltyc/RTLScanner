@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.1.3"
+TOOL_VERSION = "0.2.0"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -46,11 +46,17 @@ ERROR_CODES = [
 
 
 class AgentError(Exception):
-    """Raise inside a tool's JSON path to produce a structured error envelope."""
-    def __init__(self, code: str, message: str):
+    """Raise inside a tool's JSON path to produce a structured error envelope.
+
+    ``details`` is an optional JSON-safe dict with machine-readable recovery
+    hints (e.g. close_matches / children for *_NOT_FOUND errors).
+    """
+    def __init__(self, code: str, message: str,
+                 details: Optional[Dict[str, Any]] = None):
         super().__init__(message)
         self.code = code
         self.message = message
+        self.details = details
 
 
 class Envelope:
@@ -82,15 +88,20 @@ class Envelope:
             message=message or "",
         ))
 
-    def add_error(self, code: str, message: str) -> None:
-        self._errors.append(dict(code=code, message=message))
+    def add_error(self, code: str, message: str,
+                  details: Optional[Dict[str, Any]] = None) -> None:
+        err = dict(code=code, message=message)
+        if details:
+            err["details"] = details
+        self._errors.append(err)
 
     # ── finalizers ──
     def ok(self, data: Any, summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return self._envelope("ok", data=data, summary=summary)
 
-    def fail(self, code: str, message: str) -> Dict[str, Any]:
-        self.add_error(code, message)
+    def fail(self, code: str, message: str,
+             details: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        self.add_error(code, message, details)
         return self._envelope("error", data=None, summary=None)
 
     def _envelope(self, status: str, *, data: Any, summary: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -223,6 +234,13 @@ _ERROR_ITEM = {
     "properties": {
         "code":    {"type": "string", "enum": ERROR_CODES},
         "message": {"type": "string"},
+        "details": {
+            "type": "object",
+            "description": "Machine-readable recovery hints. For "
+                "SCOPE_NOT_FOUND: valid_prefix, failing_component, "
+                "close_matches, children. For SIGNAL_NOT_FOUND: "
+                "close_matches, available.",
+        },
     },
     "additionalProperties": False,
 }
@@ -318,6 +336,10 @@ _TRACE_DRIVER = {
         "symbol":      {"type": "string"},
         "symbol_kind": {"type": "string"},
         "scope_path":  {"type": "string"},
+        "bits":        {"type": "string",
+                        "description": "Normalized bit offsets this driver "
+                        "covers ('[3]' / '[7:4]'); absent when it drives "
+                        "the whole signal."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
     },
@@ -348,7 +370,11 @@ _TRACE_RESULT = {
         "module":               {"type": "string"},
         "driver":               {"oneOf": [_TRACE_DRIVER, {"type": "null"}]},
         "extra_drivers":        {"type": "array", "items": _TRACE_DRIVER},
-        "multi_driver_warning": {"type": "boolean"},
+        "multi_driver_warning": {"type": "boolean",
+                                 "description": "True only when driver bit "
+                                 "ranges overlap; multiple drivers over "
+                                 "disjoint ranges (per-bit generate "
+                                 "outputs) are legal and not flagged."},
         "loads":                {"type": "array", "items": _TRACE_LOAD},
         "load_count":           {"type": "integer"},
         "cross_hierarchy":      {"type": "array", "items": {"type": "string"}},
