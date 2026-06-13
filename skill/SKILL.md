@@ -69,6 +69,9 @@ shared defaults for all commands; CLI flags still override config values.
   signal names — correct the call from there instead of re-exploring.
 - `-s` accepts dotted forms (`u_dp.q` relative to `--scope`, or an
   absolute `top.u_dp.q`) for `trace`, `fanin`, `fanout`, and `xref`.
+- For a wide bus, `trace -s 'status[3]'` (or `'status[7:4]'`) narrows to the
+  driver(s) of that bit — "where does this bit come from"; loads are omitted
+  and the range shows as `bit_select`. `trace` only. Quote the `[..]` in a shell.
 - `trace` flags `multi_driver_warning` only for overlapping bit ranges;
   several drivers with disjoint `bits` (generate per-bit outputs) are
   normal.

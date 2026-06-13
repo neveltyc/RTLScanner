@@ -20,6 +20,7 @@ Install dependency:
 from __future__ import annotations
 
 import fnmatch
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional
@@ -118,6 +119,41 @@ def drivers_overlap(infos) -> bool:
     return any(spans[i][1] >= spans[i + 1][0] for i in range(len(spans) - 1))
 
 
+# ── Bit-select on a traced signal (e.g. `status[3]`, `status[7:4]`) ──
+_BITSEL_RE = re.compile(r'^(.+?)\[(\d+)(?::(\d+))?\]$')
+
+
+def split_bit_select(name):
+    """Split a trailing bit-select off a signal name.
+
+    'status[3]'   -> ('status', (3, 3))
+    'u_dp.q[7:4]' -> ('u_dp.q', (4, 7))
+    'status'      -> ('status', None)
+    A variable/dynamic index does not match and is left on the name.
+    """
+    if not name:
+        return name, None
+    m = _BITSEL_RE.match(name.strip())
+    if not m:
+        return name, None
+    a = int(m.group(2))
+    b = int(m.group(3)) if m.group(3) is not None else a
+    return m.group(1), (min(a, b), max(a, b))
+
+
+def bit_label(rng):
+    lo, hi = rng
+    return f"[{hi}]" if lo == hi else f"[{hi}:{lo}]"
+
+
+def bits_overlap(bounds, rng):
+    """True when driver bounds overlap the requested (lo, hi) range.
+    Unknown bounds are kept (conservative)."""
+    if bounds is None:
+        return True
+    return bounds[0] <= rng[1] and rng[0] <= bounds[1]
+
+
 @dataclass
 class LoadInfo:
     """One load (reader) of a signal."""
@@ -157,6 +193,11 @@ class TraceResult:
     multi_driver: bool = False                # True only on overlapping ranges
     loads: list = field(default_factory=list)
     cross_hier: list = field(default_factory=list)
+    bit_range: Optional[tuple] = None   # (lo, hi) when a bit-select was queried
+
+    @property
+    def display_name(self):
+        return self.signal_name + (bit_label(self.bit_range) if self.bit_range else "")
 
     @property
     def all_drivers(self):
@@ -170,16 +211,20 @@ class TraceResult:
                 if fnmatch.fnmatch(ld.instance_name, pattern)]
 
     def to_dict(self, load_filter=None):
-        loads = self.filtered_loads(load_filter)
         d = dict(signal=self.signal_name, type=self.signal_type,
                  kind=self.signal_kind, scope=self.scope_path,
                  module=self.scope_module)
+        if self.bit_range is not None:
+            d['bit_select'] = bit_label(self.bit_range)
         d['driver'] = self.driver.to_dict() if self.driver else None
         if self.extra_drivers:
             d['extra_drivers'] = [x.to_dict() for x in self.extra_drivers]
             d['multi_driver_warning'] = self.multi_driver
-        d['loads'] = [ld.to_dict() for ld in loads]
-        d['load_count'] = len(loads)
+        # A bit-select is a driver-origin query; loads-by-bit is phase 2.
+        if self.bit_range is None:
+            loads = self.filtered_loads(load_filter)
+            d['loads'] = [ld.to_dict() for ld in loads]
+            d['load_count'] = len(loads)
         if self.cross_hier:
             d['cross_hierarchy'] = self.cross_hier
         return d
@@ -195,9 +240,8 @@ class TraceResult:
 
     def pretty_print(self, load_filter=None):
         C = Color
-        loads = self.filtered_loads(load_filter)
 
-        print(f"Signal: {C.bold(self.signal_name)}  {C.dim(self.signal_type)}")
+        print(f"Signal: {C.bold(self.display_name)}  {C.dim(self.signal_type)}")
         print(f"Scope:  {C.cyan(self.scope_path)}  [{C.yellow(self.scope_module)}]")
         print("\u2500" * 60)
 
@@ -217,7 +261,11 @@ class TraceResult:
             for d in drivers:
                 print(self._driver_line(d))
 
-        # ── Loads (many) ──
+        # ── Loads (skipped for a bit-select: it is a driver-origin query) ──
+        if self.bit_range is not None:
+            print()
+            return
+        loads = self.filtered_loads(load_filter)
         hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({len(loads)})"
         if load_filter:
             hdr += f"  {C.dim('filter: ' + load_filter)}"
@@ -803,18 +851,33 @@ class SignalTracer:
                 continue
         return paths
 
-    def trace(self, signal_name, scope_path, cross=False):
+    def trace(self, signal_name, scope_path, cross=False, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
 
+        if bit_range is not None:
+            try:
+                width = int(sym.type.bitWidth)
+            except Exception:
+                width = None
+            if width and bit_range[1] >= width:
+                raise rtl_cli.CliError(
+                    agent_json.ERR_SIGNAL_NOT_FOUND,
+                    f"bit {bit_label(bit_range)} out of range for "
+                    f"'{signal_name}' ({sym.type}, {width} bits)", 1)
+
         drivers = self._analyze_drivers(sym, inst)
-        loads = self._analyze_loads(sym, inst.body, inst)
-        xh = self._trace_cross(sym, inst) if cross else []
+        if bit_range is not None:
+            drivers = [d for d in drivers if bits_overlap(d.bounds, bit_range)]
+        # A bit-select is a driver-origin query: loads/cross are phase 2.
+        loads = [] if bit_range is not None else self._analyze_loads(sym, inst.body, inst)
+        xh = self._trace_cross(sym, inst) if (cross and bit_range is None) else []
 
         r = TraceResult(
             signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
             scope_module=inst.body.name, cross_hier=xh,
             multi_driver=drivers_overlap(drivers),
+            bit_range=bit_range,
         )
         if len(drivers) >= 1:
             r.driver = drivers[0]
@@ -826,9 +889,9 @@ class SignalTracer:
 # ── Shared input/dispatch helpers ────────────────────────────────────
 def _prepare(args, env, *, need_signal=False):
     """Common setup for trace/fanin/fanout: resolve inputs, build
-    compilation, auto-detect scope, normalize dotted -s forms.  Returns
-    (tracer, scope, signal); raises CliError on any input/compile/scope
-    failure."""
+    compilation, auto-detect scope, normalize dotted -s forms, and split off
+    a trailing bit-select.  Returns (tracer, scope, signal, bit_range);
+    raises CliError on any input/compile/scope failure."""
     prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
     tracer = SignalTracer(prepared.comp)
     scope = rtl_cli.resolve_scope(
@@ -845,7 +908,9 @@ def _prepare(args, env, *, need_signal=False):
             1,
         )
 
+    bit_range = None
     if signal:
+        signal, bit_range = split_bit_select(signal)
         scope, signal, note = tracer.normalize_signal(scope, signal)
         if note:
             if env is not None:
@@ -853,14 +918,15 @@ def _prepare(args, env, *, need_signal=False):
             else:
                 print(f"note: {note}", file=sys.stderr)
 
-    return tracer, scope, signal
+    return tracer, scope, signal, bit_range
 
 
 # ── Subcommand: trace ────────────────────────────────────────────────
 def add_trace_args(p):
     g = p.add_argument_group('trace')
     g.add_argument('-s', '--signal', default=None, metavar='NAME',
-                   help='Signal name to trace (required)')
+                   help='Signal to trace; a bit-select narrows the driver '
+                        'origin (e.g. status[3], status[7:4])')
     g.add_argument('--scope', default=None, metavar='SCOPE',
                    help='Hierarchical scope; auto-detect when single top')
     g.add_argument('--cross', action='store_true',
@@ -870,8 +936,8 @@ def add_trace_args(p):
 
 
 def run_trace(args, env):
-    tracer, scope, signal = _prepare(args, env, need_signal=True)
-    r = tracer.trace(signal, scope, args.cross)
+    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
+    r = tracer.trace(signal, scope, args.cross, bit_range)
     if env is not None:
         rd = r.to_dict(args.filter)
         data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
@@ -896,7 +962,13 @@ def add_flow_args(p):
 
 
 def run_flow(args, env, *, mode):
-    tracer, scope, signal = _prepare(args, env, need_signal=True)
+    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
+    if bit_range is not None:
+        note = f"bit-select ignored for {mode}; using whole signal '{signal}'"
+        if env is not None:
+            env.add_diagnostic("note", message=note)
+        else:
+            print(f"note: {note}", file=sys.stderr)
     r = tracer.flow(signal, scope, mode, args.depth)
     if env is not None:
         rd = r.to_dict()
