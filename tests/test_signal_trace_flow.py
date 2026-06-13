@@ -196,5 +196,70 @@ class FlowSubcommandTests(unittest.TestCase):
         self.assertEqual(result["loads"][0]["description"], "always_ff")
 
 
+class BitSelectTraceTests(unittest.TestCase):
+    """`trace -s status[3]` narrows the driver origin to a bit range."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sv = Path("/tmp/rtlscanner_bitsel.sv")
+        cls.sv.write_text(textwrap.dedent(
+            """
+            module div(input logic [7:0] x, y, output logic [7:0] status);
+              assign status[7:4] = x[7:4];   // upper nibble from x
+              assign status[3:0] = y[3:0];   // lower nibble from y
+            endmodule
+            """
+        ))
+
+    def _trace(self, sig):
+        return run_json("trace", str(self.sv), "-s", sig, "--scope", "div")
+
+    def test_help_mentions_bit_select(self):
+        self.assertIn("status[3]", run_help("trace"))
+
+    def test_bit3_narrows_to_lower_driver(self):
+        res = self._trace("status[3]")["data"]["results"][0]
+        self.assertEqual(res["bit_select"], "[3]")
+        self.assertEqual(res["driver"]["bits"], "[3:0]")
+        self.assertNotIn("extra_drivers", res)        # only the covering driver
+        self.assertNotIn("loads", res)                # driver-origin query
+        self.assertNotIn("load_count", res)
+
+    def test_bit7_narrows_to_upper_driver(self):
+        res = self._trace("status[7]")["data"]["results"][0]
+        self.assertEqual(res["bit_select"], "[7]")
+        self.assertEqual(res["driver"]["bits"], "[7:4]")
+
+    def test_range_select_narrows_to_upper(self):
+        res = self._trace("status[7:4]")["data"]["results"][0]
+        self.assertEqual(res["bit_select"], "[7:4]")
+        self.assertEqual(res["driver"]["bits"], "[7:4]")
+
+    def test_whole_signal_unchanged(self):
+        res = self._trace("status")["data"]["results"][0]
+        self.assertNotIn("bit_select", res)
+        self.assertIn("load_count", res)
+        self.assertIsNotNone(res["driver"])
+        self.assertEqual(len(res.get("extra_drivers", [])), 1)
+
+    def test_out_of_range_is_error(self):
+        proc = subprocess.run(
+            RTLSCANNER + ["trace", str(self.sv), "-s", "status[99]",
+                          "--scope", "div", "--json"],
+            cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        env = json.loads(proc.stdout)
+        self.assertEqual(env["status"], "error")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("out of range", env["errors"][0]["message"])
+
+    def test_fanin_ignores_bit_select(self):
+        env = run_json("fanin", str(self.sv), "-s", "status[3]", "--scope", "div")
+        self.assertEqual(env["status"], "ok")
+        self.assertTrue(any("bit-select ignored" in d["message"]
+                            for d in env["diagnostics"]))
+
+
 if __name__ == "__main__":
     unittest.main()
