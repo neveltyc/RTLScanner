@@ -118,6 +118,7 @@ rtlscanner trace -d ./rtl -s q --scope top.u_dp
 rtlscanner trace -f rtl.f -s clk --scope top --filter 'u_fifo*'
 rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
 rtlscanner trace -d ./rtl -s u_dp.q --scope top       # dotted -s accepted
+rtlscanner trace -d ./rtl -s 'status[3]' --scope top  # bit-select (quote it in a shell)
 ```
 
 `--scope` auto-detects when there's a single top module. A dotted `-s`
@@ -128,6 +129,13 @@ Multiple drivers are reported with the bit range each one covers
 (`bits: "[3]"` / `"[7:4]"` in JSON). The `MULTI-DRIVER` warning
 (`multi_driver_warning` in JSON) fires only when ranges actually
 overlap — per-bit generate outputs are legal single-driver RTL.
+
+A **bit-select** on `-s` (`status[3]`, `status[7:4]`) narrows the report to
+the driver(s) covering those bits — "where does this bit come from". It is a
+driver-origin query, so loads are omitted; the queried range appears as
+`bit_select` in JSON. It applies to `trace` only (ignored with a note on
+`fanin`/`fanout`, where multi-hop bit propagation through arithmetic isn't
+exact).
 
 Analysis results are resolved through slang's canonical instance bodies,
 so identical sibling instances (`u_dp0`/`u_dp1`) and generate-array

@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.2.0"
+TOOL_VERSION = "0.2.1"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -368,6 +368,11 @@ _TRACE_RESULT = {
         "kind":                 {"type": "string"},
         "scope":                {"type": "string"},
         "module":               {"type": "string"},
+        "bit_select":           {"type": "string",
+                                 "description": "Present when the query used a "
+                                 "bit-select (e.g. '[3]', '[7:4]'): drivers are "
+                                 "narrowed to that range and loads are omitted "
+                                 "(a driver-origin query)."},
         "driver":               {"oneOf": [_TRACE_DRIVER, {"type": "null"}]},
         "extra_drivers":        {"type": "array", "items": _TRACE_DRIVER},
         "multi_driver_warning": {"type": "boolean",

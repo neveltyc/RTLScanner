@@ -72,6 +72,10 @@
                   "module": {
                     "type": "string"
                   },
+                  "bit_select": {
+                    "type": "string",
+                    "description": "Present when the query used a bit-select (e.g. '[3]', '[7:4]'): drivers are narrowed to that range and loads are omitted (a driver-origin query)."
+                  },
                   "driver": {
                     "oneOf": [
                       {
