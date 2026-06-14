@@ -1,89 +1,124 @@
 ---
 name: rtlscanner
-description: Use when an agent needs to inspect SystemVerilog RTL with RTLScanner: hierarchy, scope contents, signal driver/load tracing, fanin/fanout, lint, or xref.
+description: Static SystemVerilog/Verilog RTL inspection, lint, and dataflow analysis with the RTLScanner CLI. Use when the user has RTL source (.sv, .svh, .v files, a filelist .f, or an RTL directory) and wants to understand or check the design without running a simulation. Triggers include questions like "show me the module hierarchy / design tree", "what's instantiated under X", "what drives this signal / what reads it", "trace dataflow upstream or downstream from a signal", "where is this signal/module declared and referenced", "is there a width mismatch / unused signal / inferred latch / missing case default / unconnected port", "run lint on this RTL", "check for clock-domain crossings (CDC)", or "what's inside this scope/module". Also the source-side companion to waveform debugging: after a wave dump points at a suspicious signal, use this to find where it is declared, driven, and loaded in the RTL. Not for waveforms (.vcd/.fst), simulation runtime values, or non-RTL languages.
 ---
 
-# RTLScanner
+# RTLScanner — agent skill
 
-RTLScanner wraps pyslang-powered RTL analysis into an agent-friendly CLI for
-SystemVerilog inspection and debug. Prefer JSON mode for agent workflows:
+`rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into seven
+query subcommands over RTL *source* (no simulation). **Always pass `--json` from an
+agent.** The README documents the full CLI surface, the per-command output schema, the
+config file, and the lint rule catalog; this file covers only what you need to drive
+the tool from an agent.
 
-```bash
-rtlscanner <subcommand> ... --json
-```
+Two rules apply to every call:
 
-Always inspect `status` first. On `status="error"`, use `errors[0].code`
-and `errors[0].message`; do not parse stderr.
+- **`--json` always.** Every subcommand emits one uniform envelope:
+  `{tool, version, status, command, data, diagnostics, errors, summary}`.
+- **Read `status` first.** On `status="error"`, branch on `errors[0].code` and read
+  `errors[0].message` / `errors[0].details`. Errors print to **stdout** with a
+  non-zero exit code — never parse stderr or a stack trace.
 
 ## Install
 
-From the repository root:
+From the repo root (needs Python 3.8+; `pip install -e .` pulls in pyslang):
 
 ```bash
 pip install -e .
 rtlscanner --help
 ```
 
-## Pick a Command
+## Pick a command — and what to read from `data`
 
-| Need | Command |
-|------|---------|
-| Design hierarchy or resolved filelist | `rtlscanner tree` |
-| Direct contents of a scope | `rtlscanner scope --scope SCOPE` |
-| A signal's driver and loads | `rtlscanner trace -s NAME --scope SCOPE` |
-| Upstream dataflow | `rtlscanner fanin -s NAME --scope SCOPE` |
-| Downstream dataflow | `rtlscanner fanout -s NAME --scope SCOPE` |
-| Compile/lint findings | `rtlscanner lint` |
-| Source definitions and references | `rtlscanner xref` |
+| The user wants… | Command | Read from the envelope |
+|---|---|---|
+| Module hierarchy / design tree / a resolved filelist | `tree` | `data.hierarchy[]` (instance, module, path, children); `summary.module_counts`; `--export FILE` writes a filelist instead |
+| What's directly inside one scope (ports, signals, child instances, params) | `scope --scope S` | `data.{ports,signals,instances,params}`; `--connections` → `data.connections[]`; `--typedefs` → local typedef/enum/struct/union |
+| What drives a signal and what loads it | `trace -s N --scope S` | `data.results[].driver` (one object) + `.loads[]` + `.load_count`; multi-driver note below |
+| Upstream dataflow (where does this value come from) | `fanin -s N --scope S` | `data.nodes[]`, `data.edges[]` (source→target, kind, depth, file, line) |
+| Downstream dataflow (what does this value reach) | `fanout -s N --scope S` | same shape as `fanin` |
+| Where a signal/module is declared and referenced | `xref` | `data.matches[].{definitions,references}`; `summary.{definitions,references,reads,writes,port_connections}` |
+| Compile / lint findings (widths, unused, latches, CDC, ports) | `lint` | `data.findings[]` (file, line, col, severity, rule, message); `summary.by_rule`, `summary.has_error` |
 
-## Common Calls
+## Common calls
 
 ```bash
-rtlscanner tree --config .rtlscanner.toml --json
-rtlscanner tree -f rtl.f --json
-rtlscanner trace -f rtl.f -s ready --scope top.u_dma --json
-rtlscanner scope -f rtl.f --scope top.u_phy --json
-rtlscanner scope -f rtl.f --scope top.u_phy --connections --json
-rtlscanner fanin -f rtl.f -s data_out --scope top.u_pipe --depth 4 --json
-rtlscanner xref -f rtl.f -s state --scope top.u_ctrl --json
-rtlscanner xref -f rtl.f --module fifo --json
-rtlscanner lint -f rtl.f --rules port-connect --json
-rtlscanner lint -f rtl.f --rules default,cdc --json
+rtlscanner tree   -f rtl.f --json
+rtlscanner tree   -f rtl.f --top cpu --depth 2 --json
+rtlscanner scope  -f rtl.f --scope top.u_phy --connections --json
+rtlscanner trace  -f rtl.f -s ready --scope top.u_dma --json
+rtlscanner fanin  -f rtl.f -s data_out --scope top.u_pipe --depth 6 --json
+rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
+rtlscanner xref   -f rtl.f --module fifo --json
+rtlscanner lint   -f rtl.f --rules default,cdc --json
+rtlscanner lint   -f rtl.f --rules port-connect --json
 ```
 
-Use `-f` when the project has a real filelist. Use `-d` for examples or
-small ad-hoc directories.
+## Inputs & syntax
 
-## Configuration
+- **Prefer `-f/--filelist` for a real project**; use `-d/--dir` only for examples or
+  small ad-hoc trees. When a filelist is present, `-d` and positional sources are
+  **ignored** (a stderr note says so) — deliberate, so a stray `-d .` can't pull
+  sim/testbench dirs into the compile.
+- **`--config` is a subcommand flag**, e.g. `rtlscanner tree --config proj.toml`. If
+  unset, `rtlscanner` tries `./.rtlscanner.toml` in CWD (no walk-up). Priority is
+  `CLI > env (RTLSCANNER_*) > config > defaults`, field by field.
+- **Repeatable flags** (`-d`, `-f`, `--exclude`, `--rules`, `--skip`, `--waive`) take a
+  comma list or repetition: `-d a,b` ≡ `-d a -d b`.
+- **`--scope` auto-detects** when there's exactly one top module.
+- **Dotted `-s`** is accepted for `trace`/`fanin`/`fanout`/`xref`: `u_dp.q` (relative to
+  `--scope`) or an absolute `top.u_dp.q` is split back into signal + scope (noted in
+  `diagnostics`).
+- **Bit-select on `-s`** (`'status[3]'`, `'status[7:4]'`) narrows to the driver(s) of
+  those bits — "where does this bit come from". Loads are dropped; the range shows as
+  `bit_select`. **`trace` only** (ignored with a note on fanin/fanout). Quote the
+  brackets in a shell.
 
-Use `rtlscanner <subcommand> --config FILE` or `RTLSCANNER_CONFIG` to select
-one project config file. If neither is set, RTLScanner tries
-`./.rtlscanner.toml` in the current working directory. Config files provide
-shared defaults for all commands; CLI flags still override config values.
+## Workflow playbooks
 
-## Workflow Hints
+**Cold start (top/scope unknown).** `tree` to get the hierarchy and pick a scope path →
+`scope --scope <path>` to see its ports/instances → drill in with `trace`/`xref`.
 
-- Start with `tree` when the top or scope path is unknown.
-- On `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND`, read `errors[0].details`:
-  it lists `close_matches`, valid scope prefixes/children, and available
-  signal names — correct the call from there instead of re-exploring.
-- `-s` accepts dotted forms (`u_dp.q` relative to `--scope`, or an
-  absolute `top.u_dp.q`) for `trace`, `fanin`, `fanout`, and `xref`.
-- For a wide bus, `trace -s 'status[3]'` (or `'status[7:4]'`) narrows to the
-  driver(s) of that bit — "where does this bit come from"; loads are omitted
-  and the range shows as `bit_select`. `trace` only. Quote the `[..]` in a shell.
-- `trace` flags `multi_driver_warning` only for overlapping bit ranges;
-  several drivers with disjoint `bits` (generate per-bit outputs) are
-  normal.
-- Use `scope --connections` for direct child instance port maps.
-- Use `scope --typedefs` for local typedef, enum, struct, and union declarations.
-- Use `xref` when the user asks "where is this declared or referenced?"
-- Use `lint --rules port-connect` for unconnected or width-mismatch port issues.
-- Use `lint --rules semantic` for compile/front-end diagnostics only.
+**Chase a suspicious signal.** `trace -s sig --scope S` for the immediate driver/loads →
+if the driver is upstream, `fanin -s sig --scope S --depth N` to walk back to the
+source → `xref -s sig --scope S` to jump to the exact file/line of the declaration and
+each read/write.
 
-## Notes
+**Source-side of a waveform finding.** When a wave dump (e.g. from the companion
+RWaveAnalyzer / `rwave`) flags a signal that's stuck or glitching at runtime, switch to
+the RTL: `xref` for where it's declared and which blocks/ports touch it, then
+`trace`/`fanin` for what actually drives it. The wave tells you *when*; RTLScanner tells
+you *where and why* in source.
 
-- `--config` belongs after the subcommand, e.g. `rtlscanner tree --config cfg.toml`.
-- If a filelist is present, directory and positional sources are ignored.
-- `lint` may exit 1 for real findings; still read the JSON envelope.
-- Dump a contract with `rtlscanner <subcommand> --schema`.
+**Lint in CI.** `rtlscanner lint -f rtl.f --strict --json` — `--strict` promotes any
+finding to a gate (exit 1). Use `--rules default,cdc,port-connect` for the broad sweep;
+permanent project waivers belong in `.rtlscanner.toml` under `[lint] waive = [...]`
+(module-basename globs), not on the command line.
+
+## lint rule model (quick form)
+
+`--rules SPEC[,...]` is a whitelist. SPEC is a rule name (`width-trunc`), a family alias
+(`semantic`, `unused`, `shadow`, `cdc`, `port-connect`), a glob (`width-*`), or a meta
+value (`default` = semantic+unused, `all`, `none`). `--skip RULE[,...]` subtracts (glob
+ok). `semantic` is the normalized slang diagnostic stream (parse, type, binding,
+elaboration); for compile/front-end errors only, use `--rules semantic`, and for child
+instance port issues use `--rules port-connect`.
+
+## Agent-side gotchas
+
+- **Self-correct from `*_NOT_FOUND`.** `SCOPE_NOT_FOUND` and `SIGNAL_NOT_FOUND` put
+  recovery data in `errors[0].details`: `close_matches`, the valid scope prefix and its
+  `children`, or the `available` signal names in the resolved scope. Fix the call from
+  that one response instead of re-exploring with `tree`/`scope`.
+- **Multi-driver is range-aware.** `trace` sets `multi_driver_warning` only when driver
+  bit ranges actually *overlap*. Several drivers with disjoint `bits` (e.g. per-bit
+  generate outputs) are legal single-driver RTL, not a conflict.
+- **Sibling/generate instances share one body.** Identical instances (`u_dp0`/`u_dp1`)
+  and generate-array elements (`gen_arr[2].u_lane`) report the *same* drivers/loads as
+  the canonical instance, with paths remapped to the one you queried — don't expect them
+  to differ.
+- **`lint` exits 1 on real findings** (and on `--strict` with any finding). A non-zero
+  exit is not a crash — still read the JSON envelope.
+- **`--depth` defaults to 4** on `fanin`/`fanout`; raise it for deeper cones.
+- **Dump a contract** with `rtlscanner <subcmd> --schema` (draft-07 JSON Schema) when
+  you need the exact field list for a command.
