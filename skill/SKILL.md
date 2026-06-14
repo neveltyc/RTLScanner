@@ -119,6 +119,17 @@ instance port issues use `--rules port-connect`.
   to differ.
 - **`lint` exits 1 on real findings** (and on `--strict` with any finding). A non-zero
   exit is not a crash — still read the JSON envelope.
-- **`--depth` defaults to 4** on `fanin`/`fanout`; raise it for deeper cones.
+- **Lint is noisy on mature RTL — read the summary, don't scan 100+ findings.** For "are
+  there real *bugs*", check `summary.by_severity` (e.g. `{error: 0, warning: 144}`) or
+  `summary.has_error`: 0 errors ⇒ no compile/semantic bugs, the rest is style. Narrow with
+  `--min-severity error`, or drop style rules with `--skip case-default,...`.
+- **Module name → instance path.** `--scope` wants an instance path (`testbench.uut`), not
+  a module name (`picorv32`). Map one with `xref --module picorv32` (its instance sites)
+  or `tree --flat` (every instance path, one per line).
+- **Big `fanin`/`fanout`? Summarize, don't dump.** A real cone can be thousands of edges.
+  `--summary` gives counts + an edges-by-depth histogram + the `direct` (depth-1) neighbors;
+  `--depth 1` gives just the immediate drivers/loads. Procedural edges are per-statement (an
+  assignment's RHS feeds only its own LHS), so `--depth 1` is the true direct fan-in, not
+  every co-sensitive signal. `--depth` defaults to 4; raise it for deeper cones.
 - **Dump a contract** with `rtlscanner <subcmd> --schema` (draft-07 JSON Schema) when
   you need the exact field list for a command.

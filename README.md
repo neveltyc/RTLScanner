@@ -163,10 +163,21 @@ union declarations.
 ```bash
 rtlscanner fanin  -d ./rtl -s result --scope top.u_dp
 rtlscanner fanout -d ./rtl -s sel    --scope top.u_dp --depth 6
+rtlscanner fanin  -d ./rtl -s result --scope top.u_dp --summary   # counts only
+rtlscanner fanin  -d ./rtl -s result --scope top.u_dp --depth 1   # direct sources
 ```
 
 BFS over `port_connection`, `continuous_assign`, and `procedural` edges
 from the starting signal. `--depth` (default 4) caps traversal.
+
+Procedural edges are **per-statement**: an assignment's RHS feeds only its own
+LHS, while a block's `if`/`case`/loop conditions feed every driver in the
+block. So `--depth 1` is the true direct fan-in, not every signal the block
+reads.
+
+A cone can be large on a real design. `--summary` replaces the full
+`nodes`/`edges` with counts, an `edges_by_depth` histogram, and the `direct`
+(depth-1) neighbors — the agent-friendly view.
 
 Reading the output:
 

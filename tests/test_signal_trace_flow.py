@@ -261,5 +261,63 @@ class BitSelectTraceTests(unittest.TestCase):
                             for d in env["diagnostics"]))
 
 
+class ProceduralPrecisionTests(unittest.TestCase):
+    """Per-statement deps: an assignment's RHS feeds only its own LHS — no
+    readSet x drivers cross-product across a procedural block."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.sv = Path("/tmp/rtlscanner_procprec.sv")
+        cls.sv.write_text(textwrap.dedent(
+            """
+            module m(input logic clk, en, input logic [3:0] a, b,
+                     output logic [3:0] q, output logic [3:0] r);
+              always_ff @(posedge clk) begin
+                if (en) q <= a + b;   // q <- a,b ; gated by en
+                r <= a;               // r <- a only
+              end
+            endmodule
+            """
+        ))
+
+    def _sources(self, sig):
+        env = run_json("fanin", str(self.sv), "-s", sig,
+                       "--scope", "m", "--depth", "1")
+        goal = "m." + sig
+        return {e["source"].split(".")[-1] for e in env["data"]["edges"]
+                if e["target"] == goal}
+
+    def test_rhs_feeds_only_own_lhs(self):
+        # b feeds only q, so it must NOT appear as a source of r.
+        self.assertEqual(self._sources("r"), {"a", "en"})
+
+    def test_full_data_and_control_deps_kept(self):
+        self.assertEqual(self._sources("q"), {"a", "b", "en"})
+
+
+class FlowSummaryTests(unittest.TestCase):
+    """`fanin/fanout --summary` returns counts + direct neighbors, not the
+    full node/edge graph."""
+
+    def test_summary_omits_full_graph(self):
+        env = run_json("fanin", "-d", "examples/trace", "-s", "result",
+                       "--scope", "trace_top.u_dp", "--summary")
+        d = env["data"]
+        self.assertTrue(d["summary_only"])
+        self.assertNotIn("edges", d)
+        self.assertNotIn("nodes", d)
+        self.assertGreater(d["edge_count"], 0)
+        self.assertGreater(d["node_count"], 0)
+        self.assertIn("1", d["edges_by_depth"])
+        self.assertEqual(d["direct"], ["trace_top.u_dp.sum"])
+
+    def test_fanout_summary_direct_sinks(self):
+        env = run_json("fanout", "-d", "examples/trace", "-s", "mux_out",
+                       "--scope", "trace_top.u_dp", "--summary")
+        d = env["data"]
+        self.assertTrue(d["summary_only"])
+        self.assertIn("trace_top.u_dp.sum", d["direct"])
+
+
 if __name__ == "__main__":
     unittest.main()

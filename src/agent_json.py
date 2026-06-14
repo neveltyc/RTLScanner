@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.2.1"
+TOOL_VERSION = "0.3.0"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -431,7 +431,7 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
         tool_name,
         data_schema={
             "type": "object",
-            "required": ["mode", "scope", "signal", "start", "nodes", "edges", "max_depth"],
+            "required": ["mode", "scope", "signal", "start"],
             "properties": {
                 "mode":      {"type": "string", "const": tool_name},
                 "scope":     {"type": "string"},
@@ -439,9 +439,22 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
                               "description": "Starting signal name."},
                 "start":     {"type": "string",
                               "description": "Elaborated hierarchical path of the starting signal."},
-                "nodes":     {"type": "array", "items": {"type": "string"}},
-                "edges":     {"type": "array", "items": _TRACE_FLOW_EDGE},
                 "max_depth": {"type": "integer"},
+                "nodes":     {"type": "array", "items": {"type": "string"},
+                              "description": "Full graph; absent with --summary."},
+                "edges":     {"type": "array", "items": _TRACE_FLOW_EDGE,
+                              "description": "Full graph; absent with --summary."},
+                "summary_only": {"type": "boolean",
+                              "description": "True when --summary was used: the full "
+                              "nodes/edges arrays are omitted in favor of counts."},
+                "node_count": {"type": "integer", "description": "--summary only."},
+                "edge_count": {"type": "integer", "description": "--summary only."},
+                "edges_by_depth": {"type": "object",
+                              "additionalProperties": {"type": "integer"},
+                              "description": "--summary only: edge count per BFS depth."},
+                "direct":    {"type": "array", "items": {"type": "string"},
+                              "description": "--summary only: depth-1 neighbors "
+                              "(direct sources for fanin, direct sinks for fanout)."},
             },
         },
         summary_schema={
