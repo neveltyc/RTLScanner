@@ -1,6 +1,7 @@
 import textwrap
 import unittest
 from pathlib import Path
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,7 +105,7 @@ class ScopeAnalyzerTests(unittest.TestCase):
         self.assertTrue(params["W"]["is_overridden"])
 
     def test_scope_groups_params_and_typedefs_under_one_command(self):
-        tmp = Path("/tmp/rtlscanner_scope_test.sv")
+        tmp = Path(tempfile.mkdtemp()) / "rtlscanner_scope_test.sv"
         tmp.write_text(textwrap.dedent(
             """
             module typed #(parameter int W = 8,
@@ -158,7 +159,7 @@ class ScopeAnalyzerTests(unittest.TestCase):
         self.assertEqual(typedefs["wide_t"]["bit_width"], 17)
 
     def test_scope_params_work_for_traditional_verilog(self):
-        tmp = Path("/tmp/rtlscanner_scope_verilog_test.v")
+        tmp = Path(tempfile.mkdtemp()) / "rtlscanner_scope_verilog_test.v"
         tmp.write_text(textwrap.dedent(
             """
             module legacy #(parameter W = 8) (input [W-1:0] a, output [W-1:0] y);

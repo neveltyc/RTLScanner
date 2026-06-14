@@ -4,6 +4,7 @@ import sys
 import textwrap
 import unittest
 from pathlib import Path
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -80,7 +81,7 @@ class FlowSubcommandTests(unittest.TestCase):
         self.assertEqual(instances, {"top.u_dp0.u_reg", "top.u_dp0.u_alu"})
 
     def test_scope_typedefs_reports_local_type_defs(self):
-        src = Path("/tmp/rtlscanner_scope_typedefs.sv")
+        src = Path(tempfile.mkdtemp()) / "rtlscanner_scope_typedefs.sv"
         src.write_text(textwrap.dedent(
             """
             module typed(input logic [7:0] in, output logic [7:0] out);
@@ -201,7 +202,7 @@ class BitSelectTraceTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.sv = Path("/tmp/rtlscanner_bitsel.sv")
+        cls.sv = Path(tempfile.mkdtemp()) / "rtlscanner_bitsel.sv"
         cls.sv.write_text(textwrap.dedent(
             """
             module div(input logic [7:0] x, y, output logic [7:0] status);
@@ -267,7 +268,7 @@ class ProceduralPrecisionTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.sv = Path("/tmp/rtlscanner_procprec.sv")
+        cls.sv = Path(tempfile.mkdtemp()) / "rtlscanner_procprec.sv"
         cls.sv.write_text(textwrap.dedent(
             """
             module m(input logic clk, en, input logic [3:0] a, b,

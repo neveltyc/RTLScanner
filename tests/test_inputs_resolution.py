@@ -8,6 +8,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,7 +42,7 @@ def run_json(*args, **kw):
 
 class InputsResolutionTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path("/tmp/rtl_test_inputs")
+        self.tmp = Path(tempfile.mkdtemp()) / "rtl_test_inputs"
         if self.tmp.exists():
             shutil.rmtree(self.tmp)
         self.tmp.mkdir()
@@ -268,7 +269,7 @@ class InputsResolutionTests(unittest.TestCase):
 
 class SharedCliPreparationTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path("/tmp/rtl_test_cli_prepare")
+        self.tmp = Path(tempfile.mkdtemp()) / "rtl_test_cli_prepare"
         if self.tmp.exists():
             shutil.rmtree(self.tmp)
         self.tmp.mkdir()
@@ -371,7 +372,7 @@ class SharedCliPreparationTests(unittest.TestCase):
 
 class CommaListTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path("/tmp/rtl_test_commalist")
+        self.tmp = Path(tempfile.mkdtemp()) / "rtl_test_commalist"
         if self.tmp.exists():
             shutil.rmtree(self.tmp)
         self.tmp.mkdir()
@@ -414,7 +415,7 @@ class CommaListTests(unittest.TestCase):
 
 class LintRuleModelTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path("/tmp/rtl_test_lint")
+        self.tmp = Path(tempfile.mkdtemp()) / "rtl_test_lint"
         if self.tmp.exists():
             shutil.rmtree(self.tmp)
         self.tmp.mkdir()
