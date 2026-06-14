@@ -40,10 +40,7 @@
             "mode",
             "scope",
             "signal",
-            "start",
-            "nodes",
-            "edges",
-            "max_depth"
+            "start"
           ],
           "properties": {
             "mode": {
@@ -61,11 +58,15 @@
               "type": "string",
               "description": "Elaborated hierarchical path of the starting signal."
             },
+            "max_depth": {
+              "type": "integer"
+            },
             "nodes": {
               "type": "array",
               "items": {
                 "type": "string"
-              }
+              },
+              "description": "Full graph; absent with --summary."
             },
             "edges": {
               "type": "array",
@@ -107,10 +108,34 @@
                   }
                 },
                 "additionalProperties": true
-              }
+              },
+              "description": "Full graph; absent with --summary."
             },
-            "max_depth": {
-              "type": "integer"
+            "summary_only": {
+              "type": "boolean",
+              "description": "True when --summary was used: the full nodes/edges arrays are omitted in favor of counts."
+            },
+            "node_count": {
+              "type": "integer",
+              "description": "--summary only."
+            },
+            "edge_count": {
+              "type": "integer",
+              "description": "--summary only."
+            },
+            "edges_by_depth": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "description": "--summary only: edge count per BFS depth."
+            },
+            "direct": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "--summary only: depth-1 neighbors (direct sources for fanin, direct sinks for fanout)."
             }
           }
         },

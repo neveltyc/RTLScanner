@@ -698,6 +698,11 @@ class SignalTracer:
         into a specific instance with view.remap.  Caching per canonical
         body means each unique module is walked once no matter how many
         times it is instantiated.
+
+        Procedural blocks use per-statement dependencies (each assignment's
+        RHS feeds only its own LHS; control-condition reads go to every driver
+        in the block) instead of a readSet x drivers cross-product, which
+        otherwise links every co-read signal to every driven signal.
         """
         key = safe_str(getattr(view.body, 'hierarchicalPath', ''), '') \
             or str(id(view.body))
@@ -714,26 +719,105 @@ class SignalTracer:
                          if is_data_symbol(r.symbol)]
                 if not drivers or not reads:
                     continue
-                if proc.analyzedSymbol.kind == ast.SymbolKind.ContinuousAssign:
-                    kind = "continuous_assign"
-                    desc = "assign"
-                elif proc.analyzedSymbol.kind == ast.SymbolKind.ProceduralBlock:
-                    kind = "procedural"
-                    desc = procedure_label(proc)
+                pkind = proc.analyzedSymbol.kind
+                if pkind == ast.SymbolKind.ContinuousAssign:
+                    kind, desc = "continuous_assign", "assign"
+                elif pkind == ast.SymbolKind.ProceduralBlock:
+                    kind, desc = "procedural", procedure_label(proc)
                 else:
-                    kind = "procedure"
-                    desc = str(proc.analyzedSymbol.kind)
+                    kind, desc = "procedure", str(pkind)
                 f, ln = self._loc_sym(proc.analyzedSymbol)
-                for src in reads:
-                    for dst in drivers:
-                        templates.append((
-                            self._sym_path(src), self._sym_path(dst),
-                            self._sym_type(src), self._sym_type(dst),
-                            kind, desc, f, ln))
+
+                if pkind == ast.SymbolKind.ProceduralBlock:
+                    pairs = self._proc_statement_deps(proc, drivers)
+                else:
+                    # A single continuous assign: every read feeds the LHS.
+                    pairs = [(src, dst) for src in reads for dst in drivers]
+
+                for src, dst in pairs:
+                    templates.append((
+                        self._sym_path(src), self._sym_path(dst),
+                        self._sym_type(src), self._sym_type(dst),
+                        kind, desc, f, ln))
             except Exception:
                 continue
         self._proc_edge_cache[key] = templates
         return templates
+
+    def _proc_statement_deps(self, proc, drivers):
+        """Per-statement LHS<-RHS data deps + conservative control reads for
+        one procedural block.  Returns unique (src_sym, dst_sym) pairs.
+
+        Data is precise (an assignment's RHS feeds only its own LHS).  Control
+        conditions (if / case / loop) are attributed to every driver in the
+        block — a small, never-under-reporting over-approximation that avoids
+        a per-branch scoping walk.
+        """
+        data_pairs = []   # [(lhs_syms, rhs_syms)]
+        control = []      # control-condition reads
+
+        def collect(node):
+            if type(node).__name__ == "AssignmentExpression":
+                try:
+                    data_pairs.append((expr_symbols(node.left),
+                                       expr_symbols(node.right)))
+                except Exception:
+                    pass
+            else:
+                control.extend(self._statement_control_reads(node))
+
+        try:
+            proc.analyzedSymbol.body.visit(f=collect)
+        except Exception:
+            data_pairs = []
+
+        if not data_pairs:
+            # Degenerate walk; fall back to the coarse reads x drivers so we
+            # never silently under-report.
+            reads = [r.symbol for r in (proc.readSet or [])
+                     if is_data_symbol(r.symbol)]
+            return [(s, d) for s in reads for d in drivers]
+
+        control = [s for s in control if is_data_symbol(s)]
+        pairs = {}        # (src_path, dst_path) -> (src_sym, dst_sym)
+
+        def add(src, dst):
+            if is_data_symbol(src) and is_data_symbol(dst):
+                pairs.setdefault((self._sym_path(src), self._sym_path(dst)),
+                                 (src, dst))
+
+        for lhs_syms, rhs_syms in data_pairs:
+            for lhs in lhs_syms:
+                for rhs in rhs_syms:
+                    add(rhs, lhs)
+        for dst in drivers:
+            for cr in control:
+                add(cr, dst)
+        return list(pairs.values())
+
+    @staticmethod
+    def _statement_control_reads(node):
+        """Symbols read in a statement's controlling condition (if/case/loop)."""
+        tn = type(node).__name__
+        if tn == "ConditionalStatement":
+            out = []
+            for cond in (getattr(node, "conditions", None) or []):
+                out.extend(expr_symbols(getattr(cond, "expr", cond)))
+            return out
+        if tn == "CaseStatement":
+            try:
+                return expr_symbols(node.expr)
+            except Exception:
+                return []
+        if "Loop" in tn:
+            out = []
+            for attr in ("cond", "stopExpr", "stopCondition", "count"):
+                e = getattr(node, attr, None)
+                if e is not None:
+                    out.extend(expr_symbols(e))
+            return out
+        return []
+
 
     def _build_flow_edges(self):
         if hasattr(self, '_flow_edges'):
@@ -959,6 +1043,49 @@ def add_flow_args(p):
                    help='Hierarchical scope; auto-detect when single top')
     g.add_argument('--depth', type=int, default=4, metavar='N',
                    help='Maximum BFS traversal depth (default: 4)')
+    g.add_argument('--summary', action='store_true',
+                   help='Counts + direct neighbors only; omit the full node/edge graph')
+
+
+def _emit_flow_summary(env, r, mode, scope, signal):
+    """Counts, an edges-by-depth histogram, and the direct neighbors — instead
+    of the full cone, which can be thousands of edges on a real design."""
+    rd = r.to_dict()
+    edges = rd['edges']
+    by_depth = {}
+    for e in edges:
+        d = int(e.get('depth', 0))
+        by_depth[d] = by_depth.get(d, 0) + 1
+    far = 'source' if mode == 'fanin' else 'target'
+    direct = sorted({e[far] for e in edges if int(e.get('depth', 0)) == 1})
+    node_count = len(rd['nodes'])
+    edge_count = len(edges)
+    max_depth = rd['max_depth']
+
+    if env is not None:
+        data = {
+            'mode': mode, 'scope': scope, 'signal': signal,
+            'start': rd['start'], 'summary_only': True,
+            'node_count': node_count, 'edge_count': edge_count,
+            'max_depth': max_depth,
+            'edges_by_depth': {str(k): by_depth[k] for k in sorted(by_depth)},
+            'direct': direct,
+        }
+        summary = {'mode': mode, 'results': 1, 'nodes': node_count,
+                   'edges': edge_count, 'max_depth': max_depth}
+        return emit(env.ok(data, summary))
+
+    C = Color
+    title = "FANIN" if mode == "fanin" else "FANOUT"
+    print(f"Signal: {C.bold(signal)}")
+    print(f"Mode:   {C.green(title + ' summary')}  {C.dim('depth <= ' + str(max_depth))}")
+    print(f"  nodes {C.yellow(str(node_count))}   edges {C.yellow(str(edge_count))}")
+    if by_depth:
+        print("  edges by depth: " +
+              ", ".join(f"{k}:{by_depth[k]}" for k in sorted(by_depth)))
+    label = "direct sources" if mode == "fanin" else "direct sinks"
+    print(f"  {label} ({len(direct)}): " + (", ".join(direct) or "(none)"))
+    return 0
 
 
 def run_flow(args, env, *, mode):
@@ -970,6 +1097,8 @@ def run_flow(args, env, *, mode):
         else:
             print(f"note: {note}", file=sys.stderr)
     r = tracer.flow(signal, scope, mode, args.depth)
+    if getattr(args, 'summary', False):
+        return _emit_flow_summary(env, r, mode, scope, signal)
     if env is not None:
         rd = r.to_dict()
         data = {
