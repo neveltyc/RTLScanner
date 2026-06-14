@@ -77,6 +77,7 @@ Closed enum of error codes:
 | `scope.out.json`      | `rtlscanner scope -d examples/basic --scope top.u_dp0 --connections --json` |
 | `flow.out.json`       | `rtlscanner fanout -d examples/basic --signal q --scope top.u_dp0 --json` |
 | `lint.out.json`       | `rtlscanner lint -d examples/lint --json`                        |
+| `lint-bugs.out.json`  | `rtlscanner lint -d examples/lint --rules bugs --json`           |
 | `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules default,cdc --json` |
 | `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
 
