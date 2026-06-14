@@ -27,6 +27,8 @@ rtlscanner --help
 Requires Python 3.8+ and pyslang. `pip install -e .` installs pyslang
 and the other declared dependencies.
 
+See [CHANGELOG.md](CHANGELOG.md) for release notes and version history.
+
 ## Configuration
 
 Use `-d/--dir`, `-f/--filelist`, and `--exclude` for source inputs.
@@ -116,7 +118,6 @@ rtlscanner tree -d ./rtl --json                    # agent envelope
 ```bash
 rtlscanner trace -d ./rtl -s q --scope top.u_dp
 rtlscanner trace -f rtl.f -s clk --scope top --filter 'u_fifo*'
-rtlscanner trace -d ./rtl -s a --scope top --cross    # follow ports
 rtlscanner trace -d ./rtl -s u_dp.q --scope top       # dotted -s accepted
 rtlscanner trace -d ./rtl -s 'status[3]' --scope top  # bit-select (quote it in a shell)
 ```
@@ -124,6 +125,10 @@ rtlscanner trace -d ./rtl -s 'status[3]' --scope top  # bit-select (quote it in 
 `--scope` auto-detects when there's a single top module. A dotted `-s`
 value (`u_dp.q`, or an absolute `top.u_dp.q`) is reinterpreted as
 signal + scope, with a note in stderr/`diagnostics`.
+
+`trace` is scope-local: it reports the immediate driver and loads within
+one scope. To follow a value **across** module/port boundaries, use
+`fanin`/`fanout`, which traverse port connections.
 
 Multiple drivers are reported with the bit range each one covers
 (`bits: "[3]"` / `"[7:4]"` in JSON). The `MULTI-DRIVER` warning
@@ -241,6 +246,7 @@ analysis.
 ```bash
 rtlscanner lint -d ./rtl                              # default rule set
 rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
+rtlscanner lint -d ./rtl --rules bugs                 # real bugs only (high precision)
 rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
 rtlscanner lint -d ./rtl --rules default --skip case-default
 rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip modules
@@ -257,7 +263,7 @@ rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
 - a family alias: `semantic`, `unused`, `shadow`, `cdc`, `port-connect`
 - a warning option: `everything` (enable slang's broader warning set)
 - a glob: `width-*`
-- a meta value: `default` (= `semantic + unused`), `all`, `none`
+- a meta value: `default` (= `semantic + unused`), `all`, `none`, `bugs`
 
 `semantic` is the normalized slang diagnostic stream. It includes parse,
 preprocessor, type, binding, and elaboration diagnostics that slang emits;
@@ -267,6 +273,27 @@ will never appear as `check="everything"`; it only changes slang warning
 configuration.
 
 `--skip RULE[,...]` — subtract from the resulting set (glob ok).
+
+A typo'd `--rules`/`--skip` token (e.g. `bugz`) now emits a `note` in
+`diagnostics` with a did-you-mean suggestion, instead of silently selecting
+nothing. A valid rule that simply has no findings this run is **not** flagged.
+
+### `bugs` — real bugs only
+
+`--rules bugs` is a curated, high-precision preset for "are there real bugs
+in this design?" It keeps the rules that flag functional defects:
+
+- `inferred-latch` — an unintended level-sensitive latch
+- `unassigned-variable` — a variable read but never driven (reads as X)
+- `undriven-port` — an output port never driven
+- `port-width-mismatch` / `port-width-trunc` — child-instance port width problems
+- `width-trunc` — implicit truncation in an assignment
+
+…plus every hard compile **error** (whose codes are open-ended), while
+dropping style noise (`unused-*`, `case-default`, `empty-output-connection`,
+the `port-unconnected` note). `cdc-crossing` is intentionally excluded
+(heuristic, higher false-positive rate); compose it back with
+`--rules bugs,cdc`.
 
 ### Waivers
 

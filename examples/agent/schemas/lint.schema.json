@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "lint agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` — use `[lint].waive` in `.rtlscanner.toml` instead.",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` \u2014 use `[lint].waive` in `.rtlscanner.toml` instead.",
   "type": "object",
   "required": [
     "tool",
@@ -76,7 +76,7 @@
                   },
                   "rule": {
                     "type": "string",
-                    "description": "Open enum. Known rules include `cdc-crossing`, `width-trunc`, `unused-port`, `case-default`, `latch`, `multi-driven`, `used-before-declared`."
+                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
                   },
                   "message": {
                     "type": "string"
@@ -132,7 +132,7 @@
                   },
                   "rule": {
                     "type": "string",
-                    "description": "Open enum. Known rules include `cdc-crossing`, `width-trunc`, `unused-port`, `case-default`, `latch`, `multi-driven`, `used-before-declared`."
+                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
                   },
                   "message": {
                     "type": "string"

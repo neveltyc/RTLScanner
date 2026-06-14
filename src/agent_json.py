@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.3.1"
+TOOL_VERSION = "0.1.0"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
@@ -382,7 +382,6 @@ _TRACE_RESULT = {
                                  "outputs) are legal and not flagged."},
         "loads":                {"type": "array", "items": _TRACE_LOAD},
         "load_count":           {"type": "integer"},
-        "cross_hierarchy":      {"type": "array", "items": {"type": "string"}},
     },
     "additionalProperties": True,
 }
@@ -486,8 +485,11 @@ _LINT_FINDING = {
         "severity": {"type": "string", "enum": ["error", "warning", "note", "ignored"]},
         "rule":     {"type": "string",
                      "description": "Open enum. Known rules include "
-                     "`cdc-crossing`, `width-trunc`, `unused-port`, "
-                     "`case-default`, `latch`, `multi-driven`, `used-before-declared`."},
+                     "`inferred-latch`, `unassigned-variable`, `undriven-port`, "
+                     "`width-trunc`, `port-width-mismatch`, `port-width-trunc`, "
+                     "`cdc-crossing`, `unused-port`, `case-default`. The "
+                     "`--rules bugs` preset keeps the real-bug subset plus all "
+                     "compile errors."},
         "message":  {"type": "string"},
         "check":    {"type": "string",
                      "enum": ["semantic", "unused", "shadow", "cdc",

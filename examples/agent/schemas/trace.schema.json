@@ -193,12 +193,6 @@
                   },
                   "load_count": {
                     "type": "integer"
-                  },
-                  "cross_hierarchy": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
                   }
                 },
                 "additionalProperties": true

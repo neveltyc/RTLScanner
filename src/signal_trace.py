@@ -63,13 +63,10 @@ from agent_json import emit
 # inside the "{...}" part of an f-string, which would be a SyntaxError.
 GLYPH_DRIVER = "◀"
 GLYPH_LOADS = "▶"
-GLYPH_CROSS = "⇅"
-GLYPH_PORT = "↕"
 GLYPH_WARN = "⚠"
 GLYPH_DASH = "—"
 GLYPH_HR = "─"
 GLYPH_ARROW_L = "←"
-GLYPH_CORNER = "└"
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -192,7 +189,6 @@ class TraceResult:
     extra_drivers: list = field(default_factory=list)  # additional drivers
     multi_driver: bool = False                # True only on overlapping ranges
     loads: list = field(default_factory=list)
-    cross_hier: list = field(default_factory=list)
     bit_range: Optional[tuple] = None   # (lo, hi) when a bit-select was queried
 
     @property
@@ -225,8 +221,6 @@ class TraceResult:
             loads = self.filtered_loads(load_filter)
             d['loads'] = [ld.to_dict() for ld in loads]
             d['load_count'] = len(loads)
-        if self.cross_hier:
-            d['cross_hierarchy'] = self.cross_hier
         return d
 
     def _driver_line(self, d):
@@ -290,10 +284,6 @@ class TraceResult:
                     loc = f"  {C.dim(ld.file + ':' + str(ld.line))}" if ld.file else ""
                     print(f"    \u2192 {ld.description}{loc}")
 
-        if self.cross_hier:
-            print(f"\n  {C.blue(GLYPH_CROSS + ' CROSS-HIERARCHY')} ({len(self.cross_hier)})")
-            for ch in self.cross_hier:
-                print(f"    {ch}")
         print()
 
 
@@ -638,25 +628,6 @@ class SignalTracer:
                 continue
         return loads
 
-    # ── cross-hierarchy ──────────────────────────────────────────────
-
-    def _trace_cross(self, symbol, scope_inst):
-        C = Color
-        conns = []
-        for port in scope_inst.body.portList:
-            isym = port.internalSymbol
-            if isym is None or isym.name != symbol.name:
-                continue
-            dw = "input" if port.direction == ast.ArgumentDirection.In else "output"
-            conns.append(f"{C.magenta(GLYPH_PORT + ' ' + dw + ' port')} .{C.yellow(port.name)} {GLYPH_DASH} crosses boundary")
-            try:
-                pc = scope_inst.getPortConnection(port.name)
-                if pc and pc.expression and hasattr(pc.expression, 'symbol'):
-                    conns.append(f"  {C.dim(GLYPH_CORNER + GLYPH_HR)} connected to {C.cyan(pc.expression.symbol.name)} in parent")
-            except Exception:
-                pass
-        return conns
-
     # ── dataflow graph ───────────────────────────────────────────────
 
     def _sym_path(self, sym):
@@ -935,7 +906,7 @@ class SignalTracer:
                 continue
         return paths
 
-    def trace(self, signal_name, scope_path, cross=False, bit_range=None):
+    def trace(self, signal_name, scope_path, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
 
         if bit_range is not None:
@@ -952,14 +923,13 @@ class SignalTracer:
         drivers = self._analyze_drivers(sym, inst)
         if bit_range is not None:
             drivers = [d for d in drivers if bits_overlap(d.bounds, bit_range)]
-        # A bit-select is a driver-origin query: loads/cross are phase 2.
+        # A bit-select is a driver-origin query: loads are phase 2.
         loads = [] if bit_range is not None else self._analyze_loads(sym, inst.body, inst)
-        xh = self._trace_cross(sym, inst) if (cross and bit_range is None) else []
 
         r = TraceResult(
             signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
-            scope_module=inst.body.name, cross_hier=xh,
+            scope_module=inst.body.name,
             multi_driver=drivers_overlap(drivers),
             bit_range=bit_range,
         )
@@ -1013,15 +983,13 @@ def add_trace_args(p):
                         'origin (e.g. status[3], status[7:4])')
     g.add_argument('--scope', default=None, metavar='SCOPE',
                    help='Hierarchical scope; auto-detect when single top')
-    g.add_argument('--cross', action='store_true',
-                   help='Trace through port boundaries')
     g.add_argument('--filter', default=None, metavar='GLOB',
                    help='Shell glob on instance names to narrow loads')
 
 
 def run_trace(args, env):
     tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
-    r = tracer.trace(signal, scope, args.cross, bit_range)
+    r = tracer.trace(signal, scope, bit_range)
     if env is not None:
         rd = r.to_dict(args.filter)
         data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
