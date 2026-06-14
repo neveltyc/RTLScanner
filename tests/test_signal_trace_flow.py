@@ -320,5 +320,25 @@ class FlowSummaryTests(unittest.TestCase):
         self.assertIn("trace_top.u_dp.sum", d["direct"])
 
 
+class TraceCrossRemovedTests(unittest.TestCase):
+    """`trace --cross` was removed: cross-hierarchy is fanin/fanout's job."""
+
+    def test_help_has_no_cross_flag(self):
+        self.assertNotIn("--cross", run_help("trace"))
+
+    def test_cross_flag_is_rejected(self):
+        proc = subprocess.run(
+            RTLSCANNER + ["trace", "-d", "examples/basic", "-s", "a",
+                          "--scope", "top", "--cross", "--json"],
+            cwd=ROOT, text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        self.assertEqual(proc.returncode, 2)   # argparse rejects unknown flag
+
+    def test_trace_output_has_no_cross_hierarchy(self):
+        env = run_json("trace", "-d", "examples/basic", "-s", "a", "--scope", "top")
+        self.assertNotIn("cross_hierarchy", env["data"]["results"][0])
+
+
 if __name__ == "__main__":
     unittest.main()

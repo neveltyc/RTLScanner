@@ -12,7 +12,6 @@
     "exclude": [],
     "signal": "q",
     "scope": "top.u_dp0",
-    "cross": false,
     "filter": null
   },
   "data": {

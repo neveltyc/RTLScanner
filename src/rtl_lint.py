@@ -17,6 +17,7 @@ Install dependency:
 from __future__ import annotations
 
 import argparse
+import difflib
 import fnmatch
 import os
 import sys
@@ -456,7 +457,22 @@ class CDCAnalyzer:
 FAMILIES = {"semantic", "unused", "shadow", "cdc", "port-connect"}
 DEFAULT_FAMILIES = ["semantic", "unused"]
 WARNING_OPTIONS = {"everything"}
-META_KEYWORDS = {"default", "all", "none"}
+META_KEYWORDS = {"default", "all", "none", "bugs"}
+
+# The `bugs` preset: a curated, high-precision view of rules that flag real
+# functional defects (each verified to actually fire), as opposed to style
+# noise.  `apply()` additionally keeps every error/fatal finding under this
+# preset, since hard compile errors carry open-ended code names that can't be
+# enumerated here.  cdc-crossing is deliberately excluded (heuristic, high
+# false-positive rate); compose it back with `--rules bugs,cdc`.
+BUGS_RULES = [
+    "inferred-latch",        # unintended level-sensitive latch
+    "unassigned-variable",   # variable read but never driven -> X
+    "undriven-port",         # output port never driven -> X
+    "port-width-mismatch",   # child instance port width mismatch
+    "port-width-trunc",      # truncation at a port connection
+    "width-trunc",           # implicit truncation in an assignment
+]
 
 # Map rule-name prefix → check family, so a bare rule like "unused-port"
 # implies we need to RUN the unused analysis.
@@ -467,9 +483,24 @@ _RULE_PREFIX_FAMILY = {
     "port-":   "port-connect",
 }
 
+# Analysis-pass rules that lack a family prefix: selecting one by exact name
+# must still RUN the pass that produces it (the CheckUnused analysis pass).
+_RULE_RUN_FAMILY = {
+    "inferred-latch":      "unused",
+    "unassigned-variable": "unused",
+    "undriven-port":       "unused",
+}
+
+# Rule names invented by our own checks (not slang warning options).  Used to
+# validate --rules/--skip tokens: slang's findFromOptionName returns empty for
+# these, so they must be recognized explicitly.
+CUSTOM_RULES = frozenset({
+    "cdc-crossing", "port-unconnected", "port-width-mismatch", "port-connect",
+})
+
 
 def _expand_meta(specs):
-    """Resolve 'default'/'all'/'none' meta keywords into concrete spec list."""
+    """Resolve 'default'/'all'/'none'/'bugs' meta keywords into a spec list."""
     out = []
     for s in specs:
         if s == "default":
@@ -477,6 +508,8 @@ def _expand_meta(specs):
         elif s == "all":
             out.extend(DEFAULT_FAMILIES)
             out.extend(["shadow", "cdc", "port-connect", "everything"])
+        elif s == "bugs":
+            out.extend(BUGS_RULES)
         elif s == "none":
             return []
         else:
@@ -519,10 +552,14 @@ def resolve_rules(specs):
             run_families.add("semantic")
         else:
             globs.append(s)
-            for pref, fam in _RULE_PREFIX_FAMILY.items():
-                if s.startswith(pref):
-                    run_families.add(fam)
-                    break
+            exact_fam = _RULE_RUN_FAMILY.get(s)
+            if exact_fam:
+                run_families.add(exact_fam)
+            else:
+                for pref, fam in _RULE_PREFIX_FAMILY.items():
+                    if s.startswith(pref):
+                        run_families.add(fam)
+                        break
     return run_families, keep_families, globs, warning_options, False
 
 
@@ -538,6 +575,37 @@ def rule_matches(finding, keep_families, globs):
 
 def skip_matches(finding, skip_globs):
     return any(fnmatch.fnmatch(finding.rule, g) for g in skip_globs)
+
+
+def validate_rule_tokens(tokens, eng, *, flag):
+    """Notes for --rules/--skip tokens that match no known rule, family, or
+    meta — the typo case (e.g. ``bugz``) that would otherwise select zero
+    findings silently.  A real rule that simply has no findings this run is
+    NOT flagged.
+
+    A literal (wildcard-free) token is recognized iff it is a family, meta,
+    warning option, one of our CUSTOM_RULES, or a real slang warning option
+    (validated via ``DiagnosticEngine.findFromOptionName``).  Glob tokens are
+    not second-guessed — they legitimately span open name sets.
+    """
+    vocab = set(FAMILIES) | set(META_KEYWORDS) | set(WARNING_OPTIONS) | set(CUSTOM_RULES)
+    suggest = sorted(vocab | set(BUGS_RULES))
+    notes = []
+    for tok in tokens:
+        if not tok or any(c in tok for c in "*?["):
+            continue
+        if tok in vocab:
+            continue
+        try:
+            if eng is not None and eng.findFromOptionName(tok):
+                continue
+        except Exception:
+            pass
+        close = difflib.get_close_matches(tok, suggest, n=1, cutoff=0.5)
+        hint = f" — did you mean '{close[0]}'?" if close else ""
+        notes.append(f"{flag}: '{tok}' is not a known rule, family, or meta"
+                     f"{hint} (it selected no findings)")
+    return notes
 
 
 # ── Waive (module-name globs, file-basename heuristic) ───────────────
@@ -581,6 +649,9 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
     Returns (kept, waived) where waived items carry waived_reason.
     """
     _run_families, keep_families, rule_globs, _warning_options, noop = resolve_rules(rules_specs)
+    # The `bugs` preset additionally keeps every hard error/fatal finding,
+    # whose code names are open-ended and can't be enumerated as rule globs.
+    bugs_mode = "bugs" in (rules_specs or ["default"])
     kept, waived = [], []
     sev_map = {}
     for k, v in (lint_severity_map or {}).items():
@@ -593,7 +664,9 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
             f.waived_reason = "rules=none"
             waived.append(f)
             continue
-        if not rule_matches(f, keep_families, rule_globs):
+        matched = (rule_matches(f, keep_families, rule_globs)
+                   or (bugs_mode and f.severity == "error"))
+        if not matched:
             f.waived_reason = "rule not selected"
             waived.append(f)
             continue
@@ -692,7 +765,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                     help="Rule white list. SPEC = rule name | family "
                          "(semantic/unused/shadow/cdc/port-connect) | warning option "
                          "(everything) | glob | "
-                         "default/all/none. Comma-list or repeat. "
+                         "default/all/none/bugs. 'bugs' = curated real-bug rules "
+                         "+ all compile errors. Comma-list or repeat. "
                          "Default: 'default' (semantic + unused).")
     rs.add_argument("--skip", action=agent_json.CommaListAction, default=[],
                     metavar="RULE",
@@ -739,6 +813,17 @@ def run(args, env):
         cdc_reset_globs=cdc_reset_globs,
         check_port_connect=("port-connect" in run_families),
     )
+
+    # Flag typo'd rule/skip tokens that would otherwise select 0 findings
+    # silently (e.g. `--rules bugz`); a real rule with no findings is not flagged.
+    for _flag, _toks in (("--rules", rules_specs), ("--skip", skip_globs)):
+        for _note in validate_rule_tokens(_toks, getattr(runner, "_eng", None),
+                                          flag=_flag):
+            if env is not None:
+                env.add_diagnostic("note", message=_note)
+            else:
+                print(f"note: {_note}", file=sys.stderr)
+
     findings = runner.run()
 
     findings, waived = apply(

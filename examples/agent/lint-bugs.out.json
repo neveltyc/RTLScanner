@@ -1,0 +1,125 @@
+{
+  "tool": "lint",
+  "version": "<tool-version>",
+  "status": "ok",
+  "command": {
+    "cmd": "lint",
+    "files": [],
+    "dir": [
+      "examples/lint"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "rules": [
+      "bugs"
+    ],
+    "skip": [],
+    "waive": [],
+    "strict": false,
+    "min_severity": null
+  },
+  "data": {
+    "findings": [
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 15,
+        "col": 18,
+        "severity": "warning",
+        "rule": "width-trunc",
+        "message": "implicit conversion truncates from 8 to 4 bits",
+        "check": "semantic"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 29,
+        "col": 17,
+        "severity": "warning",
+        "rule": "unassigned-variable",
+        "message": "variable 'mode' is never assigned a value",
+        "check": "unused"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 33,
+        "col": 20,
+        "severity": "warning",
+        "rule": "inferred-latch",
+        "message": "latch inferred for 'result' because it is not assigned on all control paths",
+        "check": "unused"
+      }
+    ],
+    "waived": [
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 8,
+        "col": 24,
+        "severity": "warning",
+        "rule": "unused-port",
+        "message": "unused port signal 'b'",
+        "check": "unused",
+        "waived_reason": "rule not selected"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 12,
+        "col": 17,
+        "severity": "warning",
+        "rule": "unused-but-set-variable",
+        "message": "variable 'dead' is assigned but its value is never used",
+        "check": "unused",
+        "waived_reason": "rule not selected"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 32,
+        "col": 9,
+        "severity": "warning",
+        "rule": "case-default",
+        "message": "'case' missing 'default' label",
+        "check": "semantic",
+        "waived_reason": "rule not selected"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 40,
+        "col": 0,
+        "severity": "note",
+        "rule": "port-unconnected",
+        "message": "output port 'y' is unconnected",
+        "check": "port-connect",
+        "waived_reason": "rule not selected"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 45,
+        "col": 10,
+        "severity": "warning",
+        "rule": "empty-output-connection",
+        "message": "output port 'y' is explicitly connected to nothing",
+        "check": "semantic",
+        "waived_reason": "rule not selected"
+      }
+    ],
+    "config_path": null
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "total": 3,
+    "by_severity": {
+      "warning": 3
+    },
+    "by_rule": {
+      "width-trunc": 1,
+      "unassigned-variable": 1,
+      "inferred-latch": 1
+    },
+    "by_check": {
+      "semantic": 1,
+      "unused": 2
+    },
+    "waived": 5,
+    "files_linted": 2,
+    "has_error": false
+  }
+}

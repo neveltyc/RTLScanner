@@ -50,6 +50,7 @@ rtlscanner trace  -f rtl.f -s ready --scope top.u_dma --json
 rtlscanner fanin  -f rtl.f -s data_out --scope top.u_pipe --depth 6 --json
 rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
 rtlscanner xref   -f rtl.f --module fifo --json
+rtlscanner lint   -f rtl.f --rules bugs --json
 rtlscanner lint   -f rtl.f --rules default,cdc --json
 rtlscanner lint   -f rtl.f --rules port-connect --json
 ```
@@ -99,10 +100,13 @@ permanent project waivers belong in `.rtlscanner.toml` under `[lint] waive = [..
 
 `--rules SPEC[,...]` is a whitelist. SPEC is a rule name (`width-trunc`), a family alias
 (`semantic`, `unused`, `shadow`, `cdc`, `port-connect`), a glob (`width-*`), or a meta
-value (`default` = semantic+unused, `all`, `none`). `--skip RULE[,...]` subtracts (glob
-ok). `semantic` is the normalized slang diagnostic stream (parse, type, binding,
+value (`default` = semantic+unused, `all`, `none`, `bugs`). `--skip RULE[,...]` subtracts
+(glob ok). `semantic` is the normalized slang diagnostic stream (parse, type, binding,
 elaboration); for compile/front-end errors only, use `--rules semantic`, and for child
-instance port issues use `--rules port-connect`.
+instance port issues use `--rules port-connect`. **`--rules bugs`** is the curated
+real-bug preset (inferred latches, unassigned/undriven values, port-width problems,
+truncation) plus all compile errors — the fastest answer to "are there real bugs?". A
+typo'd rule/skip token now emits a did-you-mean `note` instead of silently selecting 0.
 
 ## Agent-side gotchas
 
@@ -119,10 +123,12 @@ instance port issues use `--rules port-connect`.
   to differ.
 - **`lint` exits 1 on real findings** (and on `--strict` with any finding). A non-zero
   exit is not a crash — still read the JSON envelope.
-- **Lint is noisy on mature RTL — read the summary, don't scan 100+ findings.** For "are
-  there real *bugs*", check `summary.by_severity` (e.g. `{error: 0, warning: 144}`) or
-  `summary.has_error`: 0 errors ⇒ no compile/semantic bugs, the rest is style. Narrow with
-  `--min-severity error`, or drop style rules with `--skip case-default,...`.
+- **Lint is noisy on mature RTL — don't scan 100+ findings.** For "are there real
+  *bugs*?", run **`--rules bugs`**: a curated high-precision set (inferred latches,
+  unassigned/undriven values, port-width problems, truncation) plus all compile errors,
+  with style noise dropped. Add CDC with `--rules bugs,cdc`. Otherwise read the summary
+  (`summary.by_severity` / `summary.has_error`) rather than the full `findings[]`; narrow
+  with `--min-severity error` or `--skip case-default,...`.
 - **Module name → instance path.** `--scope` wants an instance path (`testbench.uut`), not
   a module name (`picorv32`). Map one with `xref --module picorv32` (its instance sites)
   or `tree --flat` (every instance path, one per line).
