@@ -14,6 +14,7 @@ import sys
 import textwrap
 import unittest
 from pathlib import Path
+import tempfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,7 +124,7 @@ class DriverBitsTests(unittest.TestCase):
                          {"[0]", "[1]", "[2]"})
 
     def test_overlapping_drivers_flagged(self):
-        src = Path("/tmp/rtlscanner_multidriver.sv")
+        src = Path(tempfile.mkdtemp()) / "rtlscanner_multidriver.sv"
         src.write_text(textwrap.dedent(
             """
             module mdtop(input logic a, input logic b, output wire y);

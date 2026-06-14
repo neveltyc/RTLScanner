@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rtlscanner"
-version = "0.3.0"
+version = "0.3.1"
 description = "Agent-friendly SystemVerilog RTL analysis powered by pyslang."
 readme = "README.md"
 requires-python = ">=3.8"
 dependencies = [
   "pyslang>=11.0.0",
+  # TOML config reading: tomllib is stdlib on 3.11+; pull tomli on 3.8-3.10
+  # so `pip install` makes .rtlscanner.toml work out of the box (3.8+ claim).
+  "tomli>=1.1.0 ; python_version < '3.11'",
 ]
 
 [project.scripts]

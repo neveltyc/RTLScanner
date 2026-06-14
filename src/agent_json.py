@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.3.1"
 
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
