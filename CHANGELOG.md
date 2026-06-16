@@ -5,6 +5,19 @@ All notable changes to RTLScanner are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Per-file compilation units** — each source file in a file list is now
+  compiled as its own compilation unit, the way slang's own driver (and
+  VCS/Verilator) treat a file list. Previously every file was concatenated into
+  one synthetic `` `include `` buffer, merging all files into a single
+  compilation unit: a `` `define `` (or any `$unit`-scoped declaration) in one
+  file leaked into the next, so a design with a genuine missing-define bug could
+  lint clean. Command-line `+define+` macros remain global predefines applied to
+  every file, and reported file/line locations are unchanged.
+
 ## [0.1.0] - 2026-06-14
 
 First tagged release. RTLScanner wraps pyslang's SystemVerilog parse +
@@ -42,4 +55,5 @@ simulation), each emitting one uniform JSON envelope under `--json`:
   traverse port boundaries; `trace` is now strictly scope-local. The
   `cross_hierarchy` output field is removed accordingly.
 
+[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/neveltyc/RTLScanner/releases/tag/v0.1.0

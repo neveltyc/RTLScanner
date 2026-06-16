@@ -461,18 +461,29 @@ def build_compilation(files, include_dirs=None, defines=None,
         except Exception as e:
             print(f"Warning: could not add include dir {inc}: {e}", file=sys.stderr)
 
-    preamble = []
-    for define in defines or []:
-        preamble.append(define_to_directive(define))
-    for f in files:
-        preamble.append(f'`include "{sv_string_literal(_norm_abs(f))}"')
+    # Compile each source file as its OWN compilation unit, the way slang's
+    # own driver (and VCS/Verilator) treat a file list.  The previous approach
+    # concatenated every `include into a single synthetic buffer, merging all
+    # files into one compilation unit -- so a `define (or any $unit-scoped
+    # declaration) in one file leaked into the next and could mask real
+    # "unknown macro" / redeclaration errors that a standard flow would report.
+    #
+    # Command-line +define+ macros are global predefines in that model, so the
+    # define directives are prepended to every per-file unit.  The real file is
+    # pulled in via `include rather than by prepending its text, which keeps
+    # slang's reported file/line pointing at the true source location.
+    define_prefix = ''.join(
+        define_to_directive(d) + '\n' for d in (defines or []))
 
-    tree = None
-    try:
-        tree = SyntaxTree.fromText('\n'.join(preamble) + '\n', source_manager)
-        comp.addSyntaxTree(tree)
-    except Exception as e:
-        print(f"Warning: parse error: {e}", file=sys.stderr)
+    trees = []
+    for f in files:
+        unit = f'{define_prefix}`include "{sv_string_literal(_norm_abs(f))}"\n'
+        try:
+            tree = SyntaxTree.fromText(unit, source_manager)
+            comp.addSyntaxTree(tree)
+            trees.append(tree)
+        except Exception as e:
+            print(f"Warning: parse error in {f}: {e}", file=sys.stderr)
 
     diag_messages = []
     if collect_diagnostics:
@@ -491,7 +502,7 @@ def build_compilation(files, include_dirs=None, defines=None,
         except Exception:
             pass
 
-    return CompilationResult(comp, source_manager, tree), diag_messages
+    return CompilationResult(comp, source_manager, *trees), diag_messages
 
 
 # ── Safe Symbol Access ───────────────────────────────────────────────
