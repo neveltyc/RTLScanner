@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the nested
   `tree` JSON hierarchy is capped by total node count.
 
+- **`module` on each lint finding** — every finding now reports the design unit
+  (module / interface / ...) it sits in, attributed by source range, so an
+  agent can group or filter findings by unit even in a multi-module file.
+
 ### Changed
 
 - **Unified path-style vocabulary** — `tree --path-style` and the xref
@@ -29,14 +33,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modes differ (`tree`: `prefix` = `${PROJPATH}/<relative>`; `xref`: `name` =
   bare basename); fully reconciling those is left to a future release.
 
-- **Waiver wording clarified** — `--waive` matches a finding's **source-file
-  basename** (a glob), not the elaborated module/scope/instance name. The help
-  text, the `--waive` metavar (`MODULE` → `GLOB`), the JSON `waived_reason`
-  value (`"module waived"` → `"waived (file glob)"`), and the README all say so
-  now. Which findings get waived is unchanged. A true module/scope/instance
-  waiver is planned.
-
 ### Fixed
+
+- **`--waive` matches the module, not the whole file** — waivers are applied per
+  design unit (using the new source-range attribution) instead of by the
+  "file basename == module name" heuristic, so a glob can waive one module in a
+  multi-module file without suppressing its neighbours. The source-file basename
+  is still matched as a fallback, so existing file-oriented waivers keep working;
+  the JSON `waived_reason` is now `"waived (glob)"`.
+
+- **`lint` and `xref` report a file with the same path** — `lint` relativized
+  paths against the process CWD while `xref` used the configured
+  `[inputs].root`, so running from a directory other than the root made the two
+  commands disagree on the very same file. `lint` now keys off the resolved
+  input root and renders paths identically to `xref` (same base, same `./`
+  prefix).
 
 - **Per-file compilation units** — each source file in a file list is now
   compiled as its own compilation unit, the way slang's own driver (and

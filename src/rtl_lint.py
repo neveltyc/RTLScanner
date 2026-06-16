@@ -64,12 +64,15 @@ class LintFinding:
     rule: str           # warning option name (e.g. "width-trunc") or code name
     message: str
     check: str          # "semantic" | "unused" | "shadow" | ...
+    module: str = ""    # design unit (module/interface/...) the finding sits in
     waived_reason: str = ""  # set when filtered out by a waiver / disabled rule
 
     def to_dict(self):
         d = dict(file=self.file, line=self.line, col=self.col,
                  severity=self.severity, rule=self.rule,
                  message=self.message, check=self.check)
+        if self.module:
+            d['module'] = self.module
         if self.waived_reason:
             d['waived_reason'] = self.waived_reason
         return d
@@ -88,7 +91,7 @@ class LintRunner:
 
     def __init__(self, compilation, check_unused=True, check_shadow=False,
                  weverything=False, check_cdc=False, cdc_reset_globs=None,
-                 check_port_connect=False):
+                 check_port_connect=False, root=None):
         self._comp = compilation
         self._sm = compilation.sourceManager
         self._check_unused = check_unused
@@ -109,21 +112,85 @@ class LintRunner:
             self._eng.setMappingsFromPragmas()
         except Exception:
             pass
-        self._root = Path.cwd().resolve()
+        self._root = (Path(root) if root else Path.cwd()).resolve()
 
     # ── helpers ───────────────────────────────────────────────────────
 
     def _rel(self, name: str) -> str:
-        """Present a readable path: relative to cwd when sensible."""
+        """Present a readable path: relative to the resolved input root.
+
+        The root is the same ``[inputs].root`` the xref command uses, so a file
+        is reported with one consistent path across subcommands (rather than
+        lint keying off the process CWD while xref keys off the config root).
+        """
         if not name:
             return name
         try:
             p = Path(name).resolve()
             rel = os.path.relpath(p, self._root)
-            # Don't produce noisy ../../.. chains for far-away files.
-            return rel if not rel.startswith(os.pardir + os.sep) else p.as_posix()
+            # Mirror xref's _format_file exactly so the two commands print a
+            # file with byte-identical paths (same base *and* same rendering).
+            if rel == ".":
+                return "."
+            if rel.startswith(os.pardir + os.sep) or rel == os.pardir:
+                # Don't produce noisy ../../.. chains for far-away files.
+                return p.as_posix()
+            return "./" + Path(rel).as_posix()
         except Exception:
             return name
+
+    def _module_index(self):
+        """Lazily map ``realpath(file) -> [(start_line, end_line, unit_name)]``.
+
+        Built from the syntax trees' top-level design-unit declarations
+        (module / interface / program / package).  Used to attribute a finding
+        to the actual unit it sits in, instead of assuming file-basename ==
+        module — which breaks for a file that declares several modules.
+        """
+        idx = getattr(self, "_modidx", None)
+        if idx is not None:
+            return idx
+        idx = {}
+        try:
+            for tree in self._comp.getSyntaxTrees():
+                members = getattr(getattr(tree, "root", None), "members", None)
+                if members is None:
+                    continue
+                for m in members:
+                    hdr = getattr(m, "header", None)
+                    nm = getattr(hdr, "name", None) if hdr is not None else None
+                    name = safe_str(getattr(nm, "valueText", ""), "") if nm else ""
+                    sr = getattr(m, "sourceRange", None)
+                    if not name or sr is None:
+                        continue
+                    try:
+                        start = int(self._sm.getLineNumber(sr.start))
+                        end = int(self._sm.getLineNumber(sr.end))
+                        key = os.path.realpath(
+                            safe_str(self._sm.getFileName(sr.start), ""))
+                    except Exception:
+                        continue
+                    idx.setdefault(key, []).append((start, end, name))
+        except Exception:
+            pass
+        self._modidx = idx
+        return idx
+
+    def _module_for(self, raw_filename: str, line: int) -> str:
+        """The innermost design unit whose source range contains *line*."""
+        if not raw_filename or not line:
+            return ""
+        try:
+            key = os.path.realpath(raw_filename)
+        except Exception:
+            key = raw_filename
+        best, best_span = "", None
+        for start, end, name in self._module_index().get(key, ()):
+            if start <= line <= end:
+                span = end - start
+                if best_span is None or span < best_span:
+                    best, best_span = name, span
+        return best
 
     def _finding(self, diag, check: str):
         """Convert a pyslang Diagnostic into a LintFinding, or None if ignored."""
@@ -149,14 +216,17 @@ class LintRunner:
         except Exception:
             message = safe_str(diag.code, "")
         try:
-            fn = self._rel(safe_str(self._sm.getFileName(loc)))
+            raw_fn = safe_str(self._sm.getFileName(loc), "")
+            fn = self._rel(raw_fn)
             ln = int(self._sm.getLineNumber(loc))
             col = int(self._sm.getColumnNumber(loc))
         except Exception:
-            fn, ln, col = "", 0, 0
+            raw_fn, fn, ln, col = "", "", 0, 0
+        module = self._module_for(raw_fn, ln)
 
         return LintFinding(file=fn, line=ln, col=col, severity=severity,
-                           rule=rule, message=message, check=check)
+                           rule=rule, message=message, check=check,
+                           module=module)
 
     # ── public API ────────────────────────────────────────────────────
 
@@ -612,23 +682,38 @@ def validate_rule_tokens(tokens, eng, *, flag):
 def _finding_file_stem(finding):
     """The finding's source-file basename without its extension.
 
-    Waivers match against this *file name*, not the elaborated module or scope.
-    Real RTL projects overwhelmingly follow one-module-per-file with matching
-    names, so a file-basename glob is usually equivalent to a module glob in
-    practice — but a multi-module file (or a file whose name differs from its
-    module) is matched by file, not by module. (A true module/scope/instance
-    waiver is planned; see CHANGELOG.)
+    Kept as a waiver target alongside the finding's design unit (see
+    ``_waive_targets``) so existing file-oriented waivers keep working and so a
+    finding that couldn't be attributed to a unit is still waivable by file.
     """
     if not finding.file:
         return ""
     return Path(finding.file).stem
 
 
+def _waive_targets(finding):
+    """Names a ``--waive`` glob may match for *finding*.
+
+    Primary: the design unit (module / interface / ...) the finding sits in, so
+    a glob can waive **one** module inside a multi-module file instead of the
+    whole file.  Secondary: the source-file basename, kept for backward
+    compatibility and as a fallback when the unit is unknown.
+    """
+    targets = []
+    mod = safe_str(getattr(finding, "module", ""), "")
+    if mod:
+        targets.append(mod)
+    stem = _finding_file_stem(finding)
+    if stem and stem not in targets:
+        targets.append(stem)
+    return targets
+
+
 def waive_matches(finding, waive_globs):
     if not waive_globs:
         return False
-    stem = _finding_file_stem(finding)
-    return any(fnmatch.fnmatch(stem, g) for g in waive_globs)
+    targets = _waive_targets(finding)
+    return any(fnmatch.fnmatch(t, g) for t in targets for g in waive_globs)
 
 
 # ── Severity application ─────────────────────────────────────────────
@@ -679,7 +764,7 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
             waived.append(f)
             continue
         if waive_matches(f, waive_globs):
-            f.waived_reason = "waived (file glob)"
+            f.waived_reason = "waived (glob)"
             waived.append(f)
             continue
         # Per-rule severity override (from [lint.severity])
@@ -779,8 +864,9 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     sc = p.add_argument_group("scope")
     sc.add_argument("--waive", action=agent_json.CommaListAction, default=[],
                     metavar="GLOB",
-                    help="Suppress findings whose source-file basename matches "
-                         "these globs (e.g. 'dbg_*,third_party_*').")
+                    help="Suppress findings whose module (or source-file "
+                         "basename) matches these globs (e.g. "
+                         "'dbg_*,third_party_*').")
 
     sv = p.add_argument_group("severity & exit code")
     sv.add_argument("--strict", action="store_true",
@@ -816,6 +902,7 @@ def run(args, env):
         check_cdc=("cdc" in run_families),
         cdc_reset_globs=cdc_reset_globs,
         check_port_connect=("port-connect" in run_families),
+        root=prepared.resolved_inputs.root,
     )
 
     # Flag typo'd rule/skip tokens that would otherwise select 0 findings
