@@ -68,7 +68,7 @@ exclude  = ["**/sim/**", "**/dvt/**"]
 [lint]
 rules = ["default", "cdc"]            # equivalent to CLI --rules
 skip  = ["case-default"]              # equivalent to CLI --skip
-waive = ["dbg_*", "third_party_*"]    # module-name globs (suppress entire modules)
+waive = ["dbg_*", "third_party_*"]    # globs vs each finding's source-file basename
 
 [lint.severity]                       # promote individual rules
 "width-trunc" = "error"
@@ -249,7 +249,7 @@ rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
 rtlscanner lint -d ./rtl --rules bugs                 # real bugs only (high precision)
 rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
 rtlscanner lint -d ./rtl --rules default --skip case-default
-rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip modules
+rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip by source-file basename
 rtlscanner lint -d ./rtl --strict                     # CI gate: warning → error
 rtlscanner lint -d ./rtl --min-severity error         # display floor
 rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
@@ -297,9 +297,13 @@ the `port-unconnected` note). `cdc-crossing` is intentionally excluded
 
 ### Waivers
 
-`--waive MODULE[,MODULE...]` suppresses every finding in matching modules
-(file-basename glob). For project-permanent waivers, put the list in
-`[lint] waive = [...]` in `.rtlscanner.toml`.
+`--waive GLOB[,GLOB...]` suppresses every finding whose **source-file
+basename** (without extension) matches the glob — not the elaborated
+module, scope, or instance name. For one-module-per-file projects with
+matching names the two coincide, but a multi-module file (or a file whose
+name differs from its module) is matched by file. For project-permanent
+waivers, put the list in `[lint] waive = [...]` in `.rtlscanner.toml`. A
+true module/scope/instance-level waiver is planned (see CHANGELOG).
 
 ### CDC
 
