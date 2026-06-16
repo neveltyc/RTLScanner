@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   input root and renders paths identically to `xref` (same base, same `./`
   prefix).
 
+- **Driver line names the enclosing instance** — a driver from an unnamed
+  always/initial block read `… block in (anonymous)`; it now falls back to the
+  block's hierarchical path, e.g. `always_ff block in trace_top.u_dp.u_pipe`.
+
 - **Per-file compilation units** — each source file in a file list is now
   compiled as its own compilation unit, the way slang's own driver (and
   VCS/Verilator) treat a file list. Previously every file was concatenated into
