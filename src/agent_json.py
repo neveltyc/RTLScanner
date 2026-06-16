@@ -307,9 +307,36 @@ _ERROR_ITEM = {
 }
 
 
+# Every subcommand's main (non-`--summary`) JSON path reports how its output
+# was capped by `--limit` (see resolve_limit/clip), so these two summary fields
+# are part of every envelope's contract.  Inject them once here instead of
+# repeating the boilerplate in each per-tool summary schema.  They are optional
+# (not in `required`) because the fanin/fanout `--summary` view emits a
+# different summary shape that omits them.
+_SUMMARY_LIMIT_FIELDS = {
+    "truncated": {"type": "boolean",
+                  "description": "True when an emitted list was capped by "
+                  "--limit; the count fields still report the true totals."},
+    "limit": {"type": "integer",
+              "description": "Effective per-list item cap that was applied "
+              "(0 means unlimited)."},
+}
+
+
+def _inject_limit_fields(summary_schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Add the shared `truncated`/`limit` keys to an object summary schema."""
+    if (isinstance(summary_schema, dict)
+            and summary_schema.get("type") == "object"
+            and isinstance(summary_schema.get("properties"), dict)):
+        for key, spec in _SUMMARY_LIMIT_FIELDS.items():
+            summary_schema["properties"].setdefault(key, spec)
+    return summary_schema
+
+
 def _envelope_schema(tool: str, data_schema: Dict[str, Any],
                      summary_schema: Dict[str, Any],
                      description: str = "") -> Dict[str, Any]:
+    summary_schema = _inject_limit_fields(summary_schema)
     return {
         "$schema": "http://json-schema.org/draft-07/schema#",
         "title": f"{tool} agent-mode output envelope",
@@ -555,6 +582,10 @@ _LINT_FINDING = {
         "check":    {"type": "string",
                      "enum": ["semantic", "unused", "shadow", "cdc",
                               "port-connect"]},
+        "module":   {"type": "string",
+                     "description": "Design unit (module / interface / ...) the "
+                     "finding sits in, attributed by source range. Absent when "
+                     "the finding could not be attributed to a unit."},
         "waived_reason": {"type": "string"},
     },
     "additionalProperties": True,
@@ -576,7 +607,12 @@ _LINT_SCHEMA = _envelope_schema(
         "required": ["total", "by_severity", "by_rule", "by_check",
                      "waived", "files_linted", "has_error"],
         "properties": {
-            "total":        {"type": "integer"},
+            "total":        {"type": "integer",
+                             "description": "True total finding count, even when "
+                             "`findings` was capped by --limit."},
+            "shown":        {"type": "integer",
+                             "description": "Number of findings actually emitted "
+                             "in `data.findings` after the --limit cap."},
             "by_severity":  {"type": "object",
                              "additionalProperties": {"type": "integer"}},
             "by_rule":      {"type": "object",

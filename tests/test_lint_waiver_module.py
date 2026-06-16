@@ -81,5 +81,38 @@ class ModuleTargetedWaiver(unittest.TestCase):
             self.assertEqual(env["summary"]["total"], 0)
 
 
+class SingleModuleAttribution(unittest.TestCase):
+    """A one-module-per-file unit is attributed by module name, not file name.
+
+    A compilation unit holding a single design unit parses with that unit AS the
+    syntax-tree root; attribution must still find it (the common case), and a
+    module-name waiver must work even when the file name differs.
+    """
+
+    def _write(self, d):
+        # File name (widget_impl) deliberately differs from module name (widget).
+        (Path(d) / "widget_impl.sv").write_text(
+            "module widget (input wire a, output wire y);\n"
+            "  wire unused_w;\n  assign y = a;\nendmodule\n")
+
+    def test_finding_attributed_to_module_not_filename(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d)
+            env = _lint(d, "widget_impl.sv")
+            self.assertEqual(env["data"]["findings"][0]["module"], "widget")
+
+    def test_waive_by_module_name_works(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d)
+            env = _lint(d, "widget_impl.sv", "--waive", "widget")
+            self.assertEqual(env["summary"]["total"], 0)
+
+    def test_waive_by_unrelated_name_keeps_finding(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._write(d)
+            env = _lint(d, "widget_impl.sv", "--waive", "gadget")
+            self.assertEqual(env["summary"]["total"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -139,38 +139,53 @@ class LintRunner:
         except Exception:
             return name
 
+    # Syntax-node kinds that name a design unit a finding can be attributed to.
+    _UNIT_DECL_KINDS = frozenset({
+        "ModuleDeclarationSyntax", "InterfaceDeclarationSyntax",
+        "ProgramDeclarationSyntax", "PackageDeclarationSyntax",
+    })
+
     def _module_index(self):
         """Lazily map ``realpath(file) -> [(start_line, end_line, unit_name)]``.
 
-        Built from the syntax trees' top-level design-unit declarations
-        (module / interface / program / package).  Used to attribute a finding
-        to the actual unit it sits in, instead of assuming file-basename ==
-        module — which breaks for a file that declares several modules.
+        Built by visiting every design-unit declaration (module / interface /
+        program / package) in each syntax tree, so a finding can be attributed
+        to the actual unit it sits in instead of assuming file-basename ==
+        module.  ``visit`` (rather than ``root.members``) is used because a
+        compilation unit containing a single design unit parses with that
+        declaration AS the root — its ``.members`` are then the unit's *inner*
+        items, so a members-only scan would index nothing for the common
+        one-module-per-file case.
         """
         idx = getattr(self, "_modidx", None)
         if idx is not None:
             return idx
         idx = {}
+
+        def collect(node):
+            if type(node).__name__ not in self._UNIT_DECL_KINDS:
+                return
+            hdr = getattr(node, "header", None)
+            nm = getattr(hdr, "name", None) if hdr is not None else None
+            name = safe_str(getattr(nm, "valueText", ""), "") if nm else ""
+            sr = getattr(node, "sourceRange", None)
+            if not name or sr is None:
+                return
+            try:
+                start = int(self._sm.getLineNumber(sr.start))
+                end = int(self._sm.getLineNumber(sr.end))
+                key = os.path.realpath(
+                    safe_str(self._sm.getFileName(sr.start), ""))
+            except Exception:
+                return
+            if key:
+                idx.setdefault(key, []).append((start, end, name))
+
         try:
             for tree in self._comp.getSyntaxTrees():
-                members = getattr(getattr(tree, "root", None), "members", None)
-                if members is None:
-                    continue
-                for m in members:
-                    hdr = getattr(m, "header", None)
-                    nm = getattr(hdr, "name", None) if hdr is not None else None
-                    name = safe_str(getattr(nm, "valueText", ""), "") if nm else ""
-                    sr = getattr(m, "sourceRange", None)
-                    if not name or sr is None:
-                        continue
-                    try:
-                        start = int(self._sm.getLineNumber(sr.start))
-                        end = int(self._sm.getLineNumber(sr.end))
-                        key = os.path.realpath(
-                            safe_str(self._sm.getFileName(sr.start), ""))
-                    except Exception:
-                        continue
-                    idx.setdefault(key, []).append((start, end, name))
+                root = getattr(tree, "root", None)
+                if root is not None:
+                    root.visit(f=collect)
         except Exception:
             pass
         self._modidx = idx
@@ -311,12 +326,17 @@ class LintRunner:
 # so active-low resets must carry an rst/reset/arst/por/clr root.  Names starting
 # with ``rst``/``reset``/``arst`` already cover ``rst_n``, ``resetn``,
 # ``arst_n`` …; extend project-specific names via ``[lint.cdc] reset = [...]``.
-_DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*rst_n", "*_rst_n",
-                        "reset*", "*reset*", "*reset_n", "*_reset_n",
-                        "arst*", "*_arstn", "*_arst_n",
+# Each entry is matched case-insensitively (see ``_looks_like_reset``).  The set
+# is kept minimal: a glob already covered by a broader one here is omitted (e.g.
+# ``*reset*`` subsumes ``reset*`` / ``*reset_n`` / ``nreset``; ``*rst_n`` subsumes
+# ``*_rst_n`` / ``*_arst_n``; ``*_rst`` subsumes ``n_rst``), so this list and the
+# longer one it replaced recognize exactly the same names.
+_DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*rst_n",
+                        "*reset*",
+                        "arst*", "*_arstn",
                         "clr*", "*_clr", "*clr_n",
                         "por_n", "*_por_n",
-                        "nrst", "n_rst", "nreset", "n_reset")
+                        "nrst")
 
 
 class CDCAnalyzer:
@@ -832,13 +852,17 @@ def print_summary(findings, waived=0):
     print(f"{'─' * 50}")
 
 
-def print_waived(waived):
-    if not waived:
+def print_waived(waived, total=None):
+    total = len(waived) if total is None else total
+    if not total:
         return
-    print(f"\n{Color.dim('Waived findings (' + str(len(waived)) + '):')}")
+    print(f"\n{Color.dim('Waived findings (' + str(total) + '):')}")
     for f in waived:
         loc = f"{f.line}:{f.col}" if f.col else str(f.line)
         print(Color.dim(f"  {f.file}:{loc}  {f.rule}  — {f.waived_reason}"))
+    if len(waived) < total:
+        print(Color.dim("  " + agent_json.truncation_note(
+            len(waived), total, "waived")))
 
 
 def print_findings(findings):
@@ -944,20 +968,21 @@ def run(args, env):
         by_sev, by_rule, by_check = _counts(findings)
         lim = agent_json.resolve_limit(args.limit)
         shown, total, truncated = agent_json.clip(findings, lim)
+        waived_shown, waived_total, waived_tr = agent_json.clip(waived, lim)
         data = {
             'findings':    [f.to_dict() for f in shown],
-            'waived':      [f.to_dict() for f in waived],
+            'waived':      [f.to_dict() for f in waived_shown],
             'config_path': str(prepared.config_path) if prepared.config_path else None,
         }
         summary = {
             'total':        total,
             'shown':        len(shown),
-            'truncated':    truncated,
+            'truncated':    truncated or waived_tr,
             'limit':        lim,
             'by_severity':  by_sev,
             'by_rule':      by_rule,
             'by_check':     by_check,
-            'waived':       len(waived),
+            'waived':       waived_total,
             'files_linted': len(filelist.sources),
             'has_error':    has_error,
         }
@@ -970,7 +995,8 @@ def run(args, env):
     if truncated:
         print(Color.dim(agent_json.truncation_note(len(shown), total, "findings")))
     if args.waived:
-        print_waived(waived)
+        waived_shown, waived_total, _ = agent_json.clip(waived, lim)
+        print_waived(waived_shown, total=waived_total)
     if findings:
         print_summary(findings, waived=len(waived))
     return 1 if (has_error or strict_fail) else 0
