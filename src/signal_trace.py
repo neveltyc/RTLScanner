@@ -464,7 +464,14 @@ class SignalTracer:
     def _driver_info(self, d, symbol, remap=None):
         C = Color
         cs = d.containingSymbol
-        cs_name = cs.name or "(anonymous)"
+        # An always/initial block is unnamed; fall back to the instance it
+        # lives in (its hierarchical path) so the line reads, e.g.,
+        # "always_ff block in trace_top.u_dp.u_pipe" instead of "(anonymous)".
+        cs_name = safe_str(getattr(cs, "name", ""), "")
+        if not cs_name:
+            cs_name = safe_str(getattr(cs, "hierarchicalPath", ""), "")
+        if not cs_name:
+            cs_name = "(anonymous)"
         f, ln = self._loc_range(d.sourceRange)
         kind = "continuous" if d.kind == analysis.DriverKind.Continuous else "procedural"
 
