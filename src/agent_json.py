@@ -28,6 +28,42 @@ from typing import Any, Dict, List, Optional
 # Keep in sync with pyproject.toml [project].version.
 TOOL_VERSION = "0.1.0"
 
+# Default cap on the number of rows/items emitted per list, so a query against a
+# large design stays agent-friendly instead of dumping thousands of entries.
+# `--limit 0` removes the cap; an explicit `--limit N` overrides this default.
+DEFAULT_LIMIT = 200
+
+
+def resolve_limit(limit, verbose: bool = False) -> int:
+    """Resolve the effective per-list item cap (0 == unlimited).
+
+    An explicit ``--limit`` wins; otherwise ``--verbose`` (where a command has
+    it) disables truncation, and failing both the default cap applies.
+    """
+    if limit is not None:
+        return limit if limit > 0 else 0
+    return 0 if verbose else DEFAULT_LIMIT
+
+
+def clip(items, limit: int):
+    """Clip an iterable to *limit* items.
+
+    Returns ``(shown, total, truncated)`` where ``shown`` is a list of at most
+    ``limit`` items (all of them when ``limit <= 0``), ``total`` is the full
+    count, and ``truncated`` is True when items were dropped.
+    """
+    seq = list(items)
+    total = len(seq)
+    if limit <= 0 or total <= limit:
+        return seq, total, False
+    return seq[:limit], total, True
+
+
+def truncation_note(shown: int, total: int, noun: str = "items") -> str:
+    """Human-readable trailing note for a truncated list."""
+    return (f"... truncated: {shown}/{total} {noun} shown. "
+            "(use --limit 0 to see all)")
+
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
 ERR_BAD_FILELIST    = "BAD_FILELIST"
@@ -124,7 +160,7 @@ class Envelope:
 # semantic intent of the run.
 _OUTPUT_FIELDS = frozenset({
     "json", "schema", "no_color", "markdown", "ndjson",
-    "diag", "waived", "verbose", "config",
+    "diag", "waived", "verbose", "config", "limit",
 })
 
 
@@ -163,7 +199,7 @@ def add_input_args(p: argparse.ArgumentParser) -> None:
 
 
 def add_output_args(p: argparse.ArgumentParser) -> None:
-    """Attach the shared output flags (--json / --schema / --no-color)."""
+    """Attach the shared output flags (--json / --schema / --no-color / --limit)."""
     g = p.add_argument_group("output")
     g.add_argument("--json", action="store_true",
                    help="Emit results as an agent-friendly JSON envelope (see --schema)")
@@ -171,6 +207,9 @@ def add_output_args(p: argparse.ArgumentParser) -> None:
                    help="Print the JSON Schema for --json output and exit")
     g.add_argument("--no-color", action="store_true",
                    help="Disable ANSI colors")
+    g.add_argument("--limit", type=int, default=None, metavar="N",
+                   help=f"Max rows/items to emit per list; default {DEFAULT_LIMIT}; "
+                        "0 = unlimited")
 
 
 def filter_command(ns, extra_exclude: Optional[set] = None) -> Dict[str, Any]:

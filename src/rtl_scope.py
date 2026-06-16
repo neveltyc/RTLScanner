@@ -16,6 +16,7 @@ except ImportError:
     print("Error: pyslang is required.  pip install pyslang", file=sys.stderr)
     sys.exit(1)
 
+import agent_json
 import rtl_cli
 from agent_json import emit
 from rtl_common import Color, safe_str
@@ -884,24 +885,32 @@ def _prepare(args):
     return analyzer, scope
 
 
-def _summary(data: dict[str, Any]) -> dict[str, Any]:
-    out = {"mode": "scope"}
+def _summary(totals: dict[str, int], truncated: dict[str, Any],
+             limit: int) -> dict[str, Any]:
+    out: dict[str, Any] = {"mode": "scope"}
     for name in _SECTION_NAMES:
-        if name in data:
-            out[name] = len(data[name])
+        if name in totals:
+            out[name] = totals[name]
+    out["truncated"] = bool(truncated)
+    out["limit"] = limit
     return out
 
 
-def _print_section(title: str, rows: list[dict[str, Any]], line_fn) -> None:
-    print(f"\n  {Color.green(title)} ({len(rows)})")
+def _print_section(title: str, rows: list[dict[str, Any]], line_fn,
+                   total: Optional[int] = None) -> None:
+    shown = len(rows)
+    count = total if total is not None else shown
+    print(f"\n  {Color.green(title)} ({count})")
     if not rows:
         print(f"    {Color.dim('(none)')}")
         return
     for row in rows:
         print(line_fn(row))
+    if total is not None and shown < total:
+        print(f"    {Color.dim(agent_json.truncation_note(shown, total, title.lower()))}")
 
 
-def _print_pretty(data: dict[str, Any]) -> None:
+def _print_pretty(data: dict[str, Any], totals: dict[str, int]) -> None:
     print(f"Scope:  {Color.cyan(data['scope'])}  [{Color.yellow(data['module'])}]")
     print("-" * 60)
     if "ports" in data:
@@ -910,6 +919,7 @@ def _print_pretty(data: dict[str, Any]) -> None:
             data["ports"],
             lambda p: f"    {Color.cyan(p['name']):20s} {p['direction']:6s} "
                       f"{Color.dim(p.get('type', ''))}",
+            totals.get("ports"),
         )
     if "signals" in data:
         _print_section(
@@ -917,6 +927,7 @@ def _print_pretty(data: dict[str, Any]) -> None:
             data["signals"],
             lambda s: f"    {Color.cyan(s['name']):20s} {s['kind']:10s} "
                       f"{Color.dim(s.get('type', ''))}",
+            totals.get("signals"),
         )
     if "instances" in data:
         _print_section(
@@ -924,6 +935,7 @@ def _print_pretty(data: dict[str, Any]) -> None:
             data["instances"],
             lambda i: f"    {Color.cyan(i['instance']):20s} {Color.yellow(i['module'])} "
                       f"{Color.dim(i['path'])}",
+            totals.get("instances"),
         )
     if "params" in data:
         _print_section(
@@ -931,6 +943,7 @@ def _print_pretty(data: dict[str, Any]) -> None:
             data["params"],
             lambda p: f"    {Color.cyan(p['name']):20s} {p['kind']:14s} "
                       f"{Color.yellow(str(p.get('value', '')))}",
+            totals.get("params"),
         )
     if "typedefs" in data:
         _print_section(
@@ -938,13 +951,15 @@ def _print_pretty(data: dict[str, Any]) -> None:
             data["typedefs"],
             lambda t: f"    {Color.cyan(t['name']):20s} {t['kind']:8s} "
                       f"{Color.dim(t.get('canonical_type') or t.get('type', ''))}",
+            totals.get("typedefs"),
         )
     if "connections" in data:
         def fmt(conn):
             rhs = "(unconnected)" if conn.get("unconnected") else conn.get("connection")
             return (f"    {Color.cyan(conn['instance'])}.{conn['port']} "
                     f"{conn['direction']:6s} -> {rhs}")
-        _print_section("CONNECTIONS", data["connections"], fmt)
+        _print_section("CONNECTIONS", data["connections"], fmt,
+                       totals.get("connections"))
     print()
 
 
@@ -953,7 +968,17 @@ def run(args, env):
     data = analyzer.describe(scope, _sections(args))
     if data is None:
         raise rtl_cli.scope_not_found_error(analyzer._root, scope)
+    lim = agent_json.resolve_limit(args.limit)
+    totals = {name: len(data[name])
+              for name in _SECTION_NAMES if name in data}
+    truncated: dict[str, Any] = {}
+    for name in _SECTION_NAMES:
+        if name in data:
+            shown, total, tr = agent_json.clip(data[name], lim)
+            data[name] = shown
+            if tr:
+                truncated[name] = {"shown": len(shown), "total": total}
     if env is not None:
-        return emit(env.ok(data, _summary(data)))
-    _print_pretty(data)
+        return emit(env.ok(data, _summary(totals, truncated, lim)))
+    _print_pretty(data, totals)
     return 0

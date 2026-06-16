@@ -149,6 +149,44 @@ def node_to_dict(node, max_depth=-1, depth=0):
     return d
 
 
+def _node_to_dict_capped(node, budget, max_depth=-1, depth=0):
+    """node_to_dict variant that stops once *budget* (a 1-element list used as a
+    shared counter) is exhausted, so a huge hierarchy stays agent-friendly."""
+    d = {'instance': node.inst_name, 'module': node.module_name, 'path': node.hier_path}
+    if node.params:       d['parameters'] = node.params
+    if node.is_interface: d['is_interface'] = True
+    if node.generated_scope: d['generated_scope'] = node.generated_scope
+    if max_depth < 0 or depth < max_depth:
+        kids = []
+        for c in node.children:
+            if budget[0] <= 0:
+                break
+            budget[0] -= 1
+            kids.append(_node_to_dict_capped(c, budget, max_depth, depth + 1))
+        if kids:
+            d['children'] = kids
+    return d
+
+
+def _hierarchy_capped(tops, max_depth, limit):
+    """Serialize the hierarchy under a total-node cap.
+
+    Returns ``(hierarchy, total_nodes, truncated)``.  ``limit <= 0`` means no
+    cap.  Nodes are counted across the whole elaborated tree, not per top.
+    """
+    total = sum(1 for _ in _walk(tops))
+    if limit <= 0 or total <= limit:
+        return [node_to_dict(t, max_depth) for t in tops], total, False
+    budget = [limit]
+    hier = []
+    for t in tops:
+        if budget[0] <= 0:
+            break
+        budget[0] -= 1
+        hier.append(_node_to_dict_capped(t, budget, max_depth))
+    return hier, total, True
+
+
 # ── Statistics ───────────────────────────────────────────────────────
 def _collect_stats(node, stats):
     stats['total'] += 1
@@ -297,15 +335,23 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
         raise rtl_cli.CliError(agent_json.ERR_NO_TOP, msg, 1)
 
     if env is not None:
-        hier = [node_to_dict(t, args.depth) for t in tops]
+        lim = agent_json.resolve_limit(args.limit)
+        hier, _total, truncated = _hierarchy_capped(tops, args.depth, lim)
+        summary = _hierarchy_summary(tops, len(filelist.sources))
+        summary['truncated'] = truncated
+        summary['limit'] = lim
         return emit(env.ok(
             {'hierarchy': hier, 'filelist': _filelist_to_dict(filelist)},
-            _hierarchy_summary(tops, len(filelist.sources)),
+            summary,
         ))
 
     if args.flat:
-        for t in _walk(tops):
+        lim = agent_json.resolve_limit(args.limit)
+        shown, total, truncated = agent_json.clip(_walk(tops), lim)
+        for t in shown:
             print(f"{t.hier_path}  ({t.module_name})")
+        if truncated:
+            print(Color.dim(agent_json.truncation_note(len(shown), total, "instances")))
     else:
         for i, t in enumerate(tops):
             if i: print()

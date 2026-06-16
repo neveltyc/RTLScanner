@@ -741,7 +741,7 @@ def _normalize_dotted_name(xa, scope, name, env):
     return scope, name
 
 
-def _print_signal_pretty(scope, name, matches, *, verbose=False):
+def _print_signal_pretty(scope, name, matches, *, verbose=False, limit=0):
     print(f"Symbol: {Color.bold(name)}")
     if scope:
         print(f"Scope:  {Color.cyan(scope)}")
@@ -768,7 +768,8 @@ def _print_signal_pretty(scope, name, matches, *, verbose=False):
         print(f"\n{Color.yellow('References')}:")
         if not match.references:
             print(f"  {Color.dim('(none found)')}")
-        for r in match.references:
+        shown, total, truncated = agent_json.clip(match.references, limit)
+        for r in shown:
             loc = _fmt_loc(r.file, r.line, r.column)
             target = f" {r.instance}.{r.port}" if r.instance and r.port else ""
             print(f"  {Color.cyan(loc):28s} {r.access:9s} {r.kind:17s}{target}")
@@ -776,10 +777,13 @@ def _print_signal_pretty(scope, name, matches, *, verbose=False):
                 print(f"    scope: {r.scope_path or '<unknown>'}")
                 if r.description:
                     print(f"    desc:  {r.description}")
+        if truncated:
+            print(f"  {Color.dim(agent_json.truncation_note(len(shown), total, 'references'))}")
     print()
 
 
-def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False):
+def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False,
+                         limit=0):
     print(f"Module: {Color.bold(result.name)}")
     if scope:
         print(f"Scope:  {Color.cyan(scope)}")
@@ -793,7 +797,8 @@ def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False):
     print(f"\n{Color.yellow('Instances')}:")
     if not result.references:
         print(f"  {Color.dim('(none found)')}")
-    for r in result.references:
+    shown, total, truncated = agent_json.clip(result.references, limit)
+    for r in shown:
         print(f"  {Color.cyan(_fmt_loc(r.file, r.line, r.column)):28s} {r.instance_path}")
         if verbose:
             if r.parent_scope or r.parent_module:
@@ -802,6 +807,8 @@ def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False):
             if r.parameter_values:
                 params = ", ".join(f"{k}={v}" for k, v in sorted(r.parameter_values.items()))
                 print(f"    params: {params}")
+    if truncated:
+        print(f"  {Color.dim(agent_json.truncation_note(len(shown), total, 'instances'))}")
     print()
 
 
@@ -838,12 +845,18 @@ def run(args, env):
             )
         data = result.to_dict()
         data["scope"] = scope or ""
+        lim = agent_json.resolve_limit(args.limit, bool(args.verbose))
+        shown, _t, tr = agent_json.clip(data.get("references", []), lim)
+        data["references"] = shown
         summary = dict(data["summary"])
         summary["mode"] = "xref"
         summary["target_kind"] = "module"
+        summary["truncated"] = tr
+        summary["limit"] = lim
         if env is not None:
             return emit(env.ok(data, summary))
-        _print_module_pretty(result, scope=scope or "", verbose=bool(args.verbose))
+        _print_module_pretty(result, scope=scope or "",
+                             verbose=bool(args.verbose), limit=lim)
         return 0
 
     scope, name = _normalize_dotted_name(xa, scope, name, env)
@@ -856,6 +869,12 @@ def run(args, env):
             getattr(base, "body", None), name, scope, noun="symbol")
 
     data_matches = [m.to_dict() for m in matches]
+    lim = agent_json.resolve_limit(args.limit, bool(args.verbose))
+    refs_truncated = False
+    for md in data_matches:
+        shown, _t, tr = agent_json.clip(md.get("references", []), lim)
+        md["references"] = shown
+        refs_truncated = refs_truncated or tr
     total_refs = sum(m["summary"]["references"] for m in data_matches)
     reads = sum(m["summary"]["reads"] for m in data_matches)
     writes = sum(m["summary"]["writes"] for m in data_matches)
@@ -876,8 +895,10 @@ def run(args, env):
         "reads": reads,
         "writes": writes,
         "port_connections": sum(m["summary"]["port_connections"] for m in data_matches),
+        "truncated": refs_truncated,
+        "limit": lim,
     }
     if env is not None:
         return emit(env.ok(data, summary))
-    _print_signal_pretty(scope, name, matches, verbose=bool(args.verbose))
+    _print_signal_pretty(scope, name, matches, verbose=bool(args.verbose), limit=lim)
     return 0
