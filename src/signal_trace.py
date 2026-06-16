@@ -399,6 +399,14 @@ class SignalTracer:
         self._owner_cache = {}         # node path -> owning InstanceSymbol
         self._flow_index_cache = {}    # inst path -> (by_source, by_target)
         self._proc_index_cache = {}    # inst path -> proc-only (by_src, by_tgt)
+        # Upward / lateral hierarchical procedural references anchor at the
+        # *referencing* instance, so they are invisible from the referenced
+        # side's owner/ancestor lookup.  Recovered via a one-time index that is
+        # built only when the design actually contains such a reference (a
+        # port-wired design builds nothing and stays fully demand-driven).
+        self._ext_ref_bodies = None    # {canonical body key} with such a ref
+        self._ext_proc_index = None    # {node path -> [FlowEdge]} or None
+        self._ext_proc_index_built = False
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -1049,24 +1057,109 @@ class SignalTracer:
         self._proc_index_cache[key] = index
         return index
 
+    @staticmethod
+    def _under(path, base):
+        """True when hierarchical `path` is `base` or lives inside it."""
+        return bool(base) and (path == base or path.startswith(base + "."))
+
+    @staticmethod
+    def _body_key(body):
+        return safe_str(getattr(body, "hierarchicalPath", ""), "") or str(id(body))
+
+    def _external_ref_bodies(self):
+        """Canonical body keys whose procedures reference a signal *outside*
+        the body (an upward or lateral hierarchical reference).  Computed once
+        from the per-body edge templates — `view.contains` already flags an
+        endpoint that escapes the canonical subtree — without materializing any
+        per-instance adjacency, so a design with no such reference is detected
+        cheaply and the demand-driven path is left untouched."""
+        if self._ext_ref_bodies is not None:
+            return self._ext_ref_bodies
+        bodies, seen = set(), set()
+        for inst in iter_instances(self._root):
+            if getattr(inst, "body", None) is None:
+                continue
+            try:
+                view = canonical_view(self._root, inst)
+            except Exception:
+                continue
+            bkey = self._body_key(view.body)
+            if bkey in seen:
+                continue
+            seen.add(bkey)
+            for tmpl in self._proc_edge_templates(view):
+                if not view.contains(tmpl[0]) or not view.contains(tmpl[1]):
+                    bodies.add(bkey)
+                    break
+        self._ext_ref_bodies = bodies
+        return bodies
+
+    def _external_proc_index(self):
+        """`{node -> [FlowEdge]}` for procedural edges that escape their anchor
+        instance, keyed by the escaping (out-of-subtree) endpoint(s).  Returns
+        ``None`` when the design has no such reference.  Built once and cached;
+        only instances of a body that actually carries an external reference are
+        materialized."""
+        if self._ext_proc_index_built:
+            return self._ext_proc_index
+        ext_bodies = self._external_ref_bodies()
+        index = None
+        if ext_bodies:
+            index = {}
+            for inst in iter_instances(self._root):
+                body = getattr(inst, "body", None)
+                if body is None:
+                    continue
+                try:
+                    view = canonical_view(self._root, inst)
+                except Exception:
+                    continue
+                if self._body_key(view.body) not in ext_bodies:
+                    continue
+                base = safe_str(getattr(body, "hierarchicalPath", ""), "")
+                for edge in self._instance_proc_edges(inst):
+                    if not self._under(edge.source, base):
+                        index.setdefault(edge.source, []).append(edge)
+                    if not self._under(edge.target, base):
+                        index.setdefault(edge.target, []).append(edge)
+        self._ext_proc_index = index
+        self._ext_proc_index_built = True
+        return index
+
     def _incident_edges(self, node, mode):
         """Every edge incident to `node` for one BFS step, identical to the
         whole-graph build's per-node adjacency (same edges, same order)."""
         owner = self._owner_instance(node)
-        if owner is None:
-            return []
-        by_source, by_target = self._instance_flow_index(owner)
-        edges = list((by_target if mode == "fanin" else by_source).get(node, []))
+        edges = []
+        if owner is not None:
+            by_source, by_target = self._instance_flow_index(owner)
+            edges = list((by_target if mode == "fanin" else by_source).get(node, []))
 
-        # A *downward* procedural hierarchical reference (an ancestor's
-        # procedure reading/driving `node` by hierarchical name) anchors at the
-        # ancestor, not at `node`'s owner, so it is absent from the owner's
-        # index.  Fold in each ancestor's procedural edges that touch `node`
-        # via its proc-only index — an O(1) lookup that never pulls in the
-        # ancestor's (potentially wide) child-port fan-out.
-        for ancestor in self._ancestor_instances(owner):
-            psrc, ptgt = self._instance_proc_index(ancestor)
-            edges.extend((ptgt if mode == "fanin" else psrc).get(node, []))
+            # A *downward* procedural hierarchical reference (an ancestor's
+            # procedure reading/driving `node` by hierarchical name) anchors at
+            # the ancestor, not at `node`'s owner, so it is absent from the
+            # owner's index.  Fold in each ancestor's procedural edges that
+            # touch `node` via its proc-only index — an O(1) lookup that never
+            # pulls in the ancestor's (potentially wide) child-port fan-out.
+            for ancestor in self._ancestor_instances(owner):
+                psrc, ptgt = self._instance_proc_index(ancestor)
+                edges.extend((ptgt if mode == "fanin" else psrc).get(node, []))
+
+        # An *upward* or *lateral* procedural hierarchical reference (a
+        # descendant or cousin procedure reading/driving `node` by hierarchical
+        # name) anchors at that referencing instance — neither `node`'s owner
+        # nor an ancestor — so the lookups above never see it.  Fold in any such
+        # edge from the external-reference index (empty/None unless the design
+        # actually contains one).
+        ext = self._external_proc_index()
+        if ext is not None:
+            want_source = mode != "fanin"
+            for edge in ext.get(node, []):
+                if (edge.source if want_source else edge.target) == node:
+                    edges.append(edge)
+
+        if not edges:
+            return []
 
         # Match the whole-graph build's per-node ordering: a global sort by
         # (source, target, kind, file, line) leaves each node's sublist in that

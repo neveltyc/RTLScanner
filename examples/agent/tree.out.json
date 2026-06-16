@@ -118,6 +118,8 @@
       "register": 3,
       "alu": 2,
       "adder": 2
-    }
+    },
+    "truncated": false,
+    "limit": 200
   }
 }
