@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-16
+
+Second release. Hardens the agent JSON contract, makes `fanin`/`fanout`
+demand-driven (and correct across hierarchical references), gives `lint`
+per-module finding attribution and a `module:`/`file:` waiver vocabulary, adds
+a universal `--limit`, and fixes a compilation-unit isolation bug. See the
+grouped notes below.
+
 ### Added
 
 - **`--limit` on every subcommand** — output lists are now capped (default
@@ -136,5 +144,6 @@ simulation), each emitting one uniform JSON envelope under `--json`:
   traverse port boundaries; `trace` is now strictly scope-local. The
   `cross_hierarchy` output field is removed accordingly.
 
-[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/neveltyc/RTLScanner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/neveltyc/RTLScanner/releases/tag/v0.1.0
