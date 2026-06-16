@@ -520,6 +520,14 @@
             },
             "connections": {
               "type": "integer"
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "True when an emitted list was capped by --limit; the count fields still report the true totals."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Effective per-list item cap that was applied (0 means unlimited)."
             }
           }
         },

@@ -15,13 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `summary.truncated` flag (plus `summary.limit`) signals that more exists, and
   human-mode output appends a note such as
   `... truncated: 3/11 instances shown. (use --limit 0 to see all)`. Caps the
-  flat/list outputs (`lint` findings, `xref` references/instances, `scope`
-  sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the nested
-  `tree` JSON hierarchy is capped by total node count.
+  flat/list outputs (`lint` findings and waivers, `xref` references/instances,
+  `scope` sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the
+  nested `tree` JSON hierarchy is capped by total node count. `summary.truncated`
+  and `summary.limit` are part of every subcommand's `--schema`, and a capped
+  `fanin`/`fanout` graph keeps `nodes`/`edges` mutually consistent (an edge is
+  never emitted to a node that was dropped from `nodes`).
 
 - **`module` on each lint finding** — every finding now reports the design unit
-  (module / interface / ...) it sits in, attributed by source range, so an
-  agent can group or filter findings by unit even in a multi-module file.
+  (module / interface / ...) it sits in, attributed by source range (works for
+  one-module-per-file and multi-module files alike), so an agent can group or
+  filter findings by unit. Documented in `lint --schema`.
 
 ### Changed
 
@@ -69,6 +73,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   file leaked into the next, so a design with a genuine missing-define bug could
   lint clean. Command-line `+define+` macros remain global predefines applied to
   every file, and reported file/line locations are unchanged.
+  *Migration:* if a design relied on a header listed first in the filelist to
+  define macros/types for the files after it, make that sharing explicit —
+  supply the macros via `+define+`, `` `include `` the header from each file
+  that needs it, or move shared declarations into a `package`.
 
 ## [0.1.0] - 2026-06-14
 

@@ -130,5 +130,61 @@ class ScopeLimit(unittest.TestCase):
             self.assertFalse(env["summary"]["truncated"])
 
 
+class FlowLimitGraphConsistency(unittest.TestCase):
+    """fanin/fanout keep `nodes` and `edges` mutually consistent under --limit.
+
+    Clipping the two lists independently could emit an edge whose endpoint was
+    dropped from `nodes`, leaving the JSON graph internally inconsistent.
+    """
+
+    def _fanout(self, d, limit):
+        proc = _run(["fanout", "top.sv", "-s", "a", "--scope", "top",
+                     "--limit", str(limit), "--json"], d)
+        return json.loads(proc.stdout)
+
+    def test_edges_only_reference_present_nodes(self):
+        with tempfile.TemporaryDirectory() as d:
+            _make_wide_design(d, 8)   # 'a' fans out to every leaf input
+            env = self._fanout(d, 2)
+            data, summary = env["data"], env["summary"]
+            self.assertEqual(env["status"], "ok")
+            self.assertTrue(summary["truncated"])
+            node_set = set(data["nodes"])
+            dangling = [p for e in data["edges"]
+                        for p in (e["source"], e["target"]) if p not in node_set]
+            self.assertEqual(dangling, [],
+                             f"edge endpoints missing from nodes[]: {dangling}")
+            # counts still report the true totals, not the clipped view
+            self.assertGreater(summary["edges"], len(data["edges"]))
+            self.assertGreater(summary["nodes"], len(data["nodes"]))
+
+    def test_unlimited_graph_is_complete_and_consistent(self):
+        with tempfile.TemporaryDirectory() as d:
+            _make_wide_design(d, 8)
+            env = self._fanout(d, 0)
+            data, summary = env["data"], env["summary"]
+            self.assertFalse(summary["truncated"])
+            node_set = set(data["nodes"])
+            for e in data["edges"]:
+                self.assertIn(e["source"], node_set)
+                self.assertIn(e["target"], node_set)
+
+
+class LintWaivedLimit(unittest.TestCase):
+    def test_waived_list_capped_but_count_truthful(self):
+        with tempfile.TemporaryDirectory() as d:
+            mods = "\n".join(
+                f"module m{i}(input wire a, output wire y);\n"
+                f"  wire unused_{i};\n  assign y = a;\nendmodule" for i in range(6))
+            (Path(d) / "many.sv").write_text(mods + "\n")
+            proc = _run(["lint", "many.sv", "--rules", "unused",
+                         "--waive", "many", "--limit", "2", "--json"], d)
+            env = json.loads(proc.stdout)
+            self.assertEqual(env["status"], "ok")
+            self.assertEqual(len(env["data"]["waived"]), 2)   # clipped
+            self.assertEqual(env["summary"]["waived"], 6)     # true total
+            self.assertTrue(env["summary"]["truncated"])
+
+
 if __name__ == "__main__":
     unittest.main()

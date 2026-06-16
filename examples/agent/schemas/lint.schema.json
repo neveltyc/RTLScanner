@@ -91,6 +91,10 @@
                       "port-connect"
                     ]
                   },
+                  "module": {
+                    "type": "string",
+                    "description": "Design unit (module / interface / ...) the finding sits in, attributed by source range. Absent when the finding could not be attributed to a unit."
+                  },
                   "waived_reason": {
                     "type": "string"
                   }
@@ -146,6 +150,10 @@
                       "cdc",
                       "port-connect"
                     ]
+                  },
+                  "module": {
+                    "type": "string",
+                    "description": "Design unit (module / interface / ...) the finding sits in, attributed by source range. Absent when the finding could not be attributed to a unit."
                   },
                   "waived_reason": {
                     "type": "string"
@@ -254,7 +262,12 @@
           ],
           "properties": {
             "total": {
-              "type": "integer"
+              "type": "integer",
+              "description": "True total finding count, even when `findings` was capped by --limit."
+            },
+            "shown": {
+              "type": "integer",
+              "description": "Number of findings actually emitted in `data.findings` after the --limit cap."
             },
             "by_severity": {
               "type": "object",
@@ -282,6 +295,14 @@
             },
             "has_error": {
               "type": "boolean"
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "True when an emitted list was capped by --limit; the count fields still report the true totals."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Effective per-list item cap that was applied (0 means unlimited)."
             }
           }
         },
