@@ -87,6 +87,17 @@ When a filelist is present (CLI, env, or config), positional sources and
 of running a `-d .` alongside a proper `.f` and pulling sim/testbench
 directories into the compilation.
 
+### Compilation units
+
+Each source file is compiled as its **own** compilation unit (matching slang's
+driver, VCS, and Verilator). A `` `define `` or other `$unit`-scoped declaration
+in one file is therefore **not** visible to the next — this is what lets the
+linter surface a genuine missing-`` `define ``/undeclared-identifier bug instead
+of masking it. To share macros or types across files, make it explicit: pass
+macros via `+define+`, `` `include `` a header from each file that needs it, or
+put shared declarations in a `package`. A header merely listed first in the
+filelist does **not** leak into the files after it.
+
 ### List-valued flags
 
 All repeatable flags (`-d`, `-f`, `--exclude`, `--rules`, `--skip`,

@@ -1092,8 +1092,17 @@ def run_flow(args, env, *, mode):
     lim = agent_json.resolve_limit(args.limit)
     if env is not None:
         rd = r.to_dict()
+        # Cap the edges, then keep exactly the nodes those surviving edges
+        # reference (plus the depth-0 start).  Clipping `nodes` and `edges`
+        # independently could emit an edge whose endpoint was dropped from
+        # `nodes`, leaving the JSON graph internally inconsistent.
         edges_shown, edges_total, e_tr = agent_json.clip(rd['edges'], lim)
-        nodes_shown, nodes_total, n_tr = agent_json.clip(rd['nodes'], lim)
+        kept = {rd['start']}
+        for e in edges_shown:
+            kept.add(e['source'])
+            kept.add(e['target'])
+        nodes_shown = [n for n in rd['nodes'] if n in kept]
+        nodes_total = len(rd['nodes'])
         data = {
             'mode': mode, 'scope': scope, 'signal': signal,
             'start': rd['start'], 'nodes': nodes_shown, 'edges': edges_shown,
@@ -1103,7 +1112,7 @@ def run_flow(args, env, *, mode):
             'mode': mode, 'results': 1,
             'nodes': nodes_total, 'edges': edges_total,
             'max_depth': rd['max_depth'],
-            'truncated': e_tr or n_tr, 'limit': lim,
+            'truncated': e_tr or len(nodes_shown) < nodes_total, 'limit': lim,
         }
         return emit(env.ok(data, summary))
     r.pretty_print(limit=lim)
