@@ -708,42 +708,97 @@ def validate_rule_tokens(tokens, eng, *, flag):
     return notes
 
 
-# ── Waive (globs matched against each finding's source-file basename) ──
+# ── Waive ─────────────────────────────────────────────────────────────
+# A ``--waive`` token may carry an explicit target prefix to remove the
+# module-vs-file ambiguity:
+#   module:GLOB  match the design-unit (module / interface / ...) name only
+#   file:GLOB    match the source-file basename only (also reaches findings
+#                that have no module: $unit-scope / preprocessor / file-level
+#                compile errors, which a module glob can never touch)
+#   scope:GLOB   instance / hierarchy path  (reserved; not implemented yet)
+# A bare GLOB (no recognized prefix) keeps the backward-compatible behavior:
+# it matches the module name OR the source-file basename stem.
+_WAIVE_KINDS = ("module", "file", "scope")
+
+
+def _parse_waive(token):
+    """Split a ``--waive`` token into ``(kind, glob)``.
+
+    ``kind`` is ``module`` / ``file`` / ``scope`` when the token carries that
+    prefix, else ``any`` (a bare glob matched against the module-or-file union).
+    """
+    head, sep, rest = token.partition(":")
+    if sep and head in _WAIVE_KINDS:
+        return head, rest
+    return "any", token
+
+
+def _finding_file_basename(finding):
+    """The finding's source-file basename, with extension."""
+    return Path(finding.file).name if finding.file else ""
+
+
 def _finding_file_stem(finding):
-    """The finding's source-file basename without its extension.
-
-    Kept as a waiver target alongside the finding's design unit (see
-    ``_waive_targets``) so existing file-oriented waivers keep working and so a
-    finding that couldn't be attributed to a unit is still waivable by file.
-    """
-    if not finding.file:
-        return ""
-    return Path(finding.file).stem
+    """The finding's source-file basename without its extension."""
+    return Path(finding.file).stem if finding.file else ""
 
 
-def _waive_targets(finding):
-    """Names a ``--waive`` glob may match for *finding*.
-
-    Primary: the design unit (module / interface / ...) the finding sits in, so
-    a glob can waive **one** module inside a multi-module file instead of the
-    whole file.  Secondary: the source-file basename, kept for backward
-    compatibility and as a fallback when the unit is unknown.
-    """
-    targets = []
-    mod = safe_str(getattr(finding, "module", ""), "")
-    if mod:
-        targets.append(mod)
+def _waive_glob_matches(finding, kind, glob):
+    module = safe_str(getattr(finding, "module", ""), "")
+    if kind == "module":
+        return bool(module) and fnmatch.fnmatch(module, glob)
+    if kind == "file":
+        base = _finding_file_basename(finding)
+        stem = _finding_file_stem(finding)
+        return ((bool(base) and fnmatch.fnmatch(base, glob))
+                or (bool(stem) and fnmatch.fnmatch(stem, glob)))
+    if kind == "scope":
+        return False  # reserved; never matches yet (surfaced as a note)
+    # bare: module OR file-basename stem (backward-compatible union)
     stem = _finding_file_stem(finding)
-    if stem and stem not in targets:
-        targets.append(stem)
-    return targets
+    return ((bool(module) and fnmatch.fnmatch(module, glob))
+            or (bool(stem) and fnmatch.fnmatch(stem, glob)))
+
+
+def waive_match(finding, waive_globs):
+    """Return the ``--waive`` token that suppresses *finding*, or ``None``."""
+    if not waive_globs:
+        return None
+    for token in waive_globs:
+        kind, glob = _parse_waive(token)
+        if _waive_glob_matches(finding, kind, glob):
+            return token
+    return None
 
 
 def waive_matches(finding, waive_globs):
-    if not waive_globs:
-        return False
-    targets = _waive_targets(finding)
-    return any(fnmatch.fnmatch(t, g) for t in targets for g in waive_globs)
+    """Boolean wrapper around :func:`waive_match`."""
+    return waive_match(finding, waive_globs) is not None
+
+
+def waive_hints(waive_globs):
+    """Notes for ``--waive`` tokens that won't behave as a user might expect.
+
+    - ``scope:`` is reserved (planned) and currently waives nothing.
+    - a ``word:`` prefix that is not a known kind is treated as a plain glob;
+      flag it in case the user meant ``module:`` / ``file:`` / ``scope:``.
+    """
+    notes = []
+    for token in (waive_globs or []):
+        head, sep, rest = token.partition(":")
+        if not sep:
+            continue
+        if head == "scope":
+            notes.append(
+                f"--waive: scope-level waivers are not yet supported (planned); "
+                f"'{token}' was ignored.")
+        elif (head and head not in _WAIVE_KINDS and rest
+                and not rest.startswith(":")
+                and not any(c in head for c in "*?[]/.")):
+            notes.append(
+                f"--waive: '{head}:' is not a known target kind in '{token}'; "
+                f"use module:, file:, or scope: (treated as a plain glob).")
+    return notes
 
 
 # ── Severity application ─────────────────────────────────────────────
@@ -793,8 +848,9 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
             f.waived_reason = "skipped"
             waived.append(f)
             continue
-        if waive_matches(f, waive_globs):
-            f.waived_reason = "waived (glob)"
+        _wt = waive_match(f, waive_globs)
+        if _wt is not None:
+            f.waived_reason = f"waived ('{_wt}')"
             waived.append(f)
             continue
         # Per-rule severity override (from [lint.severity])
@@ -898,9 +954,10 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     sc = p.add_argument_group("scope")
     sc.add_argument("--waive", action=agent_json.CommaListAction, default=[],
                     metavar="GLOB",
-                    help="Suppress findings whose module (or source-file "
-                         "basename) matches these globs (e.g. "
-                         "'dbg_*,third_party_*').")
+                    help="Suppress findings. Bare glob matches the module OR "
+                         "file name (e.g. 'dbg_*'); prefix to disambiguate: "
+                         "'module:fifo', 'file:third_party_*' (a file glob also "
+                         "waives findings with no module). 'scope:' is reserved.")
 
     sv = p.add_argument_group("severity & exit code")
     sv.add_argument("--strict", action="store_true",
@@ -948,6 +1005,13 @@ def run(args, env):
                 env.add_diagnostic("note", message=_note)
             else:
                 print(f"note: {_note}", file=sys.stderr)
+
+    # Flag reserved/unknown --waive target prefixes (e.g. scope:, typo:).
+    for _note in waive_hints(waive_globs):
+        if env is not None:
+            env.add_diagnostic("note", message=_note)
+        else:
+            print(f"note: {_note}", file=sys.stderr)
 
     findings = runner.run()
 
