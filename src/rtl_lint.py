@@ -305,8 +305,18 @@ class LintRunner:
 
 
 # ── CDC Analyzer ─────────────────────────────────────────────────────
-_DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*_n",
-                        "reset*", "*reset*", "clr*", "*clr_n")
+# Reset-name globs, deliberately reset-*rooted*.  A bare ``*_n`` would match any
+# active-low data signal (``data_n``, ``sel_n``, ``q_n``, ``we_n`` …) and drop it
+# from the timing/clock-domain events, silently masking genuine CDC crossings —
+# so active-low resets must carry an rst/reset/arst/por/clr root.  Names starting
+# with ``rst``/``reset``/``arst`` already cover ``rst_n``, ``resetn``,
+# ``arst_n`` …; extend project-specific names via ``[lint.cdc] reset = [...]``.
+_DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*rst_n", "*_rst_n",
+                        "reset*", "*reset*", "*reset_n", "*_reset_n",
+                        "arst*", "*_arstn", "*_arst_n",
+                        "clr*", "*_clr", "*clr_n",
+                        "por_n", "*_por_n",
+                        "nrst", "n_rst", "nreset", "n_reset")
 
 
 class CDCAnalyzer:
