@@ -53,6 +53,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   always/initial block read `… block in (anonymous)`; it now falls back to the
   block's hierarchical path, e.g. `always_ff block in trace_top.u_dp.u_pipe`.
 
+- **CDC reset detection no longer over-matches `*_n`** — the default reset-name
+  globs included a bare `*_n`, so any active-low *data* signal (`data_n`,
+  `sel_n`, `q_n`, `we_n` …) was treated as a reset and dropped from the
+  timing/clock events, masking real clock-domain crossings. The defaults are now
+  reset-rooted (an active-low reset must carry an `rst`/`reset`/`arst`/`por`/`clr`
+  root); genuine names like `rst_n`, `arst_n`, `por_n`, `reset_n` are still
+  recognized, and `[lint.cdc] reset = [...]` still extends the list.
+
 - **Per-file compilation units** — each source file in a file list is now
   compiled as its own compilation unit, the way slang's own driver (and
   VCS/Verilator) treat a file list. Previously every file was concatenated into
