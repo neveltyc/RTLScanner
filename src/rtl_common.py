@@ -429,8 +429,143 @@ class CompilationResult:
         return getattr(self.comp, name)
 
 
+# ── Compilation diagnostics ──────────────────────────────────────────
+# pyslang severity -> agent-schema severity string.  Matches rtl_lint's
+# _SEVERITY_NAME, but Ignored (and anything unmapped) is dropped because the
+# shared JSON schema only allows error/warning/note/info.
+_DIAG_SEVERITY = {
+    pyslang.DiagnosticSeverity.Fatal:   "error",
+    pyslang.DiagnosticSeverity.Error:   "error",
+    pyslang.DiagnosticSeverity.Warning: "warning",
+    pyslang.DiagnosticSeverity.Note:    "note",
+}
+
+
+@dataclass
+class CompileDiag:
+    """One formatted compilation diagnostic.
+
+    Unlike the old ``str(d)`` on a raw pyslang ``Diagnostic`` (which yields a
+    useless ``<...Diagnostic object at 0x...>`` repr), these carry the real
+    severity, source location, and human-readable message -- formatted through a
+    ``DiagnosticEngine`` exactly like ``lint`` does.
+    """
+    severity: str
+    file: str
+    line: int
+    col: int
+    message: str
+
+    def __str__(self) -> str:
+        loc = self.file or "<unknown>"
+        if self.line:
+            loc += f":{self.line}"
+            if self.col:
+                loc += f":{self.col}"
+        return f"{loc}: {self.severity}: {self.message}"
+
+
+def rel_path(name: str, root=None) -> str:
+    """Render *name* relative to *root* for readable diagnostics.
+
+    Mirrors rtl_lint.LintRunner._rel / rtl_xref._format_file so the same compile
+    error prints a byte-identical path across commands.  Far-away files (outside
+    *root*) keep an absolute path rather than a noisy ``../../..`` chain.
+    """
+    if not name:
+        return name
+    try:
+        p = Path(name).resolve()
+        if root is None:
+            return p.as_posix()
+        rel = os.path.relpath(p, Path(root).resolve())
+        if rel == ".":
+            return "."
+        if rel.startswith(os.pardir + os.sep) or rel == os.pardir:
+            return p.as_posix()
+        return "./" + Path(rel).as_posix()
+    except Exception:
+        return name
+
+
+def _collect_diagnostics(comp, source_manager, root=None):
+    """Return formatted, structured diagnostics for an elaborated compilation.
+
+    Uses a ``DiagnosticEngine`` (honoring inline ``pragma diagnostic`` waivers)
+    so severities and messages match what ``lint`` reports.  ``Ignored``
+    diagnostics are skipped.
+    """
+    out = []
+    try:
+        eng = pyslang.DiagnosticEngine(source_manager)
+        try:
+            eng.setMappingsFromPragmas()
+        except Exception:
+            pass
+        for d in comp.getAllDiagnostics():
+            loc = d.location
+            severity = _DIAG_SEVERITY.get(eng.getSeverity(d.code, loc))
+            if severity is None:
+                continue  # Ignored / unmapped -> not in the schema enum
+            try:
+                message = eng.formatMessage(d)
+            except Exception:
+                message = safe_str(d.code, "")
+            try:
+                fn = rel_path(safe_str(source_manager.getFileName(loc), ""), root)
+                ln = int(source_manager.getLineNumber(loc))
+                col = int(source_manager.getColumnNumber(loc))
+            except Exception:
+                fn, ln, col = "", 0, 0
+            out.append(CompileDiag(severity, fn, ln, col, message))
+    except Exception:
+        pass
+    return out
+
+
+def _add_source_trees(comp, source_manager, files, defines, single_unit):
+    """Add each source file to *comp* and return the parsed SyntaxTrees.
+
+    Default (per-file): every file is its OWN compilation unit, the way slang's
+    driver (and VCS/Verilator) treat a file list -- a `define or other
+    $unit-scoped declaration in one file does NOT leak into the next, so the
+    linter surfaces real "unknown macro" / undeclared-identifier bugs instead of
+    masking them.  Command-line +define+ macros are global predefines, so the
+    define directives are prepended to every per-file unit.  The real file is
+    pulled in via `include (not by prepending its text) so slang's reported
+    file/line points at the true source location.
+
+    ``single_unit=True`` restores the legacy (v0.1.0 / slang ``--single-unit``)
+    behavior: the whole file list becomes one compilation unit, so $unit-scoped
+    typedefs/macros declared in a leading file are shared with the rest.
+    """
+    define_lines = [define_to_directive(d) for d in (defines or [])]
+    trees = []
+    if single_unit:
+        preamble = define_lines + [
+            f'`include "{sv_string_literal(_norm_abs(f))}"' for f in files]
+        try:
+            tree = SyntaxTree.fromText('\n'.join(preamble) + '\n', source_manager)
+            comp.addSyntaxTree(tree)
+            trees.append(tree)
+        except Exception as e:
+            print(f"Warning: parse error: {e}", file=sys.stderr)
+        return trees
+
+    define_prefix = ''.join(line + '\n' for line in define_lines)
+    for f in files:
+        unit = f'{define_prefix}`include "{sv_string_literal(_norm_abs(f))}"\n'
+        try:
+            tree = SyntaxTree.fromText(unit, source_manager)
+            comp.addSyntaxTree(tree)
+            trees.append(tree)
+        except Exception as e:
+            print(f"Warning: parse error in {f}: {e}", file=sys.stderr)
+    return trees
+
+
 def build_compilation(files, include_dirs=None, defines=None,
-                      collect_diagnostics=True):
+                      collect_diagnostics=True, single_unit=False, root=None):
     """
     Create a pyslang Compilation from source files.
 
@@ -443,12 +578,16 @@ def build_compilation(files, include_dirs=None, defines=None,
     premature garbage collection.
 
     The returned compilation is always elaborated, so callers receive a
-    walkable design either way.  Gathering the diagnostic *strings* is a
-    separate concern controlled by ``collect_diagnostics``: when False, the
-    design is elaborated via ``getRoot()`` (which yields the same elaborated
-    AST as ``getAllDiagnostics()`` but skips the per-message ``str()`` work),
-    and ``diag_messages`` comes back empty.  Only callers that surface
-    diagnostics (``tree``) need to pay for collection.
+    walkable design either way.  Gathering diagnostics is a separate concern
+    controlled by ``collect_diagnostics``: when True, ``diag_messages`` is a
+    list of :class:`CompileDiag` (real severity + location + message, formatted
+    through a ``DiagnosticEngine``); when False, the design is elaborated via
+    ``getRoot()`` and ``diag_messages`` comes back empty.
+
+    ``single_unit`` selects the compilation-unit model: the default (False)
+    compiles each file as its own unit; True merges the whole file list into one
+    unit (legacy / slang ``--single-unit``).  ``root``, when given, renders
+    diagnostic file paths relative to it.
     """
     comp = ast.Compilation()
     source_manager = pyslang.SourceManager()
@@ -461,39 +600,14 @@ def build_compilation(files, include_dirs=None, defines=None,
         except Exception as e:
             print(f"Warning: could not add include dir {inc}: {e}", file=sys.stderr)
 
-    # Compile each source file as its OWN compilation unit, the way slang's
-    # own driver (and VCS/Verilator) treat a file list.  The previous approach
-    # concatenated every `include into a single synthetic buffer, merging all
-    # files into one compilation unit -- so a `define (or any $unit-scoped
-    # declaration) in one file leaked into the next and could mask real
-    # "unknown macro" / redeclaration errors that a standard flow would report.
-    #
-    # Command-line +define+ macros are global predefines in that model, so the
-    # define directives are prepended to every per-file unit.  The real file is
-    # pulled in via `include rather than by prepending its text, which keeps
-    # slang's reported file/line pointing at the true source location.
-    define_prefix = ''.join(
-        define_to_directive(d) + '\n' for d in (defines or []))
-
-    trees = []
-    for f in files:
-        unit = f'{define_prefix}`include "{sv_string_literal(_norm_abs(f))}"\n'
-        try:
-            tree = SyntaxTree.fromText(unit, source_manager)
-            comp.addSyntaxTree(tree)
-            trees.append(tree)
-        except Exception as e:
-            print(f"Warning: parse error in {f}: {e}", file=sys.stderr)
+    trees = _add_source_trees(comp, source_manager, files, defines, single_unit)
 
     diag_messages = []
     if collect_diagnostics:
         # getAllDiagnostics() both elaborates the design and yields its
-        # diagnostics; stringify them for the caller to surface.
-        try:
-            for d in comp.getAllDiagnostics():
-                diag_messages.append(str(d))
-        except Exception:
-            pass
+        # diagnostics; format each (severity + location + message) so callers
+        # surface real text instead of a raw "<Diagnostic object at 0x...>".
+        diag_messages = _collect_diagnostics(comp, source_manager, root)
     else:
         # Elaborate the design without gathering/formatting diagnostics;
         # getRoot() yields the same elaborated AST as getAllDiagnostics().

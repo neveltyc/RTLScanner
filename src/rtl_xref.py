@@ -697,8 +697,10 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                    help="Show detailed context in human-readable output")
 
 
-def _prepare(args):
-    prepared = rtl_cli.prepare_compilation(args)
+def _prepare(args, env):
+    # Fail with COMPILE_FAILED before building the xref index, so a broken
+    # compile never yields confident-looking definitions/references.
+    prepared = rtl_cli.prepare_compilation_checked(args, env)
     xcfg = xref_config(prepared.config)
     xa = XrefAnalyzer(
         prepared.comp,
@@ -826,7 +828,7 @@ def run(args, env):
             "specify --signal/-s NAME, --name NAME, or --module MODULE",
         )
 
-    xa, scope = _prepare(args)
+    xa, scope = _prepare(args, env)
 
     if args.module:
         result = xa.xref_module(args.module, scope_path=scope or "")
