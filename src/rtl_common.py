@@ -348,7 +348,7 @@ def filter_filelist(filelist: FileList, excludes: list[str], root: Path) -> File
 def format_filelist_path(path: str, root: Path, mode: str, prefix: str) -> str:
     path = Path(path).resolve()
     root = root.resolve()
-    if mode == 'abs':
+    if mode == 'absolute':
         return path.as_posix()
 
     rel = Path(os.path.relpath(path, root)).as_posix()

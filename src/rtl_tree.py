@@ -271,9 +271,12 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     exp = p.add_argument_group('filelist export')
     exp.add_argument('--export', default=None, metavar='FILE',
                      help="Write the resolved filelist to FILE ('-' for stdout) and exit")
-    exp.add_argument('--path-style', choices=('rel', 'abs', 'prefix'),
+    exp.add_argument('--path-style',
+                     choices=('rel', 'relative', 'abs', 'absolute', 'prefix'),
                      default='rel',
-                     help="Path style for --export (default: rel)")
+                     help="Path form in the exported filelist: relative (alias "
+                          "rel, default), absolute (alias abs), or prefix "
+                          "(${PROJPATH}/relative).")
 
     p.add_argument('--diag', action='store_true',
                    help='Print parser/elaboration diagnostics to stderr')
@@ -287,7 +290,8 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
         ri = prepared.resolved_inputs
         try:
             write_filelist_file(args.export, filelist, ri.root,
-                                args.path_style, ri.prefix)
+                                agent_json.canon_path_style(args.path_style),
+                                ri.prefix)
         except Exception as e:
             raise rtl_cli.CliError(
                 agent_json.ERR_INTERNAL,
