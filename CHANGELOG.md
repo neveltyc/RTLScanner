@@ -51,12 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`--waive` matches the module, not the whole file** — waivers are applied per
-  design unit (using the new source-range attribution) instead of by the
-  "file basename == module name" heuristic, so a glob can waive one module in a
-  multi-module file without suppressing its neighbours. The source-file basename
-  is still matched as a fallback, so existing file-oriented waivers keep working;
-  the JSON `waived_reason` is now `"waived (glob)"`.
+- **`--waive` gains `module:` / `file:` target prefixes** — a finding is
+  attributed to its design unit by source range, and a waiver can now name the
+  target explicitly to remove the module-vs-file ambiguity: `module:fifo`
+  matches the module only (never a sibling module in the same file),
+  `file:third_party_*` matches the source file (and, unlike a module glob,
+  reaches findings with **no module** — `$unit`-scope / preprocessor /
+  file-level compile errors), and `scope:` is reserved for future
+  instance-level waivers (currently ignored with a note). A **bare** glob is
+  unchanged and backward-compatible: it still matches the module name **or** the
+  source-file basename. The JSON `waived_reason` now names the matched token,
+  e.g. `waived ('module:fifo')`.
 
 - **`lint` and `xref` report a file with the same path** — `lint` relativized
   paths against the process CWD while `xref` used the configured
