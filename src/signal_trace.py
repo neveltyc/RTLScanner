@@ -391,6 +391,14 @@ class SignalTracer:
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)
         self._proc_edge_cache = {}
+        # Demand-driven flow-graph caches (see _build_flow_edges / flow).
+        self._inst_proc_cache = {}     # inst path -> [FlowEdge] (proc/assign)
+        self._inst_port_cache = {}     # inst path -> [FlowEdge] (own ports)
+        self._child_cache = {}         # inst path -> [child InstanceSymbol]
+        self._ancestor_cache = {}      # inst path -> [ancestor InstanceSymbol]
+        self._owner_cache = {}         # node path -> owning InstanceSymbol
+        self._flow_index_cache = {}    # inst path -> (by_source, by_target)
+        self._proc_index_cache = {}    # inst path -> proc-only (by_src, by_tgt)
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -803,7 +811,94 @@ class SignalTracer:
         return []
 
 
+    # ── per-instance edge producers (shared by lazy + whole-graph) ──────
+    #
+    # Every dataflow edge is *anchored* at exactly one instance: the instance
+    # whose procedure / continuous-assign drives it, or whose port connection
+    # carries it.  Producing edges one instance at a time lets the demand-
+    # driven `flow()` materialize only the instances it actually visits, while
+    # `_build_flow_edges()` reuses the same producers to build the whole graph.
+
+    def _instance_proc_edges(self, inst):
+        """Procedural / continuous-assign edges anchored at `inst`.
+
+        Stamped from the canonical body's cached templates into this
+        instance's namespace, so deduplicated instances (generate arrays,
+        repeated modules) keep their edges and each unique module body is
+        walked only once.  Memoized per instance.
+        """
+        key = self._sym_path(inst)
+        cached = self._inst_proc_cache.get(key)
+        if cached is not None:
+            return cached
+        view = canonical_view(self._root, inst)
+        edges = [
+            FlowEdge(source=view.remap(src), target=view.remap(dst),
+                     source_type=st, target_type=dt, kind=kind,
+                     description=desc, file=f, line=ln)
+            for (src, dst, st, dt, kind, desc, f, ln)
+            in self._proc_edge_templates(view)
+        ]
+        self._inst_proc_cache[key] = edges
+        return edges
+
+    def _instance_port_edges(self, inst):
+        """Port-connection edges contributed by `inst`'s own connections.
+
+        Each links one of `inst`'s port internals to the net in the parent
+        scope it connects to.  Memoized per instance.
+        """
+        key = self._sym_path(inst)
+        cached = self._inst_port_cache.get(key)
+        if cached is not None:
+            return cached
+        edges = []
+        try:
+            port_connections = inst.portConnections
+        except Exception:
+            port_connections = []
+        for pc in port_connections:
+            try:
+                port = pc.port
+                port_sym = self._port_symbol(port)
+                expr = pc.expression
+                if expr is None or port_sym is None:
+                    continue
+                direction = port.direction
+                if direction in (ast.ArgumentDirection.In,
+                                 ast.ArgumentDirection.InOut):
+                    for src in expr_symbols(expr):
+                        if not is_data_symbol(src):
+                            continue
+                        e = self._make_flow_edge(
+                            src, port_sym, "port_connection",
+                            f"{inst.name}.{port.name} input", inst)
+                        if e is not None:
+                            edges.append(e)
+                if direction in (ast.ArgumentDirection.Out,
+                                 ast.ArgumentDirection.InOut):
+                    for dst in self._assignment_left_symbols(expr):
+                        if not is_data_symbol(dst):
+                            continue
+                        e = self._make_flow_edge(
+                            port_sym, dst, "port_connection",
+                            f"{inst.name}.{port.name} output", inst)
+                        if e is not None:
+                            edges.append(e)
+            except Exception:
+                continue
+        self._inst_port_cache[key] = edges
+        return edges
+
     def _build_flow_edges(self):
+        """Whole-design edge list — every instance's proc + port edges,
+        deduplicated and sorted.
+
+        The demand-driven `flow()` no longer needs this (it expands only the
+        touched neighborhood), but it stays as the exact whole-graph build:
+        the oracle the lazy traversal is verified against, and a ready hook
+        for any future whole-design consumer.
+        """
         if hasattr(self, '_flow_edges'):
             return self._flow_edges
 
@@ -820,66 +915,179 @@ class SignalTracer:
             edges.append(edge)
 
         for inst in iter_instances(self._root):
-            body = getattr(inst, 'body', None)
-            if body is None:
+            if getattr(inst, 'body', None) is None:
                 continue
+            for edge in self._instance_proc_edges(inst):
+                add(edge)
+            for edge in self._instance_port_edges(inst):
+                add(edge)
 
-            # Analyzed procedures live on canonical bodies only; stamp each
-            # body's edges into this instance's namespace so deduplicated
-            # instances (generate arrays, repeated modules) keep their edges.
-            view = canonical_view(self._root, inst)
-            for (src, dst, st, dt, kind, desc, f, ln) in \
-                    self._proc_edge_templates(view):
-                add(FlowEdge(source=view.remap(src), target=view.remap(dst),
-                             source_type=st, target_type=dt, kind=kind,
-                             description=desc, file=f, line=ln))
-
-            try:
-                port_connections = inst.portConnections
-            except Exception:
-                port_connections = []
-            for pc in port_connections:
-                try:
-                    port = pc.port
-                    port_sym = self._port_symbol(port)
-                    expr = pc.expression
-                    if expr is None or port_sym is None:
-                        continue
-                    direction = port.direction
-                    if direction in (ast.ArgumentDirection.In,
-                                     ast.ArgumentDirection.InOut):
-                        for src in expr_symbols(expr):
-                            if not is_data_symbol(src):
-                                continue
-                            add(self._make_flow_edge(
-                                src, port_sym, "port_connection",
-                                f"{inst.name}.{port.name} input", inst))
-                    if direction in (ast.ArgumentDirection.Out,
-                                     ast.ArgumentDirection.InOut):
-                        for dst in self._assignment_left_symbols(expr):
-                            if not is_data_symbol(dst):
-                                continue
-                            add(self._make_flow_edge(
-                                port_sym, dst, "port_connection",
-                                f"{inst.name}.{port.name} output", inst))
-                except Exception:
-                    continue
-
-        edges.sort(key=lambda e: (e.source, e.target, e.kind, e.file, e.line))
+        edges.sort(key=FlowEdge.key)
         self._flow_edges = edges
         return edges
+
+    # ── demand-driven (lazy) neighborhood expansion ─────────────────────
+
+    def _child_instances(self, inst):
+        """Direct child instances declared in `inst`'s body.  Memoized."""
+        key = self._sym_path(inst)
+        cached = self._child_cache.get(key)
+        if cached is not None:
+            return cached
+        children = []
+
+        def collect(sym):
+            children.append(sym)
+            return ast.VisitAction.Skip
+
+        body = getattr(inst, 'body', None)
+        if body is not None:
+            try:
+                self._scope_visit(body, {ast.SymbolKind.Instance: collect})
+            except Exception:
+                pass
+        self._child_cache[key] = children
+        return children
+
+    def _parent_instance(self, inst):
+        """The instance that instantiates `inst`, or None for a top."""
+        try:
+            scope = getattr(inst, 'parentScope', None)
+            body = getattr(scope, 'containingInstance', None) \
+                if scope is not None else None
+            return getattr(body, 'parentInstance', None) \
+                if body is not None else None
+        except Exception:
+            return None
+
+    def _ancestor_instances(self, inst):
+        """`inst`'s instantiation chain, nearest parent first.  Memoized."""
+        key = self._sym_path(inst)
+        cached = self._ancestor_cache.get(key)
+        if cached is not None:
+            return cached
+        chain = []
+        cur = self._parent_instance(inst)
+        guard = 0
+        while cur is not None and guard < 256:  # guard pathological cycles
+            chain.append(cur)
+            cur = self._parent_instance(cur)
+            guard += 1
+        self._ancestor_cache[key] = chain
+        return chain
+
+    def _owner_instance(self, node):
+        """The instance whose body declares the signal at hierarchical path
+        `node`, resolved by name lookup.  None when it cannot be resolved
+        (the traversal then simply stops at that node).  Memoized per path.
+        """
+        if node in self._owner_cache:
+            return self._owner_cache[node]
+        inst = None
+        try:
+            sym = self._root.lookupName(node)
+            scope = getattr(sym, 'parentScope', None) if sym is not None else None
+            body = getattr(scope, 'containingInstance', None) \
+                if scope is not None else None
+            inst = getattr(body, 'parentInstance', None) \
+                if body is not None else None
+        except Exception:
+            inst = None
+        self._owner_cache[node] = inst
+        return inst
+
+    def _instance_flow_index(self, inst):
+        """Adjacency `(by_source, by_target)` over every edge whose anchor is
+        local to `inst`: `inst`'s own proc + port edges, plus the port edges
+        of `inst`'s direct children (whose parent-side nets live in `inst`).
+
+        For a signal declared in `inst`, this captures every incident edge
+        except those anchored at another instance via a hierarchical
+        reference — `_incident_edges` folds those in separately.  Memoized.
+        """
+        key = self._sym_path(inst)
+        cached = self._flow_index_cache.get(key)
+        if cached is not None:
+            return cached
+        by_source, by_target = {}, {}
+        seen = set()
+
+        def add(edge):
+            ekey = edge.key()
+            if ekey in seen:
+                return
+            seen.add(ekey)
+            by_source.setdefault(edge.source, []).append(edge)
+            by_target.setdefault(edge.target, []).append(edge)
+
+        for edge in self._instance_proc_edges(inst):
+            add(edge)
+        for edge in self._instance_port_edges(inst):
+            add(edge)
+        for child in self._child_instances(inst):
+            for edge in self._instance_port_edges(child):
+                add(edge)
+
+        index = (by_source, by_target)
+        self._flow_index_cache[key] = index
+        return index
+
+    def _instance_proc_index(self, inst):
+        """`(by_source, by_target)` over only `inst`'s own procedural edges —
+        no port edges, no child fan-out.  Used to look up an ancestor's
+        hierarchical-reference edges in O(1) without materializing its
+        (possibly wide) child-port adjacency.  Memoized."""
+        key = self._sym_path(inst)
+        cached = self._proc_index_cache.get(key)
+        if cached is not None:
+            return cached
+        by_source, by_target = {}, {}
+        for edge in self._instance_proc_edges(inst):
+            by_source.setdefault(edge.source, []).append(edge)
+            by_target.setdefault(edge.target, []).append(edge)
+        index = (by_source, by_target)
+        self._proc_index_cache[key] = index
+        return index
+
+    def _incident_edges(self, node, mode):
+        """Every edge incident to `node` for one BFS step, identical to the
+        whole-graph build's per-node adjacency (same edges, same order)."""
+        owner = self._owner_instance(node)
+        if owner is None:
+            return []
+        by_source, by_target = self._instance_flow_index(owner)
+        edges = list((by_target if mode == "fanin" else by_source).get(node, []))
+
+        # A *downward* procedural hierarchical reference (an ancestor's
+        # procedure reading/driving `node` by hierarchical name) anchors at the
+        # ancestor, not at `node`'s owner, so it is absent from the owner's
+        # index.  Fold in each ancestor's procedural edges that touch `node`
+        # via its proc-only index — an O(1) lookup that never pulls in the
+        # ancestor's (potentially wide) child-port fan-out.
+        for ancestor in self._ancestor_instances(owner):
+            psrc, ptgt = self._instance_proc_index(ancestor)
+            edges.extend((ptgt if mode == "fanin" else psrc).get(node, []))
+
+        # Match the whole-graph build's per-node ordering: a global sort by
+        # (source, target, kind, file, line) leaves each node's sublist in that
+        # order.  Dedup defensively (a node reached two ways keeps one edge).
+        seen = set()
+        ordered = []
+        for edge in sorted(edges, key=FlowEdge.key):
+            ekey = edge.key()
+            if ekey not in seen:
+                seen.add(ekey)
+                ordered.append(edge)
+        return ordered
 
     def flow(self, signal_name, scope_path, mode, max_depth=4):
         inst, sym = self._lookup(signal_name, scope_path)
 
         start = self._sym_path(sym)
-        edges = self._build_flow_edges()
-        by_source, by_target = {}, {}
-        for edge in edges:
-            by_source.setdefault(edge.source, []).append(edge)
-            by_target.setdefault(edge.target, []).append(edge)
 
-        edge_map = by_target if mode == "fanin" else by_source
+        # Demand-driven BFS: expand a node's incident edges only when the
+        # traversal reaches it, so a shallow query on a large design pays for
+        # the touched neighborhood instead of building the whole flow graph.
         traversed = []
         seen_edges = set()
         seen_nodes = {start}
@@ -890,7 +1098,7 @@ class SignalTracer:
             depth += 1
             next_frontier = []
             for node in frontier:
-                for edge in edge_map.get(node, []):
+                for edge in self._incident_edges(node, mode):
                     ekey = edge.key()
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
