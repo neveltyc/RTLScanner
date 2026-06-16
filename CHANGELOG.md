@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Demand-driven `fanin` / `fanout`** — the dataflow BFS now expands a node's
+  incident edges only when the traversal reaches it, instead of building the
+  whole design's flow graph up front and then walking it. A shallow query on a
+  large design pays for the touched neighborhood rather than the full
+  `O(instances × ports/statements)` graph: in a synthetic 800-instance design a
+  `fanin --depth 1` drops from building ~6.4k edges (~0.8 s) to materializing a
+  two-instance neighborhood (~3 ms), and the per-query cost stops growing with
+  the size of the rest of the design. Results are unchanged — the lazy traversal
+  is verified edge-for-edge (and in order) against the whole-graph build,
+  including cross-module *downward* hierarchical references, which it resolves
+  by also consulting each ancestor instance's procedural edges.
+
 - **Unified path-style vocabulary** — `tree --path-style` and the xref
   `path_style` config now both accept the long and short spellings
   (`relative`/`rel`, `absolute`/`abs`), normalizing to the long canonical form,
