@@ -68,7 +68,7 @@ exclude  = ["**/sim/**", "**/dvt/**"]
 [lint]
 rules = ["default", "cdc"]            # equivalent to CLI --rules
 skip  = ["case-default"]              # equivalent to CLI --skip
-waive = ["dbg_*", "third_party_*"]    # globs vs each finding's module (or file basename)
+waive = ["dbg_*", "module:fifo", "file:third_party_*"]  # bare=module|file; prefix to disambiguate
 
 [lint.severity]                       # promote individual rules
 "width-trunc" = "error"
@@ -263,7 +263,7 @@ rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
 rtlscanner lint -d ./rtl --rules bugs                 # real bugs only (high precision)
 rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
 rtlscanner lint -d ./rtl --rules default --skip case-default
-rtlscanner lint -d ./rtl --waive 'dbg_*'              # skip by module (or file basename)
+rtlscanner lint -d ./rtl --waive 'dbg_*'              # bare: module|file (or module:/file: prefix)
 rtlscanner lint -d ./rtl --strict                     # CI gate: warning → error
 rtlscanner lint -d ./rtl --min-severity error         # display floor
 rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
@@ -311,17 +311,22 @@ the `port-unconnected` note). `cdc-crossing` is intentionally excluded
 
 ### Waivers
 
-`--waive GLOB[,GLOB...]` suppresses every finding whose **module** — the
-design unit (module / interface / ...) the finding sits in — matches the
-glob. Each finding is attributed to its unit by source range, so in a file
-that declares several modules a glob waives only the matching module rather
-than the whole file. The finding's **source-file basename** (without
-extension) is also matched as a fallback, so existing file-oriented waivers
-keep working and a finding that couldn't be attributed to a unit is still
-waivable by file. For project-permanent waivers, put the list in
-`[lint] waive = [...]` in `.rtlscanner.toml`. (Scope- and instance-level
-waivers — distinguishing two instances of the same module — are still
-future work.)
+`--waive GLOB[,GLOB...]` suppresses findings. Each finding is attributed to its
+**module** (design unit) by source range, and a glob may carry a target prefix
+to say exactly what it matches:
+
+| Token | Matches |
+|-------|---------|
+| `dbg_*` (bare) | the **module** name **or** the source-file basename (backward-compatible union) |
+| `module:fifo` | the **module** name only — never a sibling module in the same file |
+| `file:third_party_*` | the **source-file** basename only; also waives findings with **no module** (`$unit`-scope / preprocessor / file-level compile errors), which a module glob can't reach |
+| `scope:top.u_dbg` | **reserved** — instance/hierarchy-level waivers are future work; currently ignored with a note |
+
+Use a bare glob for the common one-module-per-file case; reach for `module:` /
+`file:` when a file declares several modules (or is named after one of them) and
+you need to be precise. The JSON `waived_reason` names the matched token, e.g.
+`waived ('module:fifo')`. For project-permanent waivers, put the list in
+`[lint] waive = [...]` in `.rtlscanner.toml`.
 
 ### CDC
 
