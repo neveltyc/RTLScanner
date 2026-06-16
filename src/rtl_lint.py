@@ -841,13 +841,18 @@ def run(args, env):
 
     if env is not None:
         by_sev, by_rule, by_check = _counts(findings)
+        lim = agent_json.resolve_limit(args.limit)
+        shown, total, truncated = agent_json.clip(findings, lim)
         data = {
-            'findings':    [f.to_dict() for f in findings],
+            'findings':    [f.to_dict() for f in shown],
             'waived':      [f.to_dict() for f in waived],
             'config_path': str(prepared.config_path) if prepared.config_path else None,
         }
         summary = {
-            'total':        len(findings),
+            'total':        total,
+            'shown':        len(shown),
+            'truncated':    truncated,
+            'limit':        lim,
             'by_severity':  by_sev,
             'by_rule':      by_rule,
             'by_check':     by_check,
@@ -858,7 +863,11 @@ def run(args, env):
         rc = emit(env.ok(data, summary))
         return 1 if (has_error or strict_fail) else rc
 
-    print_findings(findings)
+    lim = agent_json.resolve_limit(args.limit)
+    shown, total, truncated = agent_json.clip(findings, lim)
+    print_findings(shown)
+    if truncated:
+        print(Color.dim(agent_json.truncation_note(len(shown), total, "findings")))
     if args.waived:
         print_waived(waived)
     if findings:

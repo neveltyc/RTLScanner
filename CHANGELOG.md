@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--limit` on every subcommand** — output lists are now capped (default
+  `200` rows, `--limit 0` removes the cap) so a query against a large design
+  stays agent-friendly. Count fields keep reporting the true totals; a
+  `summary.truncated` flag (plus `summary.limit`) signals that more exists, and
+  human-mode output appends a note such as
+  `... truncated: 3/11 instances shown. (use --limit 0 to see all)`. Caps the
+  flat/list outputs (`lint` findings, `xref` references/instances, `scope`
+  sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the nested
+  `tree` JSON hierarchy is capped by total node count.
+
 ### Fixed
 
 - **Per-file compilation units** — each source file in a file list is now

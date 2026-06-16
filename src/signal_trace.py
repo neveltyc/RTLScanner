@@ -232,7 +232,7 @@ class TraceResult:
         loc = f"  {C.dim(d.file + ':' + str(d.line))}" if d.file else ""
         return f"    {GLYPH_ARROW_L} {d.description}{bits}{where}{loc}"
 
-    def pretty_print(self, load_filter=None):
+    def pretty_print(self, load_filter=None, limit=0):
         C = Color
 
         print(f"Signal: {C.bold(self.display_name)}  {C.dim(self.signal_type)}")
@@ -260,16 +260,17 @@ class TraceResult:
             print()
             return
         loads = self.filtered_loads(load_filter)
-        hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({len(loads)})"
+        shown, total, truncated = agent_json.clip(loads, limit)
+        hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({total})"
         if load_filter:
             hdr += f"  {C.dim('filter: ' + load_filter)}"
         print(hdr)
 
-        if not loads:
+        if not shown:
             print(f"    {C.dim('(none found)')}")
         else:
             by_kind = {}
-            for ld in loads:
+            for ld in shown:
                 by_kind.setdefault(ld.kind, []).append(ld)
             kind_labels = {
                 "port_connection": "Instance port connections",
@@ -283,6 +284,8 @@ class TraceResult:
                 for ld in kind_loads:
                     loc = f"  {C.dim(ld.file + ':' + str(ld.line))}" if ld.file else ""
                     print(f"    \u2192 {ld.description}{loc}")
+            if truncated:
+                print(f"    {C.dim(agent_json.truncation_note(len(shown), total, 'loads'))}")
 
         print()
 
@@ -349,7 +352,7 @@ class FlowResult:
             edge_count=len(self.edges),
         )
 
-    def pretty_print(self):
+    def pretty_print(self, limit=0):
         C = Color
         title = "FANIN" if self.mode == "fanin" else "FANOUT"
         print(f"Signal: {C.bold(self.signal_name)}  {C.dim(self.signal_type)}")
@@ -359,8 +362,9 @@ class FlowResult:
         if not self.edges:
             print(f"\n  {C.dim('(no dataflow edges found)')}\n")
             return
+        shown, total, truncated = agent_json.clip(self.edges, limit)
         cur_depth = None
-        for edge, depth in self.edges:
+        for edge, depth in shown:
             if depth != cur_depth:
                 cur_depth = depth
                 print(f"\n  {C.dim('depth ' + str(depth))}")
@@ -368,6 +372,8 @@ class FlowResult:
             print(f"    {C.cyan(edge.source)} → "
                   f"{C.cyan(edge.target)}  "
                   f"{C.yellow(edge.kind)} {C.dim(edge.description)}{loc}")
+        if truncated:
+            print(f"\n  {C.dim(agent_json.truncation_note(len(shown), total, 'edges'))}")
         print()
 
 
@@ -990,16 +996,25 @@ def add_trace_args(p):
 def run_trace(args, env):
     tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
     r = tracer.trace(signal, scope, bit_range)
+    lim = agent_json.resolve_limit(args.limit)
     if env is not None:
         rd = r.to_dict(args.filter)
+        load_total = int(rd.get('load_count', 0))
+        if 'loads' in rd:
+            shown, _t, tr = agent_json.clip(rd['loads'], lim)
+            rd['loads'] = shown
+        else:
+            tr = False
         data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
         summary = {
             'mode': 'signal', 'results': 1,
             'drivers': 1 if rd.get('driver') else 0,
-            'loads':   int(rd.get('load_count', 0)),
+            'loads':   load_total,
+            'truncated': tr,
+            'limit': lim,
         }
         return emit(env.ok(data, summary))
-    r.pretty_print(args.filter)
+    r.pretty_print(args.filter, limit=lim)
     return 0
 
 # ── Subcommands: fanin / fanout ──────────────────────────────────────
@@ -1067,18 +1082,22 @@ def run_flow(args, env, *, mode):
     r = tracer.flow(signal, scope, mode, args.depth)
     if getattr(args, 'summary', False):
         return _emit_flow_summary(env, r, mode, scope, signal)
+    lim = agent_json.resolve_limit(args.limit)
     if env is not None:
         rd = r.to_dict()
+        edges_shown, edges_total, e_tr = agent_json.clip(rd['edges'], lim)
+        nodes_shown, nodes_total, n_tr = agent_json.clip(rd['nodes'], lim)
         data = {
             'mode': mode, 'scope': scope, 'signal': signal,
-            'start': rd['start'], 'nodes': rd['nodes'], 'edges': rd['edges'],
+            'start': rd['start'], 'nodes': nodes_shown, 'edges': edges_shown,
             'max_depth': rd['max_depth'],
         }
         summary = {
             'mode': mode, 'results': 1,
-            'nodes': len(rd['nodes']), 'edges': len(rd['edges']),
+            'nodes': nodes_total, 'edges': edges_total,
             'max_depth': rd['max_depth'],
+            'truncated': e_tr or n_tr, 'limit': lim,
         }
         return emit(env.ok(data, summary))
-    r.pretty_print()
+    r.pretty_print(limit=lim)
     return 0

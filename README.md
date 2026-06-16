@@ -344,6 +344,19 @@ Each subcommand ships a JSON Schema (draft-07) — dump it with
 `examples/agent/schemas/` directory for the full contract and pre-baked
 schemas.
 
+### Output capping (`--limit`)
+
+Every subcommand accepts `--limit N` (default `200`, `0` = unlimited): each
+emitted list is clipped to at most `N` rows so a query against a large design
+stays agent-friendly instead of dumping thousands of entries. Count fields keep
+reporting the **true** totals — only the list is shortened — and a
+`summary.truncated` boolean (alongside `summary.limit`) tells the caller more
+exists. Human-mode output appends a one-line note, e.g.
+`... truncated: 3/11 instances shown. (use --limit 0 to see all)`. This caps the
+flat/list outputs (`lint` findings, `xref` references/instances, `scope`
+sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the nested
+`tree` JSON hierarchy is capped by total node count.
+
 Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
 `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND` / `BAD_FILELIST` / `BAD_CONFIG`
 / `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
