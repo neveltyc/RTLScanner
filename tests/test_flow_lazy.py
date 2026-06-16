@@ -171,6 +171,98 @@ class DownwardHierRefParity(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
+class UpwardAndLateralHierRefParity(unittest.TestCase):
+    """A descendant/cousin procedure that hierarchically reads or drives a
+    signal it does not own anchors the dataflow edge at the *referencing*
+    instance, which is neither the referenced node's owner nor an ancestor.
+    The lazy path must still surface it from the referenced side — which it
+    does via the external-reference index.  Regression guard: that edge used to
+    be dropped, so `fanout` from the referenced signal reported `[]`."""
+
+    UPWARD = textwrap.dedent(
+        """
+        module child(input logic clk);
+          logic [7:0] c_reg;
+          always_ff @(posedge clk) c_reg <= top.p_sig;   // upward read
+        endmodule
+        module top(input logic clk);
+          logic [7:0] p_sig;
+          assign p_sig = 8'hAA;
+          child u_child(.clk(clk));
+        endmodule
+        """
+    )
+
+    LATERAL = textwrap.dedent(
+        """
+        module reader(input logic clk);
+          logic [7:0] r;
+          always_ff @(posedge clk) r <= top.u_src.s;     // lateral (cousin) read
+        endmodule
+        module source(input logic clk);
+          logic [7:0] s;
+          always_ff @(posedge clk) s <= 8'h11;
+        endmodule
+        module top(input logic clk);
+          source u_src(.clk(clk));
+          reader u_rd(.clk(clk));
+        endmodule
+        """
+    )
+
+    def _tracer(self, text):
+        p = Path(tempfile.mkdtemp()) / "h.sv"
+        p.write_text(text)
+        return SignalTracer(build_compilation([str(p)])[0])
+
+    def test_upward_fanout_from_ancestor_reaches_descendant(self):
+        tr = self._tracer(self.UPWARD)
+        keys = {(e.source, e.target, e.kind)
+                for e, _ in tr.flow("p_sig", "top", "fanout", 4).edges}
+        self.assertIn(("top.p_sig", "top.u_child.c_reg", "procedural"), keys)
+
+    def test_lateral_fanout_from_source_reaches_cousin(self):
+        tr = self._tracer(self.LATERAL)
+        keys = {(e.source, e.target, e.kind)
+                for e, _ in tr.flow("s", "top.u_src", "fanout", 4).edges}
+        self.assertIn(("top.u_src.s", "top.u_rd.r", "procedural"), keys)
+
+    def test_parity_with_whole_graph(self):
+        for text in (self.UPWARD, self.LATERAL):
+            tr = self._tracer(text)
+            for inst in iter_instances(tr._root):
+                for m in inst.body:
+                    if getattr(m, "kind", None) not in (ast.SymbolKind.Net,
+                                                        ast.SymbolKind.Variable):
+                        continue
+                    scope, sig = symbol_key(inst), safe_str(m.name, "")
+                    start = tr._sym_path(m)
+                    for mode in ("fanin", "fanout"):
+                        lazy = _signature(tr.flow(sig, scope, mode, 8).edges)
+                        oracle = _signature(_whole_graph_bfs(tr, start, mode, 8))
+                        self.assertEqual(lazy, oracle,
+                                         msg=f"{scope}.{sig} {mode}")
+
+    def test_port_only_design_builds_no_external_index(self):
+        # A purely port-wired design has no hierarchical procedural references,
+        # so the external index is never built and laziness is preserved.
+        tr = self._tracer(textwrap.dedent(
+            """
+            module leaf(input logic clk, input logic [7:0] d,
+                        output logic [7:0] q);
+              always_ff @(posedge clk) q <= d;
+            endmodule
+            module top(input logic clk, input logic [7:0] din,
+                       output logic [7:0] dout);
+              leaf u_leaf(.clk(clk), .d(din), .q(dout));
+            endmodule
+            """))
+        tr.flow("din", "top", "fanout", 4)
+        self.assertEqual(tr._external_ref_bodies(), set())
+        self.assertIsNone(tr._external_proc_index())
+
+
+@unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
 class LazyLocality(unittest.TestCase):
     """A shallow query materializes only the touched neighborhood, so its cost
     does not grow with the size of the rest of the design."""

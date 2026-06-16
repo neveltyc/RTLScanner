@@ -19,67 +19,74 @@
   "data": {
     "findings": [
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 8,
         "col": 24,
         "severity": "warning",
         "rule": "unused-port",
         "message": "unused port signal 'b'",
-        "check": "unused"
+        "check": "unused",
+        "module": "sub"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 12,
         "col": 17,
         "severity": "warning",
         "rule": "unused-but-set-variable",
         "message": "variable 'dead' is assigned but its value is never used",
-        "check": "unused"
+        "check": "unused",
+        "module": "sub"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 15,
         "col": 18,
         "severity": "warning",
         "rule": "width-trunc",
         "message": "implicit conversion truncates from 8 to 4 bits",
-        "check": "semantic"
+        "check": "semantic",
+        "module": "sub"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 29,
         "col": 17,
         "severity": "warning",
         "rule": "unassigned-variable",
         "message": "variable 'mode' is never assigned a value",
-        "check": "unused"
+        "check": "unused",
+        "module": "lint_demo"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 32,
         "col": 9,
         "severity": "warning",
         "rule": "case-default",
         "message": "'case' missing 'default' label",
-        "check": "semantic"
+        "check": "semantic",
+        "module": "lint_demo"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 33,
         "col": 20,
         "severity": "warning",
         "rule": "inferred-latch",
         "message": "latch inferred for 'result' because it is not assigned on all control paths",
-        "check": "unused"
+        "check": "unused",
+        "module": "lint_demo"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 45,
         "col": 10,
         "severity": "warning",
         "rule": "empty-output-connection",
         "message": "output port 'y' is explicitly connected to nothing",
-        "check": "semantic"
+        "check": "semantic",
+        "module": "lint_demo"
       }
     ],
     "waived": [],
@@ -89,6 +96,9 @@
   "errors": [],
   "summary": {
     "total": 7,
+    "shown": 7,
+    "truncated": false,
+    "limit": 200,
     "by_severity": {
       "warning": 7
     },

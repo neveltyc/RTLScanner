@@ -36,10 +36,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `O(instances × ports/statements)` graph: in a synthetic 800-instance design a
   `fanin --depth 1` drops from building ~6.4k edges (~0.8 s) to materializing a
   two-instance neighborhood (~3 ms), and the per-query cost stops growing with
-  the size of the rest of the design. Results are unchanged — the lazy traversal
-  is verified edge-for-edge (and in order) against the whole-graph build,
-  including cross-module *downward* hierarchical references, which it resolves
-  by also consulting each ancestor instance's procedural edges.
+  the size of the rest of the design. Results match the whole-graph build
+  edge-for-edge and in order, including cross-module hierarchical procedural
+  references in either direction: a *downward* reference (an ancestor procedure
+  reading/driving the queried signal by hierarchical name) is resolved from each
+  ancestor's procedural edges, and an *upward* or *lateral* reference (a
+  descendant or cousin procedure doing the same) from a one-time
+  external-reference index that is built only when the design actually contains
+  such a reference — a purely port-wired design stays fully demand-driven.
 
 - **Unified path-style vocabulary** — `tree --path-style` and the xref
   `path_style` config now both accept the long and short spellings

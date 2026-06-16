@@ -102,6 +102,8 @@
   "errors": [],
   "summary": {
     "mode": "scope",
-    "connections": 6
+    "connections": 6,
+    "truncated": false,
+    "limit": 200
   }
 }
