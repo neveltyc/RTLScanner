@@ -130,6 +130,8 @@
     "references": 3,
     "reads": 2,
     "writes": 1,
-    "port_connections": 2
+    "port_connections": 2,
+    "truncated": false,
+    "limit": 200
   }
 }

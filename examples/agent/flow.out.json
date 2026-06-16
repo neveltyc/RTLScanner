@@ -12,7 +12,8 @@
     "exclude": [],
     "signal": "q",
     "scope": "top.u_dp0",
-    "depth": 4
+    "depth": 4,
+    "summary": false
   },
   "data": {
     "mode": "fanout",
@@ -81,6 +82,8 @@
     "results": 1,
     "nodes": 5,
     "edges": 4,
-    "max_depth": 4
+    "max_depth": 4,
+    "truncated": false,
+    "limit": 200
   }
 }
