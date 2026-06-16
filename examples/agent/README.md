@@ -81,18 +81,27 @@ Closed enum of error codes:
 | `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules default,cdc --json` |
 | `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
 
-## CDC notes for agents
+## CDC / combinational-loop notes for agents
 
-CDC findings appear in `lint` output as regular lint findings:
+Both checks run on the dataflow flow graph (the one `fanin`/`fanout` use), so
+they are cross-hierarchy, and both surface as regular `lint` findings:
 
 ```json
-{"rule": "cdc-crossing", "check": "cdc", "severity": "warning", ...}
+{"rule": "cdc-crossing", "check": "cdc",       "severity": "warning", ...}
+{"rule": "comb-loop",    "check": "comb-loop", "severity": "warning", ...}
 ```
 
-- Quick count: `data.summary.by_check.cdc`
-- **`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing`.**
-  To waive a CDC finding, use `[lint].waive` (module-name glob) in
-  `.rtlscanner.toml`:
+- Enable: `--rules cdc` and/or `--rules comb-loop` (both opt-in, excluded from
+  `default` and `bugs`). Compose: `--rules default,cdc,comb-loop`.
+- Quick counts: `data.summary.by_check.cdc`, `data.summary.by_check["comb-loop"]`.
+- **CDC** compares clock domains by **source net**, not local clock name, and
+  relates flops across module boundaries — two flops on the same physical clock
+  are one domain even when their ports are named differently; a gated/divided
+  clock is its own domain.
+- **comb-loop** reports one finding per combinational feedback cycle; a register
+  in the path breaks the cycle, so legitimate sequential feedback is not flagged.
+- **`` `pragma diagnostic ignore `` does NOT suppress these heuristic findings.**
+  To waive one, use `[lint].waive` (module-name glob) in `.rtlscanner.toml`:
 
   ```toml
   [lint]

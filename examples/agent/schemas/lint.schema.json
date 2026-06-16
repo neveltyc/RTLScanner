@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "lint agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` \u2014 use `[lint].waive` in `.rtlscanner.toml` instead.",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. CDC findings appear as regular entries in `data.findings` with `rule=\"cdc-crossing\"` and `check=\"cdc\"`; combinational-loop findings with `rule=\"comb-loop\"` and `check=\"comb-loop\"`. Both are opt-in (`--rules cdc` / `--rules comb-loop`). Note: SystemVerilog `` `pragma diagnostic ignore `` does NOT suppress these heuristic findings — use `[lint].waive` in `.rtlscanner.toml` instead.",
   "type": "object",
   "required": [
     "tool",
@@ -76,7 +76,7 @@
                   },
                   "rule": {
                     "type": "string",
-                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
+                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `comb-loop`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
                   },
                   "message": {
                     "type": "string"
@@ -88,7 +88,8 @@
                       "unused",
                       "shadow",
                       "cdc",
-                      "port-connect"
+                      "port-connect",
+                      "comb-loop"
                     ]
                   },
                   "module": {
@@ -136,7 +137,7 @@
                   },
                   "rule": {
                     "type": "string",
-                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
+                    "description": "Open enum. Known rules include `inferred-latch`, `unassigned-variable`, `undriven-port`, `width-trunc`, `port-width-mismatch`, `port-width-trunc`, `cdc-crossing`, `comb-loop`, `unused-port`, `case-default`. The `--rules bugs` preset keeps the real-bug subset plus all compile errors."
                   },
                   "message": {
                     "type": "string"
@@ -148,7 +149,8 @@
                       "unused",
                       "shadow",
                       "cdc",
-                      "port-connect"
+                      "port-connect",
+                      "comb-loop"
                     ]
                   },
                   "module": {

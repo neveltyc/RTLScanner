@@ -203,7 +203,7 @@ Reading the output:
 | Term      | Meaning |
 |-----------|---------|
 | **node**  | A signal at one elaborated hierarchical path. The starting signal is depth 0. |
-| **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. |
+| **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. A registered edge (driven by `always_ff`, a latch, or an edge-sensitive `always`) also carries `clocked: true`. |
 | **depth** | BFS distance in hops from the starting signal. |
 
 ## `rtlscanner xref` — source cross-reference lookup
@@ -254,12 +254,15 @@ read or write it, and which child instance ports it feeds or is driven by.
 
 Built on pyslang's elaboration + analysis engine. Catches width
 mismatches, unused/undriven signals and ports, missing case defaults,
-inferred latches, multi-driven nets, plus opt-in CDC and port connection
-analysis.
+inferred latches, multi-driven nets, plus opt-in clock-domain-crossing,
+combinational-loop, and port connection analysis. The CDC and
+combinational-loop checks run on the same dataflow flow graph the
+`fanin`/`fanout` commands use, so they are cross-hierarchy.
 
 ```bash
 rtlscanner lint -d ./rtl                              # default rule set
 rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
+rtlscanner lint -d ./rtl --rules default,comb-loop    # add combinational loops
 rtlscanner lint -d ./rtl --rules bugs                 # real bugs only (high precision)
 rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
 rtlscanner lint -d ./rtl --rules default --skip case-default
@@ -274,7 +277,7 @@ rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
 `--rules SPEC[,SPEC...]` — white list. SPEC can be:
 
 - a rule name: `width-trunc`, `unused-port`, …
-- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `port-connect`
+- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `port-connect`, `comb-loop`
 - a warning option: `everything` (enable slang's broader warning set)
 - a glob: `width-*`
 - a meta value: `default` (= `semantic + unused`), `all`, `none`, `bugs`
@@ -330,13 +333,43 @@ you need to be precise. The JSON `waived_reason` names the matched token, e.g.
 
 ### CDC
 
-`--rules cdc` enables flop-to-flop clock-domain-crossing detection.
-Findings appear as regular entries with `rule="cdc-crossing"`,
-`check="cdc"`. Customize the reset-signal recognition in
-`[lint.cdc] reset = [...]`.
+`--rules cdc` enables clock-domain-crossing detection. Findings appear as
+regular entries with `rule="cdc-crossing"`, `check="cdc"`. Customize the
+reset-signal recognition in `[lint.cdc] reset = [...]`.
 
-Note: inline diagnostic pragmas do **not** suppress `cdc-crossing`.
-Use `--waive` or `[lint] waive` instead.
+The check runs on the dataflow flow graph (the same one `fanin`/`fanout` use),
+so it is **cross-hierarchy**: a launch flop that feeds — through combinational
+logic only — the data input of a capture flop in a *different* clock domain is
+flagged even when the two flops live in different modules wired through ports.
+Each flop's clock is resolved to its **source net** before domains are compared,
+so two flops on the same physical clock are one domain even when their local
+clock ports are named differently (e.g. `clk` vs `clock`) or sit in different
+instances — and, conversely, one net reaching two differently-named ports is one
+domain, not two. A **gated or divided** clock (`assign gclk = clk & en;`, a
+clock-divider flop) is treated as its own domain.
+
+Note: inline diagnostic pragmas do **not** suppress `cdc-crossing` (it is a
+heuristic, not a slang diagnostic). Use `--waive` or `[lint] waive` instead.
+
+### Combinational loops
+
+`--rules comb-loop` enables combinational-loop detection. Findings appear as
+regular entries with `rule="comb-loop"`, `check="comb-loop"`. The check runs
+cycle detection (Tarjan strongly-connected components) over the **non-sequential
+edges** of the same flow graph — a registered edge (driven by `always_ff`, a
+latch, or an edge-sensitive `always`) breaks the feedback, so legitimate
+sequential feedback is not flagged while a true combinational cycle
+(`assign a = b; assign b = a;`, an `always_comb` that reads its own output) is.
+Loops that close through child-instance ports are caught (cross-hierarchy).
+
+`comb-loop` is opt-in and reported at `warning` severity; like `cdc` it is
+excluded from `default` and the `bugs` preset because it inherits the flow
+graph's conservative control-condition modeling and can, in rare cases,
+over-report. Compose it in with `--rules bugs,comb-loop` or `--rules default,comb-loop`,
+and promote it with `[lint.severity] "comb-loop" = "error"` or `--strict` in CI.
+
+Every dataflow edge in `fanin`/`fanout` output now carries a `clocked` boolean
+(present only when true) marking the registered edges this classification uses.
 
 ### Port connections
 
