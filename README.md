@@ -184,7 +184,10 @@ rtlscanner fanin  -d ./rtl -s result --scope top.u_dp --depth 1   # direct sourc
 ```
 
 BFS over `port_connection`, `continuous_assign`, and `procedural` edges
-from the starting signal. `--depth` (default 4) caps traversal.
+from the starting signal. `--depth` (default 4) caps traversal. The graph is
+expanded on demand — only the neighborhood the BFS actually visits is built —
+so a shallow query stays cheap on a large design instead of paying to construct
+the whole-design flow graph first.
 
 Procedural edges are **per-statement**: an assignment's RHS feeds only its own
 LHS, while a block's `if`/`case`/loop conditions feed every driver in the
