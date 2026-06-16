@@ -77,7 +77,7 @@ waive = ["dbg_*", "third_party_*"]    # globs vs each finding's source-file base
 reset = ["nrst_*", "por_*"]           # extra reset-signal name globs
 
 [xref]
-path_style = "relative"                # relative | absolute | name
+path_style = "relative"                # relative|absolute|name (rel/abs aliases ok)
 ```
 
 ### Filelist precedence over dir scan
@@ -111,7 +111,7 @@ rtlscanner tree -d ./rtl --json                    # agent envelope
 ```
 
 `--export FILE` writes the resolved filelist and exits; combine with
-`--path-style {rel,abs,prefix}` to control how paths appear in the output.
+`--path-style` to control how paths appear in the exported filelist: `relative` (alias `rel`, default), `absolute` (alias `abs`), or `prefix` (`${PROJPATH}/<relative>`). Both the long and short spellings are accepted; the long forms match the `xref` `path_style` config (which instead offers a `name` = bare-basename mode in place of `prefix`).
 
 ## `rtlscanner trace` — single-signal driver/loads
 
@@ -226,7 +226,7 @@ Path style is configured in `.rtlscanner.toml` under `[xref]`:
 
 ```toml
 [xref]
-path_style = "relative"   # ./path/from/root.sv; also supports absolute, name
+path_style = "relative"   # ./path/from/root.sv; also absolute, name (rel/abs aliases ok)
 ```
 
 The `relative` style is relative to `[inputs].root` and is printed with

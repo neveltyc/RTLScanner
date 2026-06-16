@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Unified path-style vocabulary** — `tree --path-style` and the xref
+  `path_style` config now both accept the long and short spellings
+  (`relative`/`rel`, `absolute`/`abs`), normalizing to the long canonical form,
+  so the same words work for either command. Non-breaking: every previously
+  valid value still works. The third option stays command-specific because the
+  modes differ (`tree`: `prefix` = `${PROJPATH}/<relative>`; `xref`: `name` =
+  bare basename); fully reconciling those is left to a future release.
+
 - **Waiver wording clarified** — `--waive` matches a finding's **source-file
   basename** (a glob), not the elaborated module/scope/instance name. The help
   text, the `--waive` metavar (`MODULE` → `GLOB`), the JSON `waived_reason`

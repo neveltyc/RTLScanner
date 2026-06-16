@@ -261,7 +261,7 @@ def lint_config(cfg: dict) -> dict:
 def xref_config(cfg: dict) -> dict:
     """Return normalized [xref] config options."""
     raw = (cfg.get("xref") or {}) if isinstance(cfg, dict) else {}
-    path_style = str(raw.get("path_style") or "relative").strip().lower()
+    path_style = agent_json.canon_path_style(raw.get("path_style") or "relative")
     if path_style not in {"relative", "absolute", "name"}:
         path_style = "relative"
     return {"path_style": path_style}

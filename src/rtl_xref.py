@@ -235,7 +235,8 @@ class XrefAnalyzer:
         self._root = compilation.getRoot()
         self._sm = compilation.sourceManager
         self._root_dir = (root or Path.cwd()).expanduser().resolve()
-        self._path_style = path_style if path_style in {"relative", "absolute", "name"} else "relative"
+        _ps = agent_json.canon_path_style(path_style)
+        self._path_style = _ps if _ps in {"relative", "absolute", "name"} else "relative"
         # AnalysisManager.analyze() requires a fully-elaborated compilation;
         # getSemanticDiagnostics() forces elaboration (sets isElaborated).
         _ = compilation.getSemanticDiagnostics()

@@ -64,6 +64,28 @@ def truncation_note(shown: int, total: int, noun: str = "items") -> str:
     return (f"... truncated: {shown}/{total} {noun} shown. "
             "(use --limit 0 to see all)")
 
+
+# Path-style vocabulary shared by `tree --path-style` and the xref `path_style`
+# config.  Both the long and short spellings are accepted everywhere and
+# normalize to the long canonical form.  The two third options stay
+# command-specific because they are different *modes*, not spellings:
+#   tree:  'prefix' -> ``${PROJPATH}/<relative>``
+#   xref:  'name'   -> bare file basename
+_PATH_STYLE_SYNONYMS = {
+    "rel": "relative", "relative": "relative",
+    "abs": "absolute", "absolute": "absolute",
+    "prefix": "prefix", "name": "name",
+}
+
+
+def canon_path_style(value, default: str = "relative") -> str:
+    """Normalize a path-style spelling to its canonical long form.
+
+    ``rel`` -> ``relative``, ``abs`` -> ``absolute``; ``prefix`` and ``name``
+    pass through unchanged.  Anything unrecognized falls back to *default*.
+    """
+    return _PATH_STYLE_SYNONYMS.get(str(value).strip().lower(), default)
+
 # ── Error codes (closed enum) ───────────────────────────────────────
 ERR_INPUT_NOT_FOUND = "INPUT_NOT_FOUND"
 ERR_BAD_FILELIST    = "BAD_FILELIST"
