@@ -19,6 +19,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sections, `tree --flat`, `fanin`/`fanout` edges, `trace` loads); the nested
   `tree` JSON hierarchy is capped by total node count.
 
+### Changed
+
+- **Waiver wording clarified** — `--waive` matches a finding's **source-file
+  basename** (a glob), not the elaborated module/scope/instance name. The help
+  text, the `--waive` metavar (`MODULE` → `GLOB`), the JSON `waived_reason`
+  value (`"module waived"` → `"waived (file glob)"`), and the README all say so
+  now. Which findings get waived is unchanged. A true module/scope/instance
+  waiver is planned.
+
 ### Fixed
 
 - **Per-file compilation units** — each source file in a file list is now

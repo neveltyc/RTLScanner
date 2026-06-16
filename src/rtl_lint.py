@@ -608,12 +608,16 @@ def validate_rule_tokens(tokens, eng, *, flag):
     return notes
 
 
-# ── Waive (module-name globs, file-basename heuristic) ───────────────
-def _file_module_name(finding):
-    """Heuristic: a finding's module is the file's basename without extension.
+# ── Waive (globs matched against each finding's source-file basename) ──
+def _finding_file_stem(finding):
+    """The finding's source-file basename without its extension.
 
+    Waivers match against this *file name*, not the elaborated module or scope.
     Real RTL projects overwhelmingly follow one-module-per-file with matching
-    names; this avoids dragging a symbol-table lookup into the lint loop.
+    names, so a file-basename glob is usually equivalent to a module glob in
+    practice — but a multi-module file (or a file whose name differs from its
+    module) is matched by file, not by module. (A true module/scope/instance
+    waiver is planned; see CHANGELOG.)
     """
     if not finding.file:
         return ""
@@ -623,8 +627,8 @@ def _file_module_name(finding):
 def waive_matches(finding, waive_globs):
     if not waive_globs:
         return False
-    mod = _file_module_name(finding)
-    return any(fnmatch.fnmatch(mod, g) for g in waive_globs)
+    stem = _finding_file_stem(finding)
+    return any(fnmatch.fnmatch(stem, g) for g in waive_globs)
 
 
 # ── Severity application ─────────────────────────────────────────────
@@ -675,7 +679,7 @@ def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
             waived.append(f)
             continue
         if waive_matches(f, waive_globs):
-            f.waived_reason = "module waived"
+            f.waived_reason = "waived (file glob)"
             waived.append(f)
             continue
         # Per-rule severity override (from [lint.severity])
@@ -774,9 +778,9 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
     sc = p.add_argument_group("scope")
     sc.add_argument("--waive", action=agent_json.CommaListAction, default=[],
-                    metavar="MODULE",
-                    help="Suppress findings in these modules (file basename "
-                         "glob; e.g. 'dbg_*,third_party_*').")
+                    metavar="GLOB",
+                    help="Suppress findings whose source-file basename matches "
+                         "these globs (e.g. 'dbg_*,third_party_*').")
 
     sv = p.add_argument_group("severity & exit code")
     sv.add_argument("--strict", action="store_true",
