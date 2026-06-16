@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.2.0"
 
 # Default cap on the number of rows/items emitted per list, so a query against a
 # large design stays agent-friendly instead of dumping thousands of entries.
