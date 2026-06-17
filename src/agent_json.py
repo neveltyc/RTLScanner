@@ -218,6 +218,12 @@ def add_input_args(p: argparse.ArgumentParser) -> None:
     g.add_argument("--exclude", action=CommaListAction, default=[],
                    metavar="GLOB",
                    help="Exclude paths matching glob (comma-list or repeat)")
+    g.add_argument("--single-unit", action="store_true",
+                   help="Compile the whole filelist as ONE compilation unit "
+                        "(legacy / slang --single-unit): $unit-scoped typedefs "
+                        "and `defines from an earlier file stay visible to later "
+                        "files. Default: each file is its own unit "
+                        "(slang-driver / VCS / Verilator behavior).")
 
 
 def add_output_args(p: argparse.ArgumentParser) -> None:

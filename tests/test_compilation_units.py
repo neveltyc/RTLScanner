@@ -125,6 +125,20 @@ class CompilationUnitIsolationTests(unittest.TestCase):
             errs, [],
             f"cross-file package import / instantiation should resolve; got {errs}")
 
+    def test_single_unit_lets_macro_leak(self):
+        """--single-unit restores legacy behavior: a.sv's `define reaches b.sv.
+
+        The inverse of test_macro_does_not_leak_across_files: with the escape
+        hatch the whole file list is one compilation unit again, so the macro
+        defined in a.sv satisfies `SECRET_WIDTH in b.sv and the design lints
+        clean -- proving the flag genuinely toggles the compilation-unit model.
+        """
+        env = run_lint(self.tmp, "-f", "files.f", "--single-unit")
+        self.assertEqual(
+            _errors_in(env, "b.sv"), [],
+            "with --single-unit, a.sv's `define should leak into b.sv")
+        self.assertEqual(_errors_in(env, "a.sv"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

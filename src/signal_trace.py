@@ -1674,7 +1674,7 @@ def _prepare(args, env, *, need_signal=False):
     compilation, auto-detect scope, normalize dotted -s forms, and split off
     a trailing bit-select.  Returns (tracer, scope, signal, bit_range);
     raises CliError on any input/compile/scope failure."""
-    prepared = rtl_cli.prepare_compilation(args, human_error_rc=1)
+    prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
     tracer = SignalTracer(prepared.comp)
     scope = rtl_cli.resolve_scope(
         args.scope,
