@@ -40,11 +40,14 @@ from rtl_slang import (
     analyzed_procedures,
     canonical_twin,
     canonical_view,
+    expr_reads_with_bounds,
     expr_symbols,
     expr_refs_symbol,
     find_signal,
+    full_bounds,
     is_data_symbol,
     iter_instances,
+    lsp_bounds,
     procedure_label,
     procedure_reads_symbol,
     resolve_scope,
@@ -162,6 +165,8 @@ class LoadInfo:
     scope_path: str = ""
     file: str = ""
     line: int = 0
+    bits: str = ""          # "[3]" / "[7:4]" when the load reads a sub-range
+    bounds: Optional[tuple] = None  # normalized (lo, hi) bit offsets read
 
     def to_dict(self):
         d = dict(kind=self.kind, description=self.description,
@@ -171,6 +176,8 @@ class LoadInfo:
         if self.port_name:
             d['port'] = self.port_name
             d['direction'] = self.port_direction
+        if self.bits:
+            d['bits'] = self.bits
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
@@ -216,11 +223,9 @@ class TraceResult:
         if self.extra_drivers:
             d['extra_drivers'] = [x.to_dict() for x in self.extra_drivers]
             d['multi_driver_warning'] = self.multi_driver
-        # A bit-select is a driver-origin query; loads-by-bit is phase 2.
-        if self.bit_range is None:
-            loads = self.filtered_loads(load_filter)
-            d['loads'] = [ld.to_dict() for ld in loads]
-            d['load_count'] = len(loads)
+        loads = self.filtered_loads(load_filter)
+        d['loads'] = [ld.to_dict() for ld in loads]
+        d['load_count'] = len(loads)
         return d
 
     def _driver_line(self, d):
@@ -255,10 +260,7 @@ class TraceResult:
             for d in drivers:
                 print(self._driver_line(d))
 
-        # ── Loads (skipped for a bit-select: it is a driver-origin query) ──
-        if self.bit_range is not None:
-            print()
-            return
+        # ── Loads (narrowed to the queried bits on a bit-select) ──
         loads = self.filtered_loads(load_filter)
         shown, total, truncated = agent_json.clip(loads, limit)
         hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({total})"
@@ -283,7 +285,8 @@ class TraceResult:
                     print(f"    {C.dim(GLYPH_HR + GLYPH_HR + ' ' + lbl + ' (' + str(len(kind_loads)) + ') ' + GLYPH_HR + GLYPH_HR)}")
                 for ld in kind_loads:
                     loc = f"  {C.dim(ld.file + ':' + str(ld.line))}" if ld.file else ""
-                    print(f"    \u2192 {ld.description}{loc}")
+                    bits = f" {C.yellow(self.signal_name + ld.bits)}" if ld.bits else ""
+                    print(f"    \u2192 {ld.description}{bits}{loc}")
             if truncated:
                 print(f"    {C.dim(agent_json.truncation_note(len(shown), total, 'loads'))}")
 
@@ -309,14 +312,36 @@ class FlowEdge:
     # connections are never clocked.  Deliberately NOT part of ``key()`` so the
     # demand-driven / whole-graph parity (test_flow_lazy) is unaffected.
     clocked: bool = False
+    # Bit-level dataflow (slang-netlist parity).  source_bits / target_bits are
+    # the (lo, hi) sub-ranges this edge reads / drives, or None for the whole
+    # signal — so whole-signal edges serialize exactly as before (additive).
+    # bit_offset is the affine map of a copy-like edge (target_bit = source_bit
+    # + bit_offset), which lets fanin/fanout answer "dout[5] ← which bit"; it is
+    # None when the relationship is many-to-many (arithmetic / reduction).
+    # Deliberately NOT part of key() so the parity invariant is preserved.
+    source_bits: Optional[tuple] = None
+    target_bits: Optional[tuple] = None
+    bit_offset: Optional[int] = None
 
     def key(self):
         return (self.source, self.target, self.kind, self.file, self.line)
+
+    @property
+    def source_label(self):
+        return self.source + (bit_label(self.source_bits) if self.source_bits else "")
+
+    @property
+    def target_label(self):
+        return self.target + (bit_label(self.target_bits) if self.target_bits else "")
 
     def to_dict(self, depth=None):
         d = dict(source=self.source, target=self.target, kind=self.kind,
                  description=self.description,
                  source_type=self.source_type, target_type=self.target_type)
+        if self.source_bits is not None:
+            d['source_bits'] = bit_label(self.source_bits)
+        if self.target_bits is not None:
+            d['target_bits'] = bit_label(self.target_bits)
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
@@ -339,6 +364,7 @@ class FlowResult:
     start: str
     edges: list = field(default_factory=list)
     max_depth: int = 0
+    bit_range: Optional[tuple] = None   # (lo, hi) when a bit-select was queried
 
     @property
     def nodes(self):
@@ -352,7 +378,7 @@ class FlowResult:
         return out
 
     def to_dict(self):
-        return dict(
+        d = dict(
             mode=self.mode, signal=self.signal_name, type=self.signal_type,
             kind=self.signal_kind, scope=self.scope_path,
             module=self.scope_module, start=self.start,
@@ -361,11 +387,15 @@ class FlowResult:
             edges=[edge.to_dict(depth) for edge, depth in self.edges],
             edge_count=len(self.edges),
         )
+        if self.bit_range is not None:
+            d['bit_select'] = bit_label(self.bit_range)
+        return d
 
     def pretty_print(self, limit=0):
         C = Color
         title = "FANIN" if self.mode == "fanin" else "FANOUT"
-        print(f"Signal: {C.bold(self.signal_name)}  {C.dim(self.signal_type)}")
+        name = self.signal_name + (bit_label(self.bit_range) if self.bit_range else "")
+        print(f"Signal: {C.bold(name)}  {C.dim(self.signal_type)}")
         print(f"Scope:  {C.cyan(self.scope_path)}  [{C.yellow(self.scope_module)}]")
         print(f"Mode:   {C.green(title)}  {C.dim('depth <= ' + str(self.max_depth))}")
         print("\u2500" * 60)
@@ -379,8 +409,8 @@ class FlowResult:
                 cur_depth = depth
                 print(f"\n  {C.dim('depth ' + str(depth))}")
             loc = f"  {C.dim(edge.file + ':' + str(edge.line))}" if edge.file else ""
-            print(f"    {C.cyan(edge.source)} → "
-                  f"{C.cyan(edge.target)}  "
+            print(f"    {C.cyan(edge.source_label)} → "
+                  f"{C.cyan(edge.target_label)}  "
                   f"{C.yellow(edge.kind)} {C.dim(edge.description)}{loc}")
         if truncated:
             print(f"\n  {C.dim(agent_json.truncation_note(len(shown), total, 'edges'))}")
@@ -710,6 +740,41 @@ class SignalTracer:
 
     # ── load analysis ────────────────────────────────────────────────
 
+    def _read_bits_of(self, expr, symbol):
+        """The bit range of `symbol` read within `expr`, or None (whole)."""
+        if expr is None:
+            return None
+        key = symbol_key(symbol)
+        for sym, bounds in expr_reads_with_bounds(expr):
+            if symbol_key(sym) == key:
+                return bounds
+        return None
+
+    @staticmethod
+    def _proc_read_bits(proc, proc_symbol):
+        """Span of `proc_symbol`'s read ranges in a procedure, or None."""
+        key = symbol_key(proc_symbol)
+        spans = []
+        for r in (getattr(proc, "readSet", None) or []):
+            try:
+                if symbol_key(r.symbol) == key:
+                    b = r.bitRange
+                    spans.append((int(b[0]), int(b[1])))
+            except Exception:
+                pass
+        if not spans:
+            return None
+        return (min(s[0] for s in spans), max(s[1] for s in spans))
+
+    def _load_bits(self, symbol, bounds):
+        """(display_label, bounds) for a load reading `symbol` over `bounds`.
+        A non-simple type is kept conservatively (no range), so a bit-select
+        never drops a reader whose coordinates we can't trust."""
+        if bounds is None or not self._is_simple_vector(symbol):
+            return "", None
+        norm = self._norm_bits(symbol, bounds)
+        return (bit_label(norm) if norm else ""), bounds
+
     def _analyze_loads(self, symbol, body, scope_inst):
         C = Color
         loads = []
@@ -738,11 +803,14 @@ class SignalTracer:
                     dl = "input" if port.direction == ast.ArgumentDirection.In else "inout"
                     f, ln = self._loc_sym(inst)
                     desc = f"{C.cyan(inst_name)}.{C.yellow(port.name)} ({C.dim(dl)})"
+                    bits, bounds = self._load_bits(
+                        symbol, self._read_bits_of(expr, symbol))
                     loads.append(LoadInfo(
                         kind="port_connection", description=desc,
                         instance_name=inst_name, port_name=port.name,
                         port_direction=port.direction.name,
-                        scope_path=inst_path, file=f, line=ln))
+                        scope_path=inst_path, file=f, line=ln,
+                        bits=bits, bounds=bounds))
                 except Exception:
                     continue
 
@@ -763,10 +831,12 @@ class SignalTracer:
                 lhs_n = lhs.symbol.name if lhs and hasattr(lhs, 'symbol') else "\u2026"
                 f, ln = self._loc_sym(ca)
                 desc = f"{C.yellow('assign')} \u2192 {C.cyan(lhs_n)}"
+                bits, bounds = self._load_bits(
+                    symbol, self._read_bits_of(rhs, symbol))
                 loads.append(LoadInfo(
                     kind="continuous_assign", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
-                    file=f, line=ln))
+                    file=f, line=ln, bits=bits, bounds=bounds))
 
         # 3. Procedural blocks (readSet excludes assignment LHS symbols).
         # Analyzed procedures live on the canonical body; read-set membership
@@ -784,10 +854,12 @@ class SignalTracer:
                     continue
                 f, ln = self._loc_sym(proc.analyzedSymbol)
                 desc = f"{C.yellow(procedure_label(proc))}"
+                bits, bounds = self._load_bits(
+                    symbol, self._proc_read_bits(proc, proc_symbol))
                 loads.append(LoadInfo(
                     kind="procedural", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
-                    file=f, line=ln))
+                    file=f, line=ln, bits=bits, bounds=bounds))
             except Exception:
                 continue
         return loads
@@ -803,11 +875,85 @@ class SignalTracer:
         except Exception:
             return ""
 
+    @staticmethod
+    def _is_simple_vector(sym):
+        """True for a scalar or a little-endian ``[N:0]`` packed bit vector — the
+        types where a declared bit index equals slang's internal LSB0 offset, so
+        our bit arithmetic and slang's bounds agree.  Big-endian ``[0:N]`` vectors
+        and multi-bit-element packed arrays (``[3:0][7:0]``) are excluded: their
+        bits are reported conservatively (whole signal) rather than risk a
+        declared-vs-internal coordinate mismatch."""
+        try:
+            t = sym.type
+            if t.isScalar:
+                return True
+            return bool(t.isPackedArray and t.elementType.bitWidth == 1
+                        and t.range.isDescending)
+        except Exception:
+            return False
+
+    def _to_internal(self, sym, rng):
+        """Map a user-written declared bit range to slang's internal LSB0
+        coordinates (identity for little-endian) so a `-s sig[bits]` query lines
+        up with the driver/read bounds the analysis reports.  Best-effort: a
+        non-vector or unfoldable type is returned unchanged."""
+        if rng is None:
+            return None
+        try:
+            t = sym.type
+            if not (t.isPackedArray and t.elementType.bitWidth == 1):
+                return rng
+            r = t.range
+            a, b = r.translateIndex(int(rng[0])), r.translateIndex(int(rng[1]))
+            return (min(a, b), max(a, b))
+        except Exception:
+            return rng
+
+    def _norm_bits(self, sym, bounds):
+        """Normalize an edge bit range for display/propagation: None for a range
+        that spans the whole signal (so whole-signal edges stay byte-for-byte
+        identical — additive output), and None for a type whose declared and
+        internal bit numbering may differ (big-endian / packed array), which is
+        then handled conservatively at signal granularity."""
+        if bounds is None or not self._is_simple_vector(sym):
+            return None
+        full = self._signal_full_bounds(sym)
+        b = (int(bounds[0]), int(bounds[1]))
+        return None if full is not None and b == full else b
+
+    def _edge_bits(self, src, dst, sb, db, off):
+        """Normalize an edge's (source_bits, target_bits, bit_offset).
+
+        Bits and offset are trusted only when BOTH endpoints are simple vectors
+        (declared == internal LSB0).  If either side is a big-endian vector or a
+        multi-bit-element packed array, the whole edge degrades to whole→whole
+        (None, None, None): a wrong source width would otherwise mis-clamp even
+        a simple target's bits.  Conservative and never mis-numbered."""
+        if not (self._is_simple_vector(src) and self._is_simple_vector(dst)):
+            return (None, None, None)
+        return (self._norm_bits(src, sb), self._norm_bits(dst, db), off)
+
+    def _copy_bits(self, src_sym, src_bits, dst_sym, dst_bits):
+        """Bit correspondence for a positional copy (assign / select / trunc /
+        zero-extend): LSB-aligned overlap + offset.  Returns
+        (source_bits, target_bits, bit_offset)."""
+        s = src_bits if src_bits is not None else self._signal_full_bounds(src_sym)
+        d = dst_bits if dst_bits is not None else self._signal_full_bounds(dst_sym)
+        if s is None or d is None:
+            return (src_bits, dst_bits, None)
+        n = min(s[1] - s[0] + 1, d[1] - d[0] + 1)   # overlap width
+        sb = (s[0], s[0] + n - 1)
+        db = (d[0], d[0] + n - 1)
+        return (sb, db, db[0] - sb[0])               # target_bit = source_bit + off
+
     def _make_flow_edge(self, source, target, kind, description,
-                        loc_sym=None):
+                        loc_sym=None, source_bits=None, target_bits=None,
+                        bit_offset=None):
         if source is None or target is None:
             return None
         f, ln = self._loc_sym(loc_sym) if loc_sym is not None else ("", 0)
+        sb, db, off = self._edge_bits(source, target, source_bits,
+                                      target_bits, bit_offset)
         return FlowEdge(
             source=self._sym_path(source),
             target=self._sym_path(target),
@@ -817,6 +963,9 @@ class SignalTracer:
             description=description,
             file=f,
             line=ln,
+            source_bits=sb,
+            target_bits=db,
+            bit_offset=off,
         )
 
     def _port_symbol(self, port):
@@ -872,64 +1021,259 @@ class SignalTracer:
                     pairs = self._proc_statement_deps(proc, drivers)
                 else:
                     # A single continuous assign: every read feeds the LHS.
-                    pairs = [(src, dst) for src in reads for dst in drivers]
+                    pairs = self._continuous_assign_pairs(proc)
 
-                for src, dst in pairs:
+                for src, dst, sbits, dbits, off in pairs:
+                    sb, db, o = self._edge_bits(src, dst, sbits, dbits, off)
                     templates.append((
                         self._sym_path(src), self._sym_path(dst),
                         self._sym_type(src), self._sym_type(dst),
-                        kind, desc, f, ln, clocked))
+                        kind, desc, f, ln, clocked, sb, db, o))
             except Exception:
                 continue
         self._proc_edge_cache[key] = templates
         return templates
 
+    @staticmethod
+    def _driver_bounds(d):
+        try:
+            b = d.bounds
+            return (int(b[0]), int(b[1]))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _read_bounds(r):
+        try:
+            b = r.bitRange
+            return (int(b[0]), int(b[1]))
+        except Exception:
+            return None
+
+    # Binary operators that preserve bit position (result bit i depends only on
+    # bit i of each operand) — so a source bit maps straight through.  Arithmetic
+    # (carry mixes bits), shifts by a dynamic amount, comparisons, and reductions
+    # are *not* here and fall back to the conservative whole-signal contribution.
+    _BITWISE_BIN = frozenset({"BinaryAnd", "BinaryOr", "BinaryXor", "BinaryXnor"})
+
+    @staticmethod
+    def _expr_width(expr):
+        try:
+            return int(expr.type.bitWidth)
+        except Exception:
+            return 0
+
+    def _seg(self, src_sym, src_bits, dst_base):
+        """One positional-copy segment: src bits (LSB-aligned, clamped) drive
+        the dst bits ``dst_base``.  Returns (src_sym, src_bits, dst_bits, off)."""
+        sb, db, off = self._copy_bits(src_sym, src_bits, None, dst_base)
+        return (src_sym, sb, db, off)
+
+    def _mix(self, dst_base, expr):
+        """Conservative contribution: every read of `expr` feeds the whole
+        ``dst_base`` with no positional map (offset None) — for arithmetic,
+        reductions, dynamic indices, and anything not structurally understood."""
+        return [(s, sb, dst_base, None)
+                for (s, sb) in expr_reads_with_bounds(expr)
+                if is_data_symbol(s)]
+
+    def _map_concat(self, dst_base, operands, depth):
+        """Map a concatenation onto ``dst_base``.  The first operand is the MSB;
+        assignment aligns by LSB (SV truncation drops the high bits), so place
+        each operand by its bit position within the concat, lowest first, and
+        drop any that fall above ``dst_base`` (truncated away)."""
+        dlo, dhi = dst_base
+        widths = [self._expr_width(op) for op in operands]
+        out = []
+        rpos = sum(widths)          # exclusive top of the next operand (RHS coords)
+        for op, w in zip(operands, widths):
+            if w <= 0:
+                return out          # can't place precisely; safety net covers it
+            rlo, rhi = rpos - w, rpos - 1
+            rpos = rlo
+            d_lo, d_hi = dlo + rlo, dlo + rhi
+            if d_lo > dhi or d_hi < dlo:
+                continue            # operand truncated away
+            out += self._map_rhs((max(d_lo, dlo), min(d_hi, dhi)), op, depth + 1)
+        return out
+
+    def _map_rhs(self, dst_base, rhs, depth=0):
+        """Structural bit-flow: how ``rhs`` drives the dst bits ``dst_base``.
+
+        Returns [(src_sym, src_bits, dst_bits, offset)] — offset set for a
+        positional copy, None for a many-to-many (whole-signal) contribution.
+        Precise for value accesses, concatenation, mux (``?:``), and bitwise
+        and/or/xor/not; conservative (whole source) for arithmetic, reductions,
+        shifts, and dynamic indices.  ``dst_base`` is a concrete (lo, hi)."""
+        if rhs is None or dst_base is None or depth > 64:
+            return []
+        tn = type(rhs).__name__
+        if tn == "ConversionExpression":
+            return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
+        # A single value access (named / static select) is a positional copy.
+        sym, sbits = lsp_bounds(rhs)
+        if sym is not None and is_data_symbol(sym) and len(expr_symbols(rhs)) == 1:
+            return [self._seg(sym, sbits, dst_base)]
+        if tn == "ConcatenationExpression":
+            return self._map_concat(dst_base, list(rhs.operands), depth)
+        if tn == "ConditionalExpression":
+            out = []
+            for arm in (getattr(rhs, "left", None), getattr(rhs, "right", None)):
+                out += self._map_rhs(dst_base, arm, depth + 1)
+            for cond in (getattr(rhs, "conditions", None) or []):
+                for s in expr_symbols(getattr(cond, "expr", cond)):
+                    if is_data_symbol(s):
+                        out.append((s, None, dst_base, None))   # predicate: whole
+            return out
+        if tn == "BinaryExpression":
+            if getattr(getattr(rhs, "op", None), "name", "") in self._BITWISE_BIN:
+                return (self._map_rhs(dst_base, getattr(rhs, "left", None), depth + 1)
+                        + self._map_rhs(dst_base, getattr(rhs, "right", None), depth + 1))
+            return self._mix(dst_base, rhs)
+        if tn == "UnaryExpression":
+            if getattr(getattr(rhs, "op", None), "name", "") == "BitwiseNot":
+                return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
+            return self._mix(dst_base, rhs)
+        return self._mix(dst_base, rhs)
+
+    def _segments_for(self, dst_base, rhs, allowed_syms):
+        """Per-source segments of ``rhs`` driving ``dst_base``, restricted to the
+        symbols in ``allowed_syms``.  Any allowed symbol not placed precisely is
+        added as a whole-signal contributor, so the emitted source set is exactly
+        ``allowed_syms`` — preserving the symbol-level connectivity (parity)."""
+        allowed = {symbol_key(s): s for s in allowed_syms}
+        segs, covered = [], set()
+        for (sym, sb, db, off) in self._map_rhs(dst_base, rhs):
+            k = symbol_key(sym)
+            if k in allowed:
+                segs.append((sym, sb, db, off))
+                covered.add(k)
+        for k, sym in allowed.items():
+            if k not in covered:
+                segs.append((sym, None, dst_base, None))
+        return segs
+
+    def _assignment_bit_pairs(self, node):
+        """Bit-aware (src, dst, src_bits, dst_bits, offset) for one assignment.
+
+        Targets are ``expr_symbols(left)`` and sources are exactly
+        ``expr_symbols(right)`` — identical connectivity to the old symbol-only
+        walk (parity) — with bit ranges and a copy offset attached via the
+        structural analyzer.  A single target gets full structural precision
+        (concat / mux / bitwise / select); a multi-target LHS concat is kept
+        conservative per source read.
+        """
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        tgts = expr_symbols(left)
+        if not tgts:
+            return []
+        reads = expr_symbols(right)
+        if len(tgts) == 1:
+            dst = tgts[0]
+            dst_base = lsp_bounds(left)[1] or self._signal_full_bounds(dst)
+            if dst_base is None:
+                return [(s, dst, sb, None, None)
+                        for (s, sb) in expr_reads_with_bounds(right)]
+            return [(s, dst, sb, db, off)
+                    for (s, sb, db, off) in self._segments_for(dst_base, right, reads)]
+        out = []
+        for src, sb in expr_reads_with_bounds(right):
+            for dst in tgts:
+                out.append((src, dst, sb, None, None))
+        return out
+
+    def _collapse_pairs(self, pairs):
+        """Collapse (src, dst, ...) tuples sharing a (src, dst): a symbol pair
+        carrying two different bit segments has no single-valued bit map, so it
+        downgrades to whole-signal (None, None, None) — conservative, and
+        reachable for any bit-select.  This mirrors the edge-build's key dedup
+        (which keeps one edge per (src,dst,kind,file,line)), so a multi-segment
+        assign like ``o = {a[3:0], a[7:4]}`` stays reachable from every o bit."""
+        out = {}
+        for (src, dst, sb, db, off) in pairs:
+            k = (self._sym_path(src), self._sym_path(dst))
+            if k in out:
+                s, d, *_ = out[k]
+                out[k] = (s, d, None, None, None)
+            else:
+                out[k] = (src, dst, sb, db, off)
+        return list(out.values())
+
+    def _continuous_assign_pairs(self, proc):
+        """Bit-aware (src, dst, src_bits, dst_bits, offset) for one continuous
+        assign.  A single-driver assign gets full structural precision from its
+        expression (over the same readSet symbols, so parity holds); a
+        multi-driver LHS concat keeps the conservative reads x drivers map."""
+        drv = [(d.symbol, self._driver_bounds(d)) for d in (proc.drivers or [])
+               if is_data_symbol(d.symbol)]
+        rds = [(r.symbol, self._read_bounds(r)) for r in (proc.readSet or [])
+               if is_data_symbol(r.symbol)]
+        asgn = getattr(proc.analyzedSymbol, "assignment", None)
+        if len(drv) == 1 and asgn is not None:
+            dsym, dbnd = drv[0]
+            dst_base = dbnd or self._signal_full_bounds(dsym)
+            if dst_base is not None:
+                allowed = [s for (s, _b) in rds]
+                segs = self._segments_for(dst_base, getattr(asgn, "right", None),
+                                          allowed)
+                return self._collapse_pairs(
+                    [(s, dsym, sb, db, off) for (s, sb, db, off) in segs])
+        out = []
+        for dsym, dbnd in drv:
+            for rsym, rbnd in rds:
+                out.append((rsym, dsym, rbnd, dbnd, None))
+        return out
+
     def _proc_statement_deps(self, proc, drivers):
-        """Per-statement LHS<-RHS data deps + conservative control reads for
-        one procedural block.  Returns unique (src_sym, dst_sym) pairs.
+        """Per-statement LHS<-RHS bit-aware deps + conservative control reads
+        for one procedural block.  Returns unique
+        (src_sym, dst_sym, src_bits, dst_bits, bit_offset) tuples.
 
         Data is precise (an assignment's RHS feeds only its own LHS).  Control
         conditions (if / case / loop) are attributed to every driver in the
         block — a small, never-under-reporting over-approximation that avoids
-        a per-branch scoping walk.
+        a per-branch scoping walk.  A symbol pair driven by more than one
+        statement/condition loses its single-valued bit map (falls back to the
+        whole signal), which never under-reports.
         """
-        data_pairs = []   # [(lhs_syms, rhs_syms)]
+        assigns = []      # [AssignmentExpression]
         control = []      # control-condition reads
 
         def collect(node):
             if type(node).__name__ == "AssignmentExpression":
-                try:
-                    data_pairs.append((expr_symbols(node.left),
-                                       expr_symbols(node.right)))
-                except Exception:
-                    pass
+                assigns.append(node)
             else:
                 control.extend(self._statement_control_reads(node))
 
         try:
             proc.analyzedSymbol.body.visit(f=collect)
         except Exception:
-            data_pairs = []
+            assigns = []
 
-        if not data_pairs:
+        if not assigns:
             # Degenerate walk; fall back to the coarse reads x drivers so we
             # never silently under-report.
             reads = [r.symbol for r in (proc.readSet or [])
                      if is_data_symbol(r.symbol)]
-            return [(s, d) for s in reads for d in drivers]
+            return [(s, d, None, None, None) for s in reads for d in drivers]
 
         control = [s for s in control if is_data_symbol(s)]
-        pairs = {}        # (src_path, dst_path) -> (src_sym, dst_sym)
+        pairs = {}        # (src_path, dst_path) -> 5-tuple
 
-        def add(src, dst):
-            if is_data_symbol(src) and is_data_symbol(dst):
-                pairs.setdefault((self._sym_path(src), self._sym_path(dst)),
-                                 (src, dst))
+        def add(src, dst, sb=None, db=None, off=None):
+            if not (is_data_symbol(src) and is_data_symbol(dst)):
+                return
+            k = (self._sym_path(src), self._sym_path(dst))
+            if k in pairs:
+                s, d, *_ = pairs[k]
+                pairs[k] = (s, d, None, None, None)
+            else:
+                pairs[k] = (src, dst, sb, db, off)
 
-        for lhs_syms, rhs_syms in data_pairs:
-            for lhs in lhs_syms:
-                for rhs in rhs_syms:
-                    add(rhs, lhs)
+        for node in assigns:
+            for src, dst, sb, db, off in self._assignment_bit_pairs(node):
+                add(src, dst, sb, db, off)
         for dst in drivers:
             for cr in control:
                 add(cr, dst)
@@ -983,8 +1327,9 @@ class SignalTracer:
         edges = [
             FlowEdge(source=view.remap(src), target=view.remap(dst),
                      source_type=st, target_type=dt, kind=kind,
-                     description=desc, file=f, line=ln, clocked=clk)
-            for (src, dst, st, dt, kind, desc, f, ln, clk)
+                     description=desc, file=f, line=ln, clocked=clk,
+                     source_bits=sb, target_bits=tb, bit_offset=off)
+            for (src, dst, st, dt, kind, desc, f, ln, clk, sb, tb, off)
             in self._proc_edge_templates(view)
         ]
         self._inst_proc_cache[key] = edges
@@ -1015,22 +1360,47 @@ class SignalTracer:
                 direction = port.direction
                 if direction in (ast.ArgumentDirection.In,
                                  ast.ArgumentDirection.InOut):
-                    for src in expr_symbols(expr):
-                        if not is_data_symbol(src):
-                            continue
+                    # The connection expression (parent scope) feeds the port
+                    # internal.  A single (possibly sliced) net is a positional
+                    # copy into the port; otherwise each read feeds it whole.
+                    rsym, rbits = lsp_bounds(expr)
+                    if (rsym is not None and is_data_symbol(rsym)
+                            and len(expr_symbols(expr)) == 1):
+                        sb, db, off = self._copy_bits(rsym, rbits, port_sym, None)
                         e = self._make_flow_edge(
-                            src, port_sym, "port_connection",
-                            f"{inst.name}.{port.name} input", inst)
+                            rsym, port_sym, "port_connection",
+                            f"{inst.name}.{port.name} input", inst,
+                            source_bits=sb, target_bits=db, bit_offset=off)
                         if e is not None:
                             edges.append(e)
+                    else:
+                        for src, sb in expr_reads_with_bounds(expr):
+                            if not is_data_symbol(src):
+                                continue
+                            e = self._make_flow_edge(
+                                src, port_sym, "port_connection",
+                                f"{inst.name}.{port.name} input", inst,
+                                source_bits=sb)
+                            if e is not None:
+                                edges.append(e)
                 if direction in (ast.ArgumentDirection.Out,
                                  ast.ArgumentDirection.InOut):
-                    for dst in self._assignment_left_symbols(expr):
+                    lval = getattr(expr, 'left', None) or expr
+                    dsts = expr_symbols(lval)
+                    single = (len(dsts) == 1 and is_data_symbol(dsts[0]))
+                    dbits = lsp_bounds(lval)[1] if single else None
+                    for dst in dsts:
                         if not is_data_symbol(dst):
                             continue
+                        if single:
+                            sb, db, off = self._copy_bits(
+                                port_sym, None, dst, dbits)
+                        else:
+                            sb = db = off = None
                         e = self._make_flow_edge(
                             port_sym, dst, "port_connection",
-                            f"{inst.name}.{port.name} output", inst)
+                            f"{inst.name}.{port.name} output", inst,
+                            source_bits=sb, target_bits=db, bit_offset=off)
                         if e is not None:
                             edges.append(e)
             except Exception:
@@ -1313,40 +1683,83 @@ class SignalTracer:
                 ordered.append(edge)
         return ordered
 
-    def flow(self, signal_name, scope_path, mode, max_depth=4):
+    # Sentinel: a concrete query range that an edge does not touch at all.
+    _NO_OVERLAP = object()
+
+    def _map_range(self, edge, rng, mode):
+        """Carry an interesting bit range across one edge to the far node.
+
+        ``rng is None`` means "the whole signal" — a non-bit-select query.  It
+        stays None (never narrows), so a whole-signal traversal visits exactly
+        the same edges, in the same order, as the symbol-level graph: the
+        demand-driven / whole-graph parity (test_flow_lazy) is preserved.
+
+        A concrete (lo, hi) range is intersected with the bits this edge touches
+        on the near side and mapped to the far side: precisely via bit_offset
+        for a copy-like edge, else falling back to the bits the edge reads /
+        drives on the far side (None = whole, the conservative answer for
+        arithmetic).  Returns _NO_OVERLAP when a concrete range misses the edge.
+        """
+        if rng is None:
+            return None
+        near = edge.target_bits if mode == "fanin" else edge.source_bits
+        if near is not None:
+            lo, hi = max(rng[0], near[0]), min(rng[1], near[1])
+            if lo > hi:
+                return self._NO_OVERLAP
+            portion = (lo, hi)
+        else:
+            portion = rng
+        if edge.bit_offset is not None:
+            off = -edge.bit_offset if mode == "fanin" else edge.bit_offset
+            return (portion[0] + off, portion[1] + off)
+        # Non-copy (arithmetic / reduction): fall to the far-side bits.
+        return edge.source_bits if mode == "fanin" else edge.target_bits
+
+    def flow(self, signal_name, scope_path, mode, max_depth=4, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
+        self._check_bit_range(sym, signal_name, bit_range)
 
         start = self._sym_path(sym)
+        # Match the query to slang's internal bit numbering (identity for
+        # little-endian); the declared bit_range is kept on FlowResult for display.
+        sel = self._to_internal(sym, bit_range)
 
-        # Demand-driven BFS: expand a node's incident edges only when the
-        # traversal reaches it, so a shallow query on a large design pays for
-        # the touched neighborhood instead of building the whole flow graph.
+        # Demand-driven, bit-aware BFS: the frontier carries (node, range) where
+        # range is the bits still of interest (None = whole signal).  An edge is
+        # followed only when its bits overlap range, and range is mapped across
+        # the edge to the next node — so `-s dout[5]` converges to the exact
+        # driving bit.  A whole-signal query keeps range None throughout and
+        # reproduces the symbol-level traversal edge-for-edge.
         traversed = []
         seen_edges = set()
-        seen_nodes = {start}
-        frontier = [start]
+        seen_nodes = {(start, sel)}
+        frontier = [(start, sel)]
         depth = 0
         max_depth = max(0, int(max_depth))
         while frontier and depth < max_depth:
             depth += 1
             next_frontier = []
-            for node in frontier:
+            for node, rng in frontier:
                 for edge in self._incident_edges(node, mode):
+                    nxt_rng = self._map_range(edge, rng, mode)
+                    if nxt_rng is self._NO_OVERLAP:
+                        continue
                     ekey = edge.key()
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
                         traversed.append((edge, depth))
                     nxt = edge.source if mode == "fanin" else edge.target
-                    if nxt not in seen_nodes:
-                        seen_nodes.add(nxt)
-                        next_frontier.append(nxt)
+                    if (nxt, nxt_rng) not in seen_nodes:
+                        seen_nodes.add((nxt, nxt_rng))
+                        next_frontier.append((nxt, nxt_rng))
             frontier = next_frontier
 
         return FlowResult(
             mode=mode, signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
             scope_module=inst.body.name, start=start,
-            edges=traversed, max_depth=max_depth,
+            edges=traversed, max_depth=max_depth, bit_range=bit_range,
         )
 
     # ── clock / sequential classification ─────────────────────────────
@@ -1650,25 +2063,34 @@ class SignalTracer:
                 continue
         return paths
 
+    def _check_bit_range(self, sym, signal_name, bit_range):
+        """Reject a bit-select outside the signal's width (shared by trace and
+        fanin/fanout).  Declared indices run 0..width-1 for either endianness."""
+        if bit_range is None:
+            return
+        try:
+            width = int(sym.type.bitWidth)
+        except Exception:
+            width = None
+        if width and bit_range[1] >= width:
+            raise rtl_cli.CliError(
+                agent_json.ERR_SIGNAL_NOT_FOUND,
+                f"bit {bit_label(bit_range)} out of range for "
+                f"'{signal_name}' ({sym.type}, {width} bits)", 1)
+
     def trace(self, signal_name, scope_path, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
-
-        if bit_range is not None:
-            try:
-                width = int(sym.type.bitWidth)
-            except Exception:
-                width = None
-            if width and bit_range[1] >= width:
-                raise rtl_cli.CliError(
-                    agent_json.ERR_SIGNAL_NOT_FOUND,
-                    f"bit {bit_label(bit_range)} out of range for "
-                    f"'{signal_name}' ({sym.type}, {width} bits)", 1)
+        self._check_bit_range(sym, signal_name, bit_range)
 
         drivers = self._analyze_drivers(sym, inst)
+        loads = self._analyze_loads(sym, inst.body, inst)
         if bit_range is not None:
-            drivers = [d for d in drivers if bits_overlap(d.bounds, bit_range)]
-        # A bit-select is a driver-origin query: loads are phase 2.
-        loads = [] if bit_range is not None else self._analyze_loads(sym, inst.body, inst)
+            # Bit-select: narrow both the driver origin and the loads to the
+            # readers/writers that actually touch those bits.  Driver/read bounds
+            # are slang-internal, so match against the internal-coord query.
+            sel = self._to_internal(sym, bit_range)
+            drivers = [d for d in drivers if bits_overlap(d.bounds, sel)]
+            loads = [ld for ld in loads if bits_overlap(ld.bounds, sel)]
 
         r = TraceResult(
             signal_name=signal_name, signal_type=str(sym.type),
@@ -1811,13 +2233,7 @@ def _emit_flow_summary(env, r, mode, scope, signal):
 
 def run_flow(args, env, *, mode):
     tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
-    if bit_range is not None:
-        note = f"bit-select ignored for {mode}; using whole signal '{signal}'"
-        if env is not None:
-            env.add_diagnostic("note", message=note)
-        else:
-            print(f"note: {note}", file=sys.stderr)
-    r = tracer.flow(signal, scope, mode, args.depth)
+    r = tracer.flow(signal, scope, mode, args.depth, bit_range=bit_range)
     if getattr(args, 'summary', False):
         return _emit_flow_summary(env, r, mode, scope, signal)
     lim = agent_json.resolve_limit(args.limit)
@@ -1839,6 +2255,8 @@ def run_flow(args, env, *, mode):
             'start': rd['start'], 'nodes': nodes_shown, 'edges': edges_shown,
             'max_depth': rd['max_depth'],
         }
+        if 'bit_select' in rd:
+            data['bit_select'] = rd['bit_select']
         summary = {
             'mode': mode, 'results': 1,
             'nodes': nodes_total, 'edges': edges_total,

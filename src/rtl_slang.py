@@ -74,6 +74,179 @@ def expr_symbols(expr) -> list:
     return out
 
 
+# ── Bit-range (longest-static-prefix) extraction ─────────────────────
+#
+# slang-netlist resolves dataflow to the bit level: every dependency carries
+# the bit range it touches.  pyslang exposes the building blocks (selection
+# expressions + foldable constants) but no LSPUtilities binding, so we compute
+# the "longest static prefix" symbol and its constant bit range here.  These
+# live alongside expr_symbols (which stays symbol-only); callers that want bits
+# opt in, everything else is unaffected.
+
+def _const_int(expr):
+    """Fold an expression to a Python int, or None when not statically known."""
+    if expr is None:
+        return None
+    try:
+        c = expr.constant
+    except Exception:
+        c = None
+    if c is None:
+        return None
+    for attr in ("integer", "value"):
+        v = getattr(c, attr, None)
+        if v is not None:
+            try:
+                return int(v)
+            except Exception:
+                pass
+    try:
+        return int(c)
+    except Exception:
+        return None
+
+
+def full_bounds(sym):
+    """The whole-signal bit range (0, width-1) of a value symbol, or None."""
+    try:
+        w = int(sym.type.bitWidth)
+        if w > 0:
+            return (0, w - 1)
+    except Exception:
+        pass
+    return None
+
+
+def _range_select_bounds(expr, base_lo):
+    """Constant (lo, hi) of a RangeSelectExpression in base coordinates, or
+    None when a governing index is non-constant (dynamic part-select)."""
+    kind = getattr(getattr(expr, "selectionKind", None), "name", "")
+    left = _const_int(getattr(expr, "left", None))
+    if kind == "Simple":
+        right = _const_int(getattr(expr, "right", None))
+        if left is None or right is None:
+            return None
+        lo, hi = (right, left) if left >= right else (left, right)
+        return (base_lo + lo, base_lo + hi)
+    # Indexed part-select a[base +: w] / a[base -: w]: width is constant, the
+    # base may be dynamic (then the covered range is unknown -> conservative).
+    width = _const_int(getattr(expr, "right", None))
+    if left is None or width is None or width <= 0:
+        return None
+    if kind == "IndexedUp":
+        lo, hi = left, left + width - 1
+    elif kind == "IndexedDown":
+        lo, hi = left - width + 1, left
+    else:
+        return None
+    return (base_lo + lo, base_lo + hi)
+
+
+def lsp_bounds(expr):
+    """Longest static prefix of a value access: (symbol, (lo, hi) | None).
+
+    Walks down a (possibly nested) bit/part-select chain to the named value at
+    its base and returns the *constant* bit range selected, in that symbol's
+    own 0-based coordinates.  A dynamic index or unsupported construct yields
+    (symbol, None) — read conservatively as "the whole signal".  (None, None)
+    when no single named value underlies the expression (e.g. ``a + b``, a
+    concatenation).
+    """
+    if ast is None or expr is None:
+        return (None, None)
+    tn = type(expr).__name__
+    if tn == "ConversionExpression":
+        return lsp_bounds(getattr(expr, "operand", None))
+    if tn in ("NamedValueExpression", "HierarchicalValueExpression"):
+        sym = getattr(expr, "symbol", None)
+        return (sym, full_bounds(sym)) if sym is not None else (None, None)
+    if tn == "ElementSelectExpression":
+        sym, base = lsp_bounds(getattr(expr, "value", None))
+        if sym is None:
+            return (None, None)
+        if base is None:
+            return (sym, None)
+        idx = _const_int(getattr(expr, "selector", None))
+        if idx is None:
+            return (sym, None)
+        return (sym, (base[0] + idx, base[0] + idx))
+    if tn == "RangeSelectExpression":
+        sym, base = lsp_bounds(getattr(expr, "value", None))
+        if sym is None:
+            return (None, None)
+        if base is None:
+            return (sym, None)
+        return (sym, _range_select_bounds(expr, base[0]))
+    return (None, None)
+
+
+def expr_reads_with_bounds(expr):
+    """Like expr_symbols, but pairs each read symbol with the constant bit
+    range it is read over: ``[(symbol, (lo, hi) | None), ...]``.
+
+    The symbol set (and order) matches expr_symbols exactly — so a caller that
+    swaps this in keeps identical connectivity — while bits are filled in where
+    a static select makes them knowable.  A symbol read over two different
+    static ranges, or via a dynamic index / arithmetic, is reported with None
+    (whole signal): the conservative answer.
+    """
+    precise = {}   # symbol_key -> (lo, hi); a conflict downgrades to None
+
+    def capture(sym, bounds):
+        if sym is None or bounds is None:
+            return
+        k = symbol_key(sym)
+        if k in precise and precise[k] != bounds:
+            precise[k] = None
+        else:
+            precise.setdefault(k, bounds)
+
+    def walk(e):
+        if e is None:
+            return
+        tn = type(e).__name__
+        if tn in ("NamedValueExpression", "HierarchicalValueExpression",
+                  "ElementSelectExpression", "RangeSelectExpression"):
+            capture(*lsp_bounds(e))
+            # A dynamic index / part-select base is itself a read.
+            if tn == "ElementSelectExpression":
+                walk(getattr(e, "selector", None))
+            elif tn == "RangeSelectExpression":
+                walk(getattr(e, "left", None))
+                walk(getattr(e, "right", None))
+            return
+        if tn == "ConversionExpression":
+            walk(getattr(e, "operand", None))
+            return
+        if tn == "ConcatenationExpression":
+            for op in (getattr(e, "operands", None) or []):
+                walk(op)
+            return
+        if tn == "ReplicationExpression":
+            walk(getattr(e, "concat", None))
+            return
+        if tn == "BinaryExpression":
+            walk(getattr(e, "left", None))
+            walk(getattr(e, "right", None))
+            return
+        if tn == "UnaryExpression":
+            walk(getattr(e, "operand", None))
+            return
+        if tn == "ConditionalExpression":
+            walk(getattr(e, "left", None))
+            walk(getattr(e, "right", None))
+            return
+        # Unknown node kind: its symbols are still reported (as whole) by the
+        # authoritative expr_symbols pass below — only precision is lost here.
+
+    try:
+        walk(expr)
+    except Exception:
+        precise = {}
+
+    return [(sym, precise.get(symbol_key(sym))) for sym in expr_symbols(expr)]
+
+
 def iter_instances(root):
     """Yield elaborated instances under root in hierarchy traversal order."""
     if ast is None:

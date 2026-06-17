@@ -448,6 +448,10 @@ _TRACE_LOAD = {
         "instance":    {"type": "string"},
         "port":        {"type": "string"},
         "direction":   {"type": "string"},
+        "bits":        {"type": "string",
+                        "description": "Bit sub-range of the signal this load "
+                        "reads ('[3]' / '[7:4]'); absent when it reads the "
+                        "whole signal."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
     },
@@ -464,9 +468,9 @@ _TRACE_RESULT = {
         "module":               {"type": "string"},
         "bit_select":           {"type": "string",
                                  "description": "Present when the query used a "
-                                 "bit-select (e.g. '[3]', '[7:4]'): drivers are "
-                                 "narrowed to that range and loads are omitted "
-                                 "(a driver-origin query)."},
+                                 "bit-select (e.g. '[3]', '[7:4]'): both drivers "
+                                 "and loads are narrowed to the readers/writers "
+                                 "that actually touch those bits."},
         "driver":               {"oneOf": [_TRACE_DRIVER, {"type": "null"}]},
         "extra_drivers":        {"type": "array", "items": _TRACE_DRIVER},
         "multi_driver_warning": {"type": "boolean",
@@ -489,6 +493,15 @@ _TRACE_FLOW_EDGE = {
         "description": {"type": "string"},
         "source_type": {"type": "string"},
         "target_type": {"type": "string"},
+        "source_bits": {"type": "string",
+                        "description": "Bit sub-range of the source that this "
+                        "edge reads ('[5]' / '[7:4]'); absent when the whole "
+                        "signal is read. Bit-level dataflow (slang-netlist "
+                        "parity)."},
+        "target_bits": {"type": "string",
+                        "description": "Bit sub-range of the target that this "
+                        "edge drives; absent when the whole signal is driven. "
+                        "With source_bits, answers 'dout[5] comes from a[2]'."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
         "depth":       {"type": "integer"},
@@ -536,6 +549,11 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
                 "scope":     {"type": "string"},
                 "signal":    {"type": "string",
                               "description": "Starting signal name."},
+                "bit_select": {"type": "string",
+                              "description": "Present when the query used a "
+                              "bit-select (e.g. '[5]', '[7:4]'): the traversal "
+                              "follows only edges touching those bits and maps "
+                              "the range across each hop (bit-level dataflow)."},
                 "start":     {"type": "string",
                               "description": "Elaborated hierarchical path of the starting signal."},
                 "max_depth": {"type": "integer"},
