@@ -98,6 +98,24 @@ macros via `+define+`, `` `include `` a header from each file that needs it, or
 put shared declarations in a `package`. A header merely listed first in the
 filelist does **not** leak into the files after it.
 
+If a project legitimately relies on a single compilation unit — e.g. a leading
+file declares `$unit`-scoped `typedef`/`localparam`s used across the whole
+filelist — pass **`--single-unit`** to compile the entire file list as one unit
+(the slang `--single-unit` / pre-0.2.0 model), restoring cross-file `$unit`
+visibility:
+
+```bash
+rtlscanner tree -f files.f --single-unit
+```
+
+When a design does **not** compile, the structural commands (`tree`, `scope`,
+`xref`, `trace`, `fanin`, `fanout`) fail loudly instead of returning a phantom
+result built from the compiler's error-recovery AST: `status` is `"error"`,
+`errors[0].code` is `COMPILE_FAILED`, and the real compiler diagnostics (with
+severity, file, line, and column) are listed in `diagnostics[]`. `lint`, whose
+job *is* to report those errors, still returns `status:"ok"` with them as
+findings.
+
 ### List-valued flags
 
 All repeatable flags (`-d`, `-f`, `--exclude`, `--rules`, `--skip`,
@@ -388,6 +406,14 @@ Failure is structured too — an `INPUT_NOT_FOUND` / `COMPILE_FAILED` /
 `SCOPE_NOT_FOUND` / `SIGNAL_NOT_FOUND` / `BAD_FILELIST` / `BAD_CONFIG`
 / `NO_TOP` / `INTERNAL_ERROR` envelope is printed to stdout (with
 non-zero exit code), never a raw stack trace.
+
+A design that does not compile is a `COMPILE_FAILED` error for every
+structural command (`tree` / `scope` / `xref` / `trace` / `fanin` /
+`fanout`): they return `status:"error"` with the compiler diagnostics in
+`diagnostics[]` rather than a phantom structure recovered from a broken
+parse, so reading `status` first is enough to know the result is
+trustworthy. (`lint` is the exception — surfacing those diagnostics is its
+job, so it returns `status:"ok"` with them as findings.)
 
 `*_NOT_FOUND` errors carry machine-readable recovery hints in
 `errors[0].details` so one failed call is enough to self-correct:

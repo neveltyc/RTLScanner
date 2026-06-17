@@ -66,6 +66,15 @@ rtlscanner lint   -f rtl.f --rules port-connect --json
   `CLI > env (RTLSCANNER_*) > config > defaults`, field by field.
 - **Repeatable flags** (`-d`, `-f`, `--exclude`, `--rules`, `--skip`, `--waive`) take a
   comma list or repetition: `-d a,b` ≡ `-d a -d b`.
+- **Per-file compilation by default.** Each source file is its own compilation unit
+  (slang/VCS/Verilator behavior), so a `` `define `` or `$unit`-scoped `typedef` in one
+  file is **not** visible to the next. If a project intentionally shares `$unit`-scope
+  declarations across the filelist, add **`--single-unit`** to compile it all as one
+  unit. A design that does not compile is a `COMPILE_FAILED` error for
+  `tree`/`scope`/`xref`/`trace`/`fanin`/`fanout` (`status:"error"`, real compiler
+  diagnostics in `diagnostics[]`) — never a phantom result, so reading `status` first
+  tells you the structure is trustworthy. (`lint` reports the same errors as findings
+  and stays `status:"ok"`.)
 - **`--scope` auto-detects** when there's exactly one top module.
 - **Dotted `-s`** is accepted for `trace`/`fanin`/`fanout`/`xref`: `u_dp.q` (relative to
   `--scope`) or an absolute `top.u_dp.q` is split back into signal + scope (noted in
