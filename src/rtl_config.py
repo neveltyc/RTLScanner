@@ -265,3 +265,19 @@ def xref_config(cfg: dict) -> dict:
     if path_style not in {"relative", "absolute", "name"}:
         path_style = "relative"
     return {"path_style": path_style}
+
+
+# ── Flow config helpers (trace / fanin / fanout dataflow precision) ──
+def flow_config(cfg: dict) -> dict:
+    """Return normalized [flow] config options: ``unroll`` (bool or None when
+    unset) and ``max_unroll`` (int or None).  None lets the CLI/default decide
+    in the usual CLI > config > built-in-default order."""
+    raw = (cfg.get("flow") or {}) if isinstance(cfg, dict) else {}
+    unroll = raw.get("unroll")
+    out = {"unroll": bool(unroll) if unroll is not None else None}
+    mu = raw.get("max_unroll")
+    try:
+        out["max_unroll"] = int(mu) if mu is not None else None
+    except (TypeError, ValueError):
+        out["max_unroll"] = None
+    return out
