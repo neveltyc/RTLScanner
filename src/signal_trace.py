@@ -322,7 +322,6 @@ class FlowEdge:
     # bit_offset is the affine map of a copy-like edge (target_bit = source_bit
     # + bit_offset), which lets fanin/fanout answer "dout[5] ← which bit"; it is
     # None when the relationship is many-to-many (arithmetic / reduction).
-    # Deliberately NOT part of key() so the parity invariant is preserved.
     source_bits: Optional[tuple] = None
     target_bits: Optional[tuple] = None
     bit_offset: Optional[int] = None
@@ -332,26 +331,48 @@ class FlowEdge:
     # ``o={a[3:0],a[7:4]}``).  Each segment is a precise positional copy; source/
     # target_bits hold the spanning union for coarse overlap/display, bit_offset
     # is None.  Lets fanin/fanout still answer "rev[0] ← din[7]" across the map.
-    # None for a single-segment edge.  Not part of key() (parity preserved).
+    # None for a single-segment edge.
     segments: Optional[tuple] = None
 
-    def key(self):
-        return (self.source, self.target, self.kind, self.file, self.line)
+    def _bit_key(self):
+        """The bit-mapping component of ``key()``, as sort-safe strings (never
+        ``None``, which is unorderable against a tuple in ``sort``)."""
+        sb = bit_label(self.source_bits) if self.source_bits else ""
+        db = bit_label(self.target_bits) if self.target_bits else ""
+        seg = ";".join(f"{bit_label(s)}>{bit_label(d)}"
+                       for (s, d, _o) in self.segments) if self.segments else ""
+        return (sb, db, seg)
 
-    def trimmed_to(self, near_rng, mode):
+    def key(self):
+        # The bit mapping is part of the identity: two assigns on the SAME source
+        # line that drive the same (source,target) pair over *different* bits — a
+        # generate-loop bit reversal `for i: dout[i]=din[7-i]`, or several bit
+        # assigns sharing a line — are distinct edges, not duplicates to dedup
+        # away.  Whole-signal edges carry an empty bit key, so they (and the
+        # demand-driven / whole-graph parity) are unaffected.
+        return ((self.source, self.target, self.kind, self.file, self.line)
+                + self._bit_key())
+
+    def trimmed_to(self, near_rngs, mode):
         """A display copy whose permutation ``segments`` are narrowed to those
-        overlapping ``near_rng`` on the near side (target for fanin, source for
-        fanout), so a bit-select shows exactly the segments it asked for
-        (``fanin rev[0]`` -> just ``din[7] -> rev[0]``).  Returns ``self`` when
-        there is nothing to trim — no segments, a whole-signal query
-        (``near_rng is None``), or every segment already overlaps."""
-        if not self.segments or near_rng is None:
+        overlapping ANY of the near-side ranges in ``near_rngs`` (target bits for
+        fanin, source bits for fanout), so a bit-select shows exactly the
+        segments it asked for (``fanin rev[0]`` -> just ``din[7] -> rev[0]``).
+
+        ``near_rngs`` is every range that reached this edge during the walk: a
+        single edge can be discovered from several frontier bits (``y[0]<-m[0]``
+        and ``y[1]<-m[1]`` both reach the ``din->m`` reversal), and *all* of
+        their segments must survive — trimming to only the first would drop the
+        rest.  Returns ``self`` when there is nothing to trim: no segments, a
+        whole-signal range present (``None``), or every segment already kept."""
+        if not self.segments or near_rngs is None or any(r is None
+                                                         for r in near_rngs):
             return self
         kept = []
         for (sb, db, off) in self.segments:
             near = db if mode == "fanin" else sb
-            if near is not None and not (near_rng[1] < near[0]
-                                         or near_rng[0] > near[1]):
+            if near is not None and any(not (r[1] < near[0] or r[0] > near[1])
+                                        for r in near_rngs):
                 kept.append((sb, db, off))
         if not kept or len(kept) == len(self.segments):
             return self
@@ -929,8 +950,13 @@ class SignalTracer:
             t = sym.type
             if t.isScalar:
                 return True
+            # Descending AND zero-based: a declared index equals slang's internal
+            # LSB0 offset only when the low bound is 0.  A non-zero LSB (`[8:1]`,
+            # `[15:8]`) is descending too but its declared bits are offset from
+            # the internal ones, so it must fall back to whole-signal rather than
+            # emit mixed declared/internal bit labels.
             return bool(t.isPackedArray and t.elementType.bitWidth == 1
-                        and t.range.isDescending)
+                        and t.range.isDescending and t.range.right == 0)
         except Exception:
             return False
 
@@ -2140,8 +2166,9 @@ class SignalTracer:
         # the edge to the next node — so `-s dout[5]` converges to the exact
         # driving bit.  A whole-signal query keeps range None throughout and
         # reproduces the symbol-level traversal edge-for-edge.
-        traversed = []
-        seen_edges = set()
+        traversed = []           # (edge, depth) in discovery order
+        edge_pos = {}            # ekey -> index into `traversed`
+        edge_rngs = {}           # ekey -> [near-range that reached this edge]
         seen_nodes = {(start, sel)}
         frontier = [(start, sel)]
         depth = 0
@@ -2155,17 +2182,25 @@ class SignalTracer:
                     if nxt_rng is self._NO_OVERLAP:
                         continue
                     ekey = edge.key()
-                    if ekey not in seen_edges:
-                        seen_edges.add(ekey)
-                        # `rng` is the bits of interest on the near node (the
-                        # target for fanin, the source for fanout); trim a
-                        # permutation edge's segments to just those bits.
-                        traversed.append((edge.trimmed_to(rng, mode), depth))
+                    # `rng` is the bits of interest on the near node (the target
+                    # for fanin, the source for fanout).  An edge can be reached
+                    # from several frontier bits; collect every such range so a
+                    # permutation edge's segments are trimmed to their union, not
+                    # to whichever range happened to arrive first.
+                    if ekey not in edge_pos:
+                        edge_pos[ekey] = len(traversed)
+                        traversed.append((edge, depth))
+                        edge_rngs[ekey] = [rng]
+                    else:
+                        edge_rngs[ekey].append(rng)
                     nxt = edge.source if mode == "fanin" else edge.target
                     if (nxt, nxt_rng) not in seen_nodes:
                         seen_nodes.add((nxt, nxt_rng))
                         next_frontier.append((nxt, nxt_rng))
             frontier = next_frontier
+
+        traversed = [(edge.trimmed_to(edge_rngs[edge.key()], mode), depth)
+                     for (edge, depth) in traversed]
 
         return FlowResult(
             mode=mode, signal_name=signal_name, signal_type=str(sym.type),
