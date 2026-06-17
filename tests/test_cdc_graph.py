@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / "src"))
 try:
     import pyslang.ast as ast  # noqa: F401  (availability guard)
     from rtl_common import build_compilation
-    from rtl_lint import _DEFAULT_RESET_GLOBS
+    from rtl_lint import _DEFAULT_RESET_GLOBS, CDCAnalyzer
     from signal_trace import SignalTracer
     HAVE_PYSLANG = True
 except Exception:  # pragma: no cover
@@ -38,14 +38,15 @@ def _is_reset(name):
     return any(fnmatch.fnmatch(n, g.lower()) for g in _DEFAULT_RESET_GLOBS)
 
 
-def _tracer(text):
+def _analyzer(text):
     p = Path(tempfile.mkdtemp()) / "cdc.sv"
     p.write_text(textwrap.dedent(text))
-    return SignalTracer(build_compilation([str(p)])[0])
+    comp = build_compilation([str(p)])[0]
+    return CDCAnalyzer(comp, tracer=SignalTracer(comp))
 
 
 def _crossings(text):
-    return _tracer(text).cdc_crossings(_is_reset)
+    return _analyzer(text).crossings(_is_reset)
 
 
 def _pairs(crossings):
@@ -179,14 +180,14 @@ class ClockDomainCache(unittest.TestCase):
         """
 
     def test_cache_respects_reset_predicate(self):
-        tr = _tracer(self.SRC)
+        ana = _analyzer(self.SRC)   # one analyzer / tracer reused across calls
         # 'wibble' is a real second clock -> clk -> wibble is a crossing.
-        strict = tr.cdc_crossings(lambda n: False)
+        strict = ana.crossings(lambda n: False)
         self.assertTrue(strict, "two distinct clock nets should cross")
         # Same tracer, but now classify 'wibble' as a reset -> its flop has no
         # clock domain, so there is no crossing.  A reset-agnostic cache would
         # still return the first (stale) map and wrongly report a crossing.
-        relaxed = tr.cdc_crossings(lambda n: n == "wibble")
+        relaxed = ana.crossings(lambda n: n == "wibble")
         self.assertEqual(relaxed, [],
                          "with 'wibble' treated as reset, no crossing remains")
 
@@ -197,15 +198,17 @@ class EdgeClassification(unittest.TestCase):
     edges driven by a sequential block and clear for combinational ones."""
 
     def test_clocked_flag_on_edges(self):
-        tr = _tracer("""
+        p = Path(tempfile.mkdtemp()) / "clk.sv"
+        p.write_text(textwrap.dedent("""
             module m(input logic clk, input logic d, output logic o);
               logic q;
               always_ff @(posedge clk) q <= d;   // clocked edge: d -> q
               assign o = q;                       // combinational: q -> o
             endmodule
-            """)
+            """))
+        tr = SignalTracer(build_compilation([str(p)])[0])
         by_pair = {(e.source.rsplit('.', 1)[-1], e.target.rsplit('.', 1)[-1]): e
-                   for e in tr._build_flow_edges()}
+                   for e in tr.flow_edges()}
         self.assertTrue(by_pair[("d", "q")].clocked)
         self.assertFalse(by_pair[("q", "o")].clocked)
         # the registered edge is exposed in the dataflow JSON, too

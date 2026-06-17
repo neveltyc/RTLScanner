@@ -65,17 +65,6 @@ root     = "."
 prefix   = "${PROJPATH}"
 exclude  = ["**/sim/**", "**/dvt/**"]
 
-[lint]
-rules = ["default", "cdc"]            # equivalent to CLI --rules
-skip  = ["case-default"]              # equivalent to CLI --skip
-waive = ["dbg_*", "module:fifo", "file:third_party_*"]  # bare=module|file; prefix to disambiguate
-
-[lint.severity]                       # promote individual rules
-"width-trunc" = "error"
-
-[lint.cdc]
-reset = ["nrst_*", "por_*"]           # extra reset-signal name globs
-
 [xref]
 path_style = "relative"                # relative|absolute|name (rel/abs aliases ok)
 
@@ -122,14 +111,14 @@ findings.
 
 ### List-valued flags
 
-All repeatable flags (`-d`, `-f`, `--exclude`, `--rules`, `--skip`,
-`--waive`) accept either a comma-list or repetition:
+All repeatable flags (`-d`, `-f`, `--exclude`, `--rules`) accept either a
+comma-list or repetition:
 
 ```bash
 rtlscanner tree -d ./rtl,./common
 rtlscanner tree -d ./rtl -d ./common         # equivalent
-rtlscanner lint --rules width-trunc,case-default
-rtlscanner lint --rules '[width-trunc,case-default]'   # bracket-style
+rtlscanner lint --rules unused,cdc
+rtlscanner lint --rules '[unused,cdc]'        # bracket-style
 ```
 
 ## `rtlscanner tree` — hierarchy viewer
@@ -317,140 +306,76 @@ Typical use: after a waveform search finds a suspicious signal, ask
 `xref` where that signal is declared, which procedural/continuous blocks
 read or write it, and which child instance ports it feeds or is driven by.
 
-## `rtlscanner lint` — static linter
+## `rtlscanner lint` — static scanner
 
-Built on pyslang's elaboration + analysis engine. Catches width
-mismatches, unused/undriven signals and ports, missing case defaults,
-inferred latches, multi-driven nets, plus opt-in clock-domain-crossing,
-combinational-loop, and port connection analysis. The CDC and
-combinational-loop checks run on the same dataflow flow graph the
-`fanin`/`fanout` commands use, so they are cross-hierarchy.
+A fixed, opinionated scanner built on pyslang's elaboration + analysis engine.
+It runs a **closed set of five check categories** and reports findings; every
+finding is locatable (file, line, column, severity, rule, message, and the owning
+module). There is one flag to narrow the scan — `--rules` — and nothing else to
+learn.
+
+| Category    | What it reports |
+|-------------|-----------------|
+| `semantic`  | Compile / elaboration diagnostics slang produces: width truncation, inferred latches, missing `case` defaults, undeclared identifiers, never-assigned variables, multiple-driver conflicts, … |
+| `unused`    | Signals and ports declared but never read, or never driven. |
+| `port`      | Child-instance port connectivity: unconnected ports, port/connection width mismatches. |
+| `cdc`       | Clock-domain crossings — a register feeding, through combinational logic only, a register in a different domain. Heuristic. |
+| `comb-loop` | Combinational feedback loops (a cycle through non-registered dataflow). |
 
 ```bash
-rtlscanner lint -d ./rtl                              # default rule set
-rtlscanner lint -d ./rtl --rules default,cdc          # add CDC
-rtlscanner lint -d ./rtl --rules default,comb-loop    # add combinational loops
-rtlscanner lint -d ./rtl --rules bugs                 # real bugs only (high precision)
-rtlscanner lint -d ./rtl --rules width-trunc          # only this rule
-rtlscanner lint -d ./rtl --rules default --skip case-default
-rtlscanner lint -d ./rtl --waive 'dbg_*'              # bare: module|file (or module:/file: prefix)
-rtlscanner lint -d ./rtl --strict                     # CI gate: warning → error
-rtlscanner lint -d ./rtl --min-severity error         # display floor
-rtlscanner lint -d ./rtl --rules port-connect         # instance port issues
+rtlscanner lint -d ./rtl                    # run all five categories
+rtlscanner lint -d ./rtl --rules all        # explicit synonym for the default
+rtlscanner lint -d ./rtl --rules unused,cdc # run exactly those two
+rtlscanner lint -d ./rtl --json > lint.json # full result; check summary for counts
 ```
 
-### Rule selection model
+### Selecting checks — `--rules`
 
-`--rules SPEC[,SPEC...]` — white list. SPEC can be:
+`--rules` is a **whitelist that replaces the default set**. It accepts only the
+five category names plus `all`:
 
-- a rule name: `width-trunc`, `unused-port`, …
-- a family alias: `semantic`, `unused`, `shadow`, `cdc`, `port-connect`, `comb-loop`
-- a warning option: `everything` (enable slang's broader warning set)
-- a glob: `width-*`
-- a meta value: `default` (= `semantic + unused`), `all`, `none`, `bugs`
+- no flag → run all five (the common case needs nothing).
+- `--rules all` → the same, explicit.
+- `--rules unused,cdc` → run exactly those (comma-list or bracket/brace style).
 
-`semantic` is the normalized slang diagnostic stream. It includes parse,
-preprocessor, type, binding, and elaboration diagnostics that slang emits;
-for example missing includes, undeclared identifiers, width truncation,
-and port-connection diagnostics. `everything` is not a finding family and
-will never appear as `check="everything"`; it only changes slang warning
-configuration.
+Any token outside the closed set (an old family like `default`, a glob like
+`width-*`, a per-rule name) fails with a clear error listing the five categories,
+rather than silently selecting nothing. There is no subtractive `--skip`.
 
-`--skip RULE[,...]` — subtract from the resulting set (glob ok).
-
-A typo'd `--rules`/`--skip` token (e.g. `bugz`) now emits a `note` in
-`diagnostics` with a did-you-mean suggestion, instead of silently selecting
-nothing. A valid rule that simply has no findings this run is **not** flagged.
-
-### `bugs` — real bugs only
-
-`--rules bugs` is a curated, high-precision preset for "are there real bugs
-in this design?" It keeps the rules that flag functional defects:
-
-- `inferred-latch` — an unintended level-sensitive latch
-- `unassigned-variable` — a variable read but never driven (reads as X)
-- `undriven-port` — an output port never driven
-- `port-width-mismatch` / `port-width-trunc` — child-instance port width problems
-- `width-trunc` — implicit truncation in an assignment
-
-…plus every hard compile **error** (whose codes are open-ended), while
-dropping style noise (`unused-*`, `case-default`, `empty-output-connection`,
-the `port-unconnected` note). `cdc-crossing` is intentionally excluded
-(heuristic, higher false-positive rate); compose it back with
-`--rules bugs,cdc`.
-
-### Waivers
-
-`--waive GLOB[,GLOB...]` suppresses findings. Each finding is attributed to its
-**module** (design unit) by source range, and a glob may carry a target prefix
-to say exactly what it matches:
-
-| Token | Matches |
-|-------|---------|
-| `dbg_*` (bare) | the **module** name **or** the source-file basename (backward-compatible union) |
-| `module:fifo` | the **module** name only — never a sibling module in the same file |
-| `file:third_party_*` | the **source-file** basename only; also waives findings with **no module** (`$unit`-scope / preprocessor / file-level compile errors), which a module glob can't reach |
-| `scope:top.u_dbg` | **reserved** — instance/hierarchy-level waivers are future work; currently ignored with a note |
-
-Use a bare glob for the common one-module-per-file case; reach for `module:` /
-`file:` when a file declares several modules (or is named after one of them) and
-you need to be precise. The JSON `waived_reason` names the matched token, e.g.
-`waived ('module:fifo')`. For project-permanent waivers, put the list in
-`[lint] waive = [...]` in `.rtlscanner.toml`.
+Suppression is coarse and lives where it belongs: keep noisy sources out of
+compilation with `--exclude '**/third_party/**'`, and for finer filtering, filter
+the JSON by the `module` field. There are no `--waive`, `--strict`, or
+`--min-severity` policy knobs — each finding's severity is fixed by its category.
 
 ### CDC
 
-`--rules cdc` enables clock-domain-crossing detection. Findings appear as
-regular entries with `rule="cdc-crossing"`, `check="cdc"`. Customize the
-reset-signal recognition in `[lint.cdc] reset = [...]`.
-
-The check runs on the dataflow flow graph (the same one `fanin`/`fanout` use),
-so it is **cross-hierarchy**: a launch flop that feeds — through combinational
-logic only — the data input of a capture flop in a *different* clock domain is
-flagged even when the two flops live in different modules wired through ports.
-Each flop's clock is resolved to its **source net** before domains are compared,
-so two flops on the same physical clock are one domain even when their local
-clock ports are named differently (e.g. `clk` vs `clock`) or sit in different
-instances — and, conversely, one net reaching two differently-named ports is one
-domain, not two. A **gated or divided** clock (`assign gclk = clk & en;`, a
-clock-divider flop) is treated as its own domain.
-
-Note: inline diagnostic pragmas do **not** suppress `cdc-crossing` (it is a
-heuristic, not a slang diagnostic). Use `--waive` or `[lint] waive` instead.
+`cdc` runs on the dataflow flow graph (the same one `fanin`/`fanout` use), so it
+is **cross-hierarchy**: a launch flop that feeds — through combinational logic
+only — the data input of a capture flop in a *different* clock domain is flagged
+even when the two flops live in different modules wired through ports. Each flop's
+clock is resolved to its **source net** before domains are compared, so two flops
+on the same physical clock are one domain even when their local clock ports are
+named differently (`clk` vs `clock`) or sit in different instances — and,
+conversely, one net reaching two differently-named ports is one domain, not two.
+A **gated or divided** clock is treated as its own domain. Reset signals are
+recognized by a built-in name heuristic, so `cdc` runs with **zero configuration**.
 
 ### Combinational loops
 
-`--rules comb-loop` enables combinational-loop detection. Findings appear as
-regular entries with `rule="comb-loop"`, `check="comb-loop"`. The check runs
-cycle detection (Tarjan strongly-connected components) over the **non-sequential
-edges** of the same flow graph — a registered edge (driven by `always_ff`, a
-latch, or an edge-sensitive `always`) breaks the feedback, so legitimate
-sequential feedback is not flagged while a true combinational cycle
+`comb-loop` runs cycle detection (Tarjan strongly-connected components) over the
+**non-sequential edges** of the same flow graph — a registered edge (driven by
+`always_ff`, a latch, or an edge-sensitive `always`) breaks the feedback, so
+legitimate sequential feedback is not flagged while a true combinational cycle
 (`assign a = b; assign b = a;`, an `always_comb` that reads its own output) is.
-Loops that close through child-instance ports are caught (cross-hierarchy). The
-check runs on the same constant-pruned graph as `fanin`/`fanout` (honoring the
-`[flow]` precision config), so a feedback path that exists only through a
-constant-false `if`/`case` dead branch is not reported as a loop.
-
-`comb-loop` is opt-in and reported at `warning` severity; like `cdc` it is
-excluded from `default` and the `bugs` preset because it inherits the flow
-graph's conservative control-condition modeling and can, in rare cases,
-over-report. Compose it in with `--rules bugs,comb-loop` or `--rules default,comb-loop`,
-and promote it with `[lint.severity] "comb-loop" = "error"` or `--strict` in CI.
-
-Every dataflow edge in `fanin`/`fanout` output now carries a `clocked` boolean
-(present only when true) marking the registered edges this classification uses.
-
-### Port connections
-
-`--rules port-connect` reports unconnected child instance ports and port
-width mismatches as lint findings.
+Loops that close through child-instance ports are caught (cross-hierarchy). It
+runs on the same constant-pruned graph as `fanin`/`fanout`, so a feedback path
+that exists only through a constant-false `if`/`case` dead branch is not reported.
 
 ### Exit codes
 
 - `0` — no error-level findings
-- `1` — one or more error-level findings, or `--strict` with any finding
-- `2` — usage / source error
+- `1` — one or more error-level findings
+- `2` — usage / source error (e.g. an unknown `--rules` category)
 
 ## Agent / JSON Mode
 

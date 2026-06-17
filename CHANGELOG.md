@@ -49,6 +49,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `lint` is now a fixed, opinionated scanner.** The whole
+  rule-selection / configuration sub-language is gone, collapsed to a closed set
+  of **five check categories** — `semantic`, `unused`, `port`, `cdc`,
+  `comb-loop` — chosen with a single flag. `--rules` is now a whitelist that
+  accepts **only** those five names plus `all` (no flag = run all five;
+  `--rules unused,cdc` = run exactly those). It no longer accepts rule families,
+  name globs, or the meta values `default` / `bugs` / `none` / `everything`; an
+  out-of-set token now **errors** (exit 2) listing the valid categories instead
+  of silently selecting nothing. Removed entirely: `--skip`, `--waive`,
+  `--strict`, `--min-severity`, `--waived`, the `shadow` check, and the `[lint]`
+  / `[lint.severity]` / `[lint.cdc]` config blocks. Each finding's severity is
+  fixed by its category; `lint` exits `1` on any error-severity finding, `0`
+  otherwise. Coarse suppression lives at the input layer (`--exclude`); for finer
+  filtering, filter the JSON by the `module` field. For a large scan, redirect
+  `--json` to a file and read `summary` for the by-category / by-severity counts
+  (there is no `--output` flag). The JSON envelope shape is unchanged; the only
+  contract change is the narrowed `check` enum (now exactly the five categories)
+  — `lint --schema` reflects it. CDC runs with **zero configuration** off a
+  built-in reset-name heuristic. The `port-connect` check is renamed `port`.
+  Migration: `--rules default,cdc` → `--rules` (or `--rules all`);
+  `--rules bugs` / globs / `--skip` / `--waive` / `--strict` /
+  `--min-severity` → narrow with the five category names and filter the JSON.
+- **CDC and combinational-loop analyses now live in `rtl_lint`** as consumers of
+  the shared dataflow engine (`SignalTracer.flow_edges` / `clock_domain_map`),
+  rather than as methods on the query-side tracer. No behavior change.
+
 - **Graph-based, cross-hierarchy CDC** — `--rules cdc` now detects clock-domain
   crossings on the dataflow flow graph instead of a single-module `always_ff`
   scan, and resolves each flop's clock to its **source net** before comparing

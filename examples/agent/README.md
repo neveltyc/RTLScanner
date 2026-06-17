@@ -77,8 +77,7 @@ Closed enum of error codes:
 | `scope.out.json`      | `rtlscanner scope -d examples/basic --scope top.u_dp0 --connections --json` |
 | `flow.out.json`       | `rtlscanner fanout -d examples/basic --signal q --scope top.u_dp0 --json` |
 | `lint.out.json`       | `rtlscanner lint -d examples/lint --json`                        |
-| `lint-bugs.out.json`  | `rtlscanner lint -d examples/lint --rules bugs --json`           |
-| `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules default,cdc --json` |
+| `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules cdc --json`   |
 | `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
 
 ## CDC / combinational-loop notes for agents
@@ -91,8 +90,7 @@ they are cross-hierarchy, and both surface as regular `lint` findings:
 {"rule": "comb-loop",    "check": "comb-loop", "severity": "warning", ...}
 ```
 
-- Enable: `--rules cdc` and/or `--rules comb-loop` (both opt-in, excluded from
-  `default` and `bugs`). Compose: `--rules default,cdc,comb-loop`.
+- Both run by default; narrow with `--rules cdc` and/or `--rules comb-loop`.
 - Quick counts: `data.summary.by_check.cdc`, `data.summary.by_check["comb-loop"]`.
 - **CDC** compares clock domains by **source net**, not local clock name, and
   relates flops across module boundaries — two flops on the same physical clock
@@ -101,12 +99,8 @@ they are cross-hierarchy, and both surface as regular `lint` findings:
 - **comb-loop** reports one finding per combinational feedback cycle; a register
   in the path breaks the cycle, so legitimate sequential feedback is not flagged.
 - **`` `pragma diagnostic ignore `` does NOT suppress these heuristic findings.**
-  To waive one, use `[lint].waive` (module-name glob) in `.rtlscanner.toml`:
-
-  ```toml
-  [lint]
-  waive = ["cdc_sync"]
-  ```
+  Filter them out by the `module` / `rule` / `check` field in the JSON, or keep
+  the offending sources out of compilation with `--exclude`.
 
 ## Field-naming conventions
 
@@ -114,7 +108,7 @@ Stable across all subcommands:
 
 - Diagnostics and lint locations use `file`, `line`, `col`
 - `xref` source locations also expose `column` and `location`
-- Severity: `error` | `warning` | `note` (lint also uses `ignored` for waived)
+- Severity: `error` | `warning` | `note`
 - Hierarchical paths: `path` (on a node), `scope` (for scope-limited queries)
 - Reported lists are arrays; when selected but empty, they appear as `[]`
 
@@ -134,15 +128,4 @@ filelist = ["rtl/top.f"]
 root     = "."
 prefix   = "${PROJPATH}"
 exclude  = ["**/sim/**"]
-
-[lint]
-rules = ["default", "cdc"]
-skip  = ["case-default"]
-waive = ["dbg_*", "third_party_*"]
-
-[lint.severity]
-"width-trunc" = "error"
-
-[lint.cdc]
-reset = ["nrst_*"]
 ```

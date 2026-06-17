@@ -481,118 +481,10 @@ class ClockDomain:
     names: set = field(default_factory=set)     # leaf names of those sources
 
 
-@dataclass
-class CDCCrossing:
-    """One launch→capture clock-domain crossing found on the flow graph."""
-    launch: str             # launch (source) register node path
-    capture: str            # capture (destination) register node path
-    from_domains: list      # launch clock-domain display names
-    to_domains: list        # capture clock-domain display names
-    file: str = ""
-    line: int = 0
-
-    @property
-    def launch_name(self):
-        return self.launch.rsplit('.', 1)[-1]
-
-    @property
-    def capture_name(self):
-        return self.capture.rsplit('.', 1)[-1]
-
-
-@dataclass
-class CombLoop:
-    """One combinational feedback loop (a cyclic path of non-clocked edges)."""
-    nodes: list             # cycle node paths a->b->c (closes c->a)
-    file: str = ""
-    line: int = 0
-
-    @property
-    def display(self):
-        leaves = [n.rsplit('.', 1)[-1] for n in self.nodes]
-        return " → ".join(leaves + [leaves[0]]) if leaves else ""
-
-
-# ── Tarjan strongly-connected components (iterative) ─────────────────
-def _tarjan_scc(nodes, succ):
-    """Iterative Tarjan SCC.  ``succ`` maps a node to its successor list.
-
-    Returns the list of strongly-connected components (each a list of nodes).
-    Iterative (explicit stack) so a long combinational chain — the 200-deep
-    pipeline in the tests — cannot overflow Python's recursion limit.
-    """
-    index = {}
-    low = {}
-    on_stack = set()
-    stack = []
-    order = [0]
-    out = []
-
-    for root in nodes:
-        if root in index:
-            continue
-        # work stack of (node, iterator-position)
-        work = [(root, 0)]
-        while work:
-            node, pi = work[-1]
-            if pi == 0:
-                index[node] = low[node] = order[0]
-                order[0] += 1
-                stack.append(node)
-                on_stack.add(node)
-            succs = succ.get(node, ())
-            if pi < len(succs):
-                work[-1] = (node, pi + 1)
-                nxt = succs[pi]
-                if nxt not in index:
-                    work.append((nxt, 0))
-                elif nxt in on_stack:
-                    low[node] = min(low[node], index[nxt])
-            else:
-                if low[node] == index[node]:
-                    comp = []
-                    while True:
-                        w = stack.pop()
-                        on_stack.discard(w)
-                        comp.append(w)
-                        if w == node:
-                            break
-                    out.append(comp)
-                work.pop()
-                if work:
-                    parent = work[-1][0]
-                    low[parent] = min(low[parent], low[node])
-    return out
-
-
-def _reconstruct_cycle(comp, succ):
-    """A representative cycle within strongly-connected component ``comp``.
-
-    Returns the node path ``[s, …]`` whose last node has an edge back to ``s``
-    (the caller renders the closing ``→ s``).  Deterministic start for stable
-    output; bounded by the SCC size.
-    """
-    compset = set(comp)
-    s = min(comp)
-    # DFS for a path from s back to s using only comp-internal edges.
-    stack = [(s, [s])]
-    visited = {s}
-    while stack:
-        node, path = stack.pop()
-        for nxt in succ.get(node, ()):
-            if nxt not in compset:
-                continue
-            # Close the cycle only after a real hop.  A self-edge on the start
-            # node (s -> s) can't close a *multi-node* cycle; returning the
-            # length-1 path [s] here would make the caller drop the entire SCC
-            # and miss the real loop (regression: a multi-node SCC whose min
-            # node also has a structural self-assign).
-            if nxt == s and len(path) >= 2:
-                return path
-            if nxt not in visited:
-                visited.add(nxt)
-                stack.append((nxt, path + [nxt]))
-    return [s]
+# The CDC / combinational-loop *result* records (CDCCrossing, CombLoop) and the
+# Tarjan SCC helpers live with their analyses in rtl_lint; this module keeps only
+# the shared engine primitives (``flow_edges``, ``clock_domain_map`` + its
+# ``ClockDomain`` return type) those analyses consume.
 
 
 # ── Core: Signal Tracer ─────────────────────────────────────────────
@@ -616,7 +508,7 @@ class SignalTracer:
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)
         self._proc_edge_cache = {}
-        # Clock-domain caches (see clock_domain_map / cdc_crossings).
+        # Clock-domain caches (see clock_domain_map).
         self._clock_tmpl_cache = {}    # body key -> {driver path -> [clk path]}
         self._clock_domain_cache = {}    # reset-glob key -> {reg path -> ClockDomain}
         # Demand-driven flow-graph caches (see _build_flow_edges / flow).
@@ -1828,6 +1720,12 @@ class SignalTracer:
         self._inst_port_cache[key] = edges
         return edges
 
+    def flow_edges(self):
+        """The whole-design dataflow edge list — the shared engine primitive the
+        lint CDC / combinational-loop analyses consume (they live in rtl_lint;
+        this stays a query-side primitive alongside ``clock_domain_map``)."""
+        return self._build_flow_edges()
+
     def _build_flow_edges(self):
         """Whole-design edge list — every instance's proc + port edges,
         deduplicated and sorted.
@@ -2384,120 +2282,6 @@ class SignalTracer:
         return domains
 
     # ── whole-graph analyses (CDC / combinational loops) ───────────────
-
-    def cdc_crossings(self, is_reset, reset_key=None):
-        """Clock-domain crossings on the flow graph.
-
-        For each capture register, walk *combinationally* backward from its
-        data inputs (clocked edges, minus reset-named sources) and collect the
-        launch registers reached, stopping at each register boundary.  A launch
-        whose domain is disjoint from the capture's domain is an unsynchronized
-        crossing.  Cross-hierarchy by construction: the whole-graph build folds
-        in port-connection and hierarchical-reference edges alike.
-
-        ``reset_key`` (the reset-glob set behind ``is_reset``) keys the cached
-        clock-domain map so a reused tracer is correct across reset configs.
-        """
-        edges = self._build_flow_edges()
-        reg_domain = self.clock_domain_map(is_reset, reset_key)
-        if not reg_domain:
-            return []
-
-        clocked_fanin = {}   # capture node -> [clocked FlowEdge feeding it]
-        comb_fanin = {}      # node -> [combinational predecessor node]
-        for e in edges:
-            if e.clocked:
-                clocked_fanin.setdefault(e.target, []).append(e)
-            else:
-                comb_fanin.setdefault(e.target, []).append(e.source)
-
-        out, seen = [], set()
-        for cap in sorted(reg_domain):
-            cap_dom = reg_domain[cap]
-            cap_edges = clocked_fanin.get(cap, [])
-            if not cap_edges:
-                continue
-            cap_edge = cap_edges[0]
-            seeds = [e.source for e in cap_edges
-                     if not is_reset(e.source.rsplit('.', 1)[-1])]
-            if not seeds:
-                continue
-
-            visited, launches = set(), set()
-            stack = list(seeds)
-            while stack:
-                n = stack.pop()
-                if n in visited:
-                    continue
-                visited.add(n)
-                if n != cap and n in reg_domain:
-                    launches.add(n)          # launch flop; stop at the boundary
-                    continue
-                for p in comb_fanin.get(n, ()):
-                    if p not in visited:
-                        stack.append(p)
-
-            for launch in sorted(launches):
-                l_dom = reg_domain[launch]
-                if cap_dom.domains & l_dom.domains:
-                    continue                 # same physical clock => safe
-                key = (launch, cap)
-                if key in seen:
-                    continue
-                seen.add(key)
-                out.append(CDCCrossing(
-                    launch=launch, capture=cap,
-                    from_domains=sorted(l_dom.names),
-                    to_domains=sorted(cap_dom.names),
-                    file=cap_edge.file, line=cap_edge.line))
-        return out
-
-    def combinational_loops(self):
-        """Combinational feedback loops: Tarjan SCCs over the non-clocked edges.
-
-        A clocked (registered) edge breaks feedback, so excluding it leaves only
-        combinational connectivity; any strongly-connected component with a real
-        cycle is a combinational loop.  Multi-node SCCs are always reported; a
-        single-node SCC is reported only for a structural self-edge
-        (``assign a = a;`` / a self port connection), not a procedural one — the
-        graph's conservative control-condition modeling can otherwise synthesize
-        a spurious ``a → a``.
-        """
-        edges = [e for e in self._build_flow_edges() if not e.clocked]
-        succ = {}
-        nodes = set()
-        first_edge = {}      # (src, tgt) -> FlowEdge (for a location)
-        self_edges = {}      # node -> structural self FlowEdge
-        for e in edges:
-            nodes.add(e.source)
-            nodes.add(e.target)
-            lst = succ.setdefault(e.source, [])
-            if e.target not in lst:
-                lst.append(e.target)
-            first_edge.setdefault((e.source, e.target), e)
-            if e.source == e.target and e.kind in ("continuous_assign",
-                                                    "port_connection"):
-                self_edges.setdefault(e.source, e)
-
-        loops = []
-        for comp in _tarjan_scc(nodes, succ):
-            if len(comp) >= 2:
-                path = _reconstruct_cycle(comp, succ)
-                if len(path) < 2:
-                    continue
-                # location: the first edge along the reconstructed cycle.
-                ekey = (path[0], path[1])
-                e = first_edge.get(ekey)
-                loops.append(CombLoop(nodes=path,
-                                      file=e.file if e else "",
-                                      line=e.line if e else 0))
-            else:
-                n = comp[0]
-                e = self_edges.get(n)
-                if e is not None:
-                    loops.append(CombLoop(nodes=[n], file=e.file, line=e.line))
-        loops.sort(key=lambda lp: (lp.file, lp.line, lp.nodes))
-        return loops
 
     # ── public API ───────────────────────────────────────────────────
 

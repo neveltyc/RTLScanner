@@ -1,9 +1,8 @@
-"""Per-module finding attribution and module-targeted waivers.
+"""Per-module finding attribution.
 
 A file may declare several modules.  Each finding is attributed to the design
-unit whose source range contains it, and ``--waive`` matches that unit (with the
-file basename kept as a backward-compatible fallback) — so a glob can waive one
-module without taking out the whole file.
+unit whose source range contains it (not lumped under the file name), so an
+agent can filter the JSON by the ``module`` field.
 """
 
 import json
@@ -52,66 +51,15 @@ class ModuleAttribution(unittest.TestCase):
             self.assertEqual(by_line[2], "alpha")
             self.assertEqual(by_line[7], "beta")
 
-
-class ModuleTargetedWaiver(unittest.TestCase):
-    def _kept_modules(self, d, *args):
-        env = _lint(d, "multi.sv", *args)
-        return sorted(f.get("module") for f in env["data"]["findings"])
-
-    def test_waive_one_module_keeps_the_other(self):
+    def test_single_module_file_attributed_by_module_not_filename(self):
+        # A one-module-per-file unit parses with that unit AS the syntax-tree
+        # root; attribution must still find it even when the file name differs.
         with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "multi.sv").write_text(MULTI)
-            self.assertEqual(self._kept_modules(d), ["alpha", "beta"])
-            self.assertEqual(self._kept_modules(d, "--waive", "alpha"), ["beta"])
-            self.assertEqual(self._kept_modules(d, "--waive", "beta"), ["alpha"])
-
-    def test_file_basename_still_waives_whole_file(self):
-        # Backward compatibility: a glob matching the file basename waives every
-        # finding in the file, regardless of module.
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "multi.sv").write_text(MULTI)
-            self.assertEqual(self._kept_modules(d, "--waive", "multi"), [])
-
-    def test_one_module_per_file_glob(self):
-        with tempfile.TemporaryDirectory() as d:
-            (Path(d) / "alpha.sv").write_text(
-                "module alpha (input wire a, output wire y);\n"
-                "  wire unused;\n  assign y = a;\nendmodule\n")
-            env = _lint(d, "alpha.sv", "--waive", "alpha")
-            self.assertEqual(env["summary"]["total"], 0)
-
-
-class SingleModuleAttribution(unittest.TestCase):
-    """A one-module-per-file unit is attributed by module name, not file name.
-
-    A compilation unit holding a single design unit parses with that unit AS the
-    syntax-tree root; attribution must still find it (the common case), and a
-    module-name waiver must work even when the file name differs.
-    """
-
-    def _write(self, d):
-        # File name (widget_impl) deliberately differs from module name (widget).
-        (Path(d) / "widget_impl.sv").write_text(
-            "module widget (input wire a, output wire y);\n"
-            "  wire unused_w;\n  assign y = a;\nendmodule\n")
-
-    def test_finding_attributed_to_module_not_filename(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write(d)
+            (Path(d) / "widget_impl.sv").write_text(
+                "module widget (input wire a, output wire y);\n"
+                "  wire unused_w;\n  assign y = a;\nendmodule\n")
             env = _lint(d, "widget_impl.sv")
             self.assertEqual(env["data"]["findings"][0]["module"], "widget")
-
-    def test_waive_by_module_name_works(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write(d)
-            env = _lint(d, "widget_impl.sv", "--waive", "widget")
-            self.assertEqual(env["summary"]["total"], 0)
-
-    def test_waive_by_unrelated_name_keeps_finding(self):
-        with tempfile.TemporaryDirectory() as d:
-            self._write(d)
-            env = _lint(d, "widget_impl.sv", "--waive", "gadget")
-            self.assertEqual(env["summary"]["total"], 1)
 
 
 if __name__ == "__main__":

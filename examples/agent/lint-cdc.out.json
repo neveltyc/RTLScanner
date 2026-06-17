@@ -1,6 +1,6 @@
 {
   "tool": "lint",
-  "version": "<tool-version>",
+  "version": "0.3.0",
   "status": "ok",
   "command": {
     "cmd": "lint",
@@ -10,14 +10,10 @@
     "dir": [],
     "filelist": [],
     "exclude": [],
+    "single_unit": false,
     "rules": [
-      "default",
       "cdc"
-    ],
-    "skip": [],
-    "waive": [],
-    "strict": false,
-    "min_severity": null
+    ]
   },
   "data": {
     "findings": [
@@ -28,7 +24,8 @@
         "severity": "warning",
         "rule": "cdc-crossing",
         "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'q' in 'clkb' domain (launch cdc_violation.src_data, capture cdc_violation.q)",
-        "check": "cdc"
+        "check": "cdc",
+        "module": "cdc_violation"
       },
       {
         "file": "./examples/lint/cdc_demo.sv",
@@ -37,10 +34,10 @@
         "severity": "warning",
         "rule": "cdc-crossing",
         "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'meta' in 'clkb' domain (launch cdc_safe_2ff.src_data, capture cdc_safe_2ff.meta)",
-        "check": "cdc"
+        "check": "cdc",
+        "module": "cdc_safe_2ff"
       }
     ],
-    "waived": [],
     "config_path": null
   },
   "diagnostics": [],
@@ -59,7 +56,6 @@
     "by_check": {
       "cdc": 2
     },
-    "waived": 0,
     "files_linted": 1,
     "has_error": false
   }
