@@ -449,6 +449,25 @@ class LintRuleModelTests(unittest.TestCase):
         checks = {f["check"] for f in env["data"]["findings"]}
         self.assertEqual(checks, {"unused", "cdc"})
 
+    def test_each_category_is_isolated(self):
+        # `--rules X` must yield only check==X.  Regression: a native slang
+        # diagnostic whose option name starts with `port-`/`unused-` (e.g.
+        # `port-width-trunc`) was reclassified by rule-name prefix and leaked
+        # into `--rules semantic`.  Native diagnostics are always `semantic`.
+        src = self.tmp / "leak.sv"
+        src.write_text(
+            "module child(input logic [3:0] a, output logic [3:0] y);\n"
+            "  assign y = a;\nendmodule\n"
+            "module top(input logic [7:0] w, output logic [3:0] z);\n"
+            "  child u(.a(w), .y(z));\n"   # 8->4 width mismatch on a port
+            "endmodule\n")
+        for cat in ("semantic", "unused", "port", "cdc", "comb-loop"):
+            env, _, _ = run_json("lint", str(src), "--rules", cat,
+                                 cwd=self.tmp, env=self._no_env())
+            checks = {f["check"] for f in env["data"]["findings"]}
+            self.assertLessEqual(checks, {cat},
+                                 f"--rules {cat} leaked {checks - {cat}}")
+
     def test_unknown_category_errors_and_lists_valid(self):
         for tok in ("default", "width-*", "width-trunc", "bugs", "none"):
             env, _, rc = run_json("lint", "-d", "examples/lint", "--rules", tok,

@@ -271,6 +271,12 @@ class LintRunner:
             for d in diags:
                 f = self._finding(d)
                 if f is not None:
+                    # Every native slang diagnostic IS the semantic category by
+                    # source — including slang's own port-/width- option names
+                    # (e.g. `port-width-trunc`).  The `port` category is reserved
+                    # for the ScopeAnalyzer connectivity checks below, so don't
+                    # let a rule-name prefix reclassify a native diagnostic.
+                    f.check = "semantic"
                     findings.append(f)
 
         # 2. Analysis-manager pass.  It produces both `unused` findings
