@@ -44,3 +44,22 @@ module cross_hier_loop (output logic y);
     inv u2 (.i(b), .o(a));   // a = ~b  -> loop through child ports
     assign y = a;
 endmodule
+
+
+// `const_dead_branch` has NO real combinational loop: the only edge that would
+// close a y -> z -> y cycle (`z = y`) lives in a branch guarded by a constant-0
+// condition, so it is dead in elaborated hardware.  Constant-condition pruning
+// (the same pass fanin/fanout/trace use) drops that dead edge, so the loop check
+// must NOT flag this module.  Without pruning a phantom y -> z -> y loop appears.
+module const_dead_branch (
+    input  logic a,
+    output logic y,
+    output logic z
+);
+    localparam bit C = 1'b0;   // resolved constant 0 after elaboration
+    assign y = z & a;          // y depends on z (live)
+    always_comb begin
+        if (C) z = y;          // dead branch: would add the phantom z <- y edge
+        else   z = a;          // live: z <- a
+    end
+endmodule
