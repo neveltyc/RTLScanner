@@ -365,6 +365,7 @@ class FlowResult:
     start: str
     edges: list = field(default_factory=list)
     max_depth: int = 0
+    bit_range: Optional[tuple] = None   # (lo, hi) when a bit-select was queried
 
     @property
     def nodes(self):
@@ -378,7 +379,7 @@ class FlowResult:
         return out
 
     def to_dict(self):
-        return dict(
+        d = dict(
             mode=self.mode, signal=self.signal_name, type=self.signal_type,
             kind=self.signal_kind, scope=self.scope_path,
             module=self.scope_module, start=self.start,
@@ -387,11 +388,15 @@ class FlowResult:
             edges=[edge.to_dict(depth) for edge, depth in self.edges],
             edge_count=len(self.edges),
         )
+        if self.bit_range is not None:
+            d['bit_select'] = bit_label(self.bit_range)
+        return d
 
     def pretty_print(self, limit=0):
         C = Color
         title = "FANIN" if self.mode == "fanin" else "FANOUT"
-        print(f"Signal: {C.bold(self.signal_name)}  {C.dim(self.signal_type)}")
+        name = self.signal_name + (bit_label(self.bit_range) if self.bit_range else "")
+        print(f"Signal: {C.bold(name)}  {C.dim(self.signal_type)}")
         print(f"Scope:  {C.cyan(self.scope_path)}  [{C.yellow(self.scope_module)}]")
         print(f"Mode:   {C.green(title)}  {C.dim('depth <= ' + str(self.max_depth))}")
         print("\u2500" * 60)
@@ -1465,40 +1470,79 @@ class SignalTracer:
                 ordered.append(edge)
         return ordered
 
-    def flow(self, signal_name, scope_path, mode, max_depth=4):
+    # Sentinel: a concrete query range that an edge does not touch at all.
+    _NO_OVERLAP = object()
+
+    def _map_range(self, edge, rng, mode):
+        """Carry an interesting bit range across one edge to the far node.
+
+        ``rng is None`` means "the whole signal" — a non-bit-select query.  It
+        stays None (never narrows), so a whole-signal traversal visits exactly
+        the same edges, in the same order, as the symbol-level graph: the
+        demand-driven / whole-graph parity (test_flow_lazy) is preserved.
+
+        A concrete (lo, hi) range is intersected with the bits this edge touches
+        on the near side and mapped to the far side: precisely via bit_offset
+        for a copy-like edge, else falling back to the bits the edge reads /
+        drives on the far side (None = whole, the conservative answer for
+        arithmetic).  Returns _NO_OVERLAP when a concrete range misses the edge.
+        """
+        if rng is None:
+            return None
+        near = edge.target_bits if mode == "fanin" else edge.source_bits
+        if near is not None:
+            lo, hi = max(rng[0], near[0]), min(rng[1], near[1])
+            if lo > hi:
+                return self._NO_OVERLAP
+            portion = (lo, hi)
+        else:
+            portion = rng
+        if edge.bit_offset is not None:
+            off = -edge.bit_offset if mode == "fanin" else edge.bit_offset
+            return (portion[0] + off, portion[1] + off)
+        # Non-copy (arithmetic / reduction): fall to the far-side bits.
+        return edge.source_bits if mode == "fanin" else edge.target_bits
+
+    def flow(self, signal_name, scope_path, mode, max_depth=4, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
 
         start = self._sym_path(sym)
 
-        # Demand-driven BFS: expand a node's incident edges only when the
-        # traversal reaches it, so a shallow query on a large design pays for
-        # the touched neighborhood instead of building the whole flow graph.
+        # Demand-driven, bit-aware BFS: the frontier carries (node, range) where
+        # range is the bits still of interest (None = whole signal).  An edge is
+        # followed only when its bits overlap range, and range is mapped across
+        # the edge to the next node — so `-s dout[5]` converges to the exact
+        # driving bit.  A whole-signal query keeps range None throughout and
+        # reproduces the symbol-level traversal edge-for-edge.
         traversed = []
         seen_edges = set()
-        seen_nodes = {start}
-        frontier = [start]
+        seen_nodes = {(start, bit_range)}
+        frontier = [(start, bit_range)]
         depth = 0
         max_depth = max(0, int(max_depth))
         while frontier and depth < max_depth:
             depth += 1
             next_frontier = []
-            for node in frontier:
+            for node, rng in frontier:
                 for edge in self._incident_edges(node, mode):
+                    nxt_rng = self._map_range(edge, rng, mode)
+                    if nxt_rng is self._NO_OVERLAP:
+                        continue
                     ekey = edge.key()
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
                         traversed.append((edge, depth))
                     nxt = edge.source if mode == "fanin" else edge.target
-                    if nxt not in seen_nodes:
-                        seen_nodes.add(nxt)
-                        next_frontier.append(nxt)
+                    if (nxt, nxt_rng) not in seen_nodes:
+                        seen_nodes.add((nxt, nxt_rng))
+                        next_frontier.append((nxt, nxt_rng))
             frontier = next_frontier
 
         return FlowResult(
             mode=mode, signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
             scope_module=inst.body.name, start=start,
-            edges=traversed, max_depth=max_depth,
+            edges=traversed, max_depth=max_depth, bit_range=bit_range,
         )
 
     # ── clock / sequential classification ─────────────────────────────
@@ -1952,13 +1996,7 @@ def _emit_flow_summary(env, r, mode, scope, signal):
 
 def run_flow(args, env, *, mode):
     tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
-    if bit_range is not None:
-        note = f"bit-select ignored for {mode}; using whole signal '{signal}'"
-        if env is not None:
-            env.add_diagnostic("note", message=note)
-        else:
-            print(f"note: {note}", file=sys.stderr)
-    r = tracer.flow(signal, scope, mode, args.depth)
+    r = tracer.flow(signal, scope, mode, args.depth, bit_range=bit_range)
     if getattr(args, 'summary', False):
         return _emit_flow_summary(env, r, mode, scope, signal)
     lim = agent_json.resolve_limit(args.limit)
@@ -1980,6 +2018,8 @@ def run_flow(args, env, *, mode):
             'start': rd['start'], 'nodes': nodes_shown, 'edges': edges_shown,
             'max_depth': rd['max_depth'],
         }
+        if 'bit_select' in rd:
+            data['bit_select'] = rd['bit_select']
         summary = {
             'mode': mode, 'results': 1,
             'nodes': nodes_total, 'edges': edges_total,

@@ -255,11 +255,21 @@ class BitSelectTraceTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("out of range", env["errors"][0]["message"])
 
-    def test_fanin_ignores_bit_select(self):
+    def test_fanin_honors_bit_select(self):
+        # status[3] is driven by `status[3:0] = y[3:0]`, so its fanin converges
+        # to y; the x-driven upper nibble must not appear.
         env = run_json("fanin", str(self.sv), "-s", "status[3]", "--scope", "div")
         self.assertEqual(env["status"], "ok")
-        self.assertTrue(any("bit-select ignored" in d["message"]
-                            for d in env["diagnostics"]))
+        self.assertEqual(env["data"].get("bit_select"), "[3]")
+        srcs = {e["source"].split(".")[-1] for e in env["data"]["edges"]}
+        self.assertIn("y", srcs)
+        self.assertNotIn("x", srcs)
+
+    def test_fanin_bit_select_other_nibble(self):
+        env = run_json("fanin", str(self.sv), "-s", "status[7]", "--scope", "div")
+        srcs = {e["source"].split(".")[-1] for e in env["data"]["edges"]}
+        self.assertIn("x", srcs)
+        self.assertNotIn("y", srcs)
 
 
 class ProceduralPrecisionTests(unittest.TestCase):

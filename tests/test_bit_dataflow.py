@@ -93,5 +93,53 @@ class P1BitEdges(unittest.TestCase):
                             for e in edges(sums)))
 
 
+class P2BitAwareFlow(unittest.TestCase):
+    """fanin/fanout honor a -s bit-select and map the range across each hop."""
+
+    def test_fanin_bit_select_converges(self):
+        # dout[5] = a[2]: only that edge survives the bit-select.
+        env = run_json("fanin", FIX, "-s", "dout[5]", "--scope", "bits_top")
+        self.assertEqual(env["data"].get("bit_select"), "[5]")
+        es = edges(env)
+        self.assertEqual(len(es), 1)
+        self.assertEqual((es[0]["source"], es[0]["source_bits"],
+                          es[0]["target_bits"]),
+                         ("bits_top.a", "[2]", "[5]"))
+
+    def test_fanout_bit_select_precise_plus_conservative(self):
+        env = run_json("fanout", FIX, "-s", "a[2]", "--scope", "bits_top",
+                       "--depth", "1")
+        keyed = {(e["source"], e["target"]): e for e in edges(env)}
+        # precise to dout[5]
+        self.assertEqual(keyed[("bits_top.a", "bits_top.dout")]["target_bits"],
+                         "[5]")
+        # conservative through arithmetic into sum (whole signal)
+        self.assertIn(("bits_top.a", "bits_top.sum"), keyed)
+        self.assertNotIn("target_bits", keyed[("bits_top.a", "bits_top.sum")])
+
+    def test_multihop_swap_high_nibble_traces_to_lo(self):
+        # dout[7:4] -> (nibble swap, ports, copies) -> lo, never hi.
+        env = run_json("fanin", "examples/bits/chain_top.sv", "-s", "dout[7:4]",
+                       "--scope", "chain_top", "--depth", "6")
+        nodes = set(env["data"]["nodes"])
+        self.assertIn("chain_top.lo", nodes)
+        self.assertNotIn("chain_top.hi", nodes)
+
+    def test_multihop_swap_low_nibble_traces_to_hi(self):
+        env = run_json("fanin", "examples/bits/chain_top.sv", "-s", "dout[3:0]",
+                       "--scope", "chain_top", "--depth", "6")
+        nodes = set(env["data"]["nodes"])
+        self.assertIn("chain_top.hi", nodes)
+        self.assertNotIn("chain_top.lo", nodes)
+
+    def test_whole_signal_query_unchanged(self):
+        # No bit-select: every nibble source is reachable (symbol-level cone).
+        env = run_json("fanin", "examples/bits/chain_top.sv", "-s", "dout",
+                       "--scope", "chain_top", "--depth", "6")
+        nodes = set(env["data"]["nodes"])
+        self.assertIn("chain_top.lo", nodes)
+        self.assertIn("chain_top.hi", nodes)
+
+
 if __name__ == "__main__":
     unittest.main()

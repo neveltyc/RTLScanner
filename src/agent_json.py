@@ -545,6 +545,11 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
                 "scope":     {"type": "string"},
                 "signal":    {"type": "string",
                               "description": "Starting signal name."},
+                "bit_select": {"type": "string",
+                              "description": "Present when the query used a "
+                              "bit-select (e.g. '[5]', '[7:4]'): the traversal "
+                              "follows only edges touching those bits and maps "
+                              "the range across each hop (bit-level dataflow)."},
                 "start":     {"type": "string",
                               "description": "Elaborated hierarchical path of the starting signal."},
                 "max_depth": {"type": "integer"},
