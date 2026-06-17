@@ -8,6 +8,8 @@ whole-signal edges look exactly as before, and arithmetic stays conservative.
 import json
 import subprocess
 import sys
+import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 
@@ -215,6 +217,70 @@ class P4StructuralOps(unittest.TestCase):
         self.assertIn(("ops_top.a", "ops_top.trunc8", None, None), got)
         # a must NOT be reported as precisely driving the low nibble.
         self.assertNotIn(("ops_top.a", "ops_top.trunc8", "[3:0]", None), got)
+
+
+class P5ExoticAndEdgeCases(unittest.TestCase):
+    """Correctness on tricky inputs: same-pair multi-segment, big-endian
+    vectors, packed arrays, and out-of-range bit-selects."""
+
+    def _write(self, src):
+        p = Path(tempfile.mkdtemp()) / "x.sv"
+        p.write_text(textwrap.dedent(src))
+        return str(p)
+
+    def test_continuous_multisegment_same_pair_reachable(self):
+        # o = {a[3:0], a[7:4]} drives o from a over two different segments; the
+        # edge-key dedup keeps one, so the pair must downgrade to whole-signal
+        # and stay reachable from every bit of o (regression: bit-select dropped
+        # the second segment and reported o[2] as having no driver).
+        sv = self._write("""
+            module clash(input logic [7:0] a, output logic [7:0] o);
+              assign o = {a[3:0], a[7:4]};
+            endmodule""")
+        for bit in ("o[2]", "o[6]"):
+            env = run_json("fanin", sv, "-s", bit, "--scope", "clash")
+            self.assertIn("clash.a", {e["source"] for e in env["data"]["edges"]},
+                          f"{bit} must still reach a")
+
+    def test_big_endian_bit_select(self):
+        # Declared y[1] on a [0:7] vector is internal bit 6; the query must be
+        # translated to match slang's internal driver bounds, not silently miss.
+        sv = self._write("""
+            module be(input logic [0:7] a, output logic [0:7] y);
+              assign y[1:3] = a[1:3];
+              assign y[4:7] = a[4:7];
+            endmodule""")
+        res = run_json("trace", sv, "-s", "y[1]", "--scope", "be")["data"]["results"][0]
+        self.assertIsNotNone(res["driver"])          # not falsely "undriven"
+        env = run_json("fanin", sv, "-s", "y[1]", "--scope", "be")
+        self.assertIn("be.a", {e["source"] for e in env["data"]["edges"]})
+
+    def test_packed_array_is_conservative(self):
+        # q = mem[2] on logic [3:0][7:0]: element stride is 8, which our
+        # little-endian bit math doesn't model, so the edge must degrade to a
+        # whole-signal connection (no spurious/ wrong bit labels), not q[0].
+        sv = self._write("""
+            module pa(input logic [3:0][7:0] mem, output logic [7:0] q);
+              assign q = mem[2];
+            endmodule""")
+        edges = run_json("fanin", sv, "-s", "q", "--scope", "pa")["data"]["edges"]
+        self.assertIn("pa.mem", {e["source"] for e in edges})
+        for e in edges:
+            self.assertNotIn("source_bits", e)
+            self.assertNotIn("target_bits", e)
+
+    def test_flow_bit_select_out_of_range_errors(self):
+        # fanin/fanout validate a bit-select against width, like trace.
+        sv = self._write("""
+            module n(input logic [3:0] a, output logic [3:0] y);
+              assign y = a;
+            endmodule""")
+        proc = subprocess.run(
+            RTLSCANNER + ["fanin", sv, "-s", "y[9]", "--scope", "n", "--json"],
+            cwd=ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        env = json.loads(proc.stdout)
+        self.assertEqual(env["status"], "error")
+        self.assertIn("out of range", env["errors"][0]["message"])
 
 
 if __name__ == "__main__":

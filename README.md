@@ -228,9 +228,12 @@ rtlscanner fanout -d ./rtl -s 'a[7:4]'  --scope top   # only where that nibble g
 Precision matches the RTL: bit/part-selects, concatenation, mux (`?:`), bitwise
 `& | ^ ~`, truncation, and zero/sign-extend are exact; arithmetic (`a + b`),
 shifts, reductions, comparisons, and dynamic indices (`a[i]`) fall back to the
-whole signal — conservative, so a cone is never under-reported. Whole-signal
-queries (no bit-select) are unchanged. Bit ranges are shown only for proper
-sub-ranges (additive output).
+whole signal — conservative, so a cone is never under-reported. Bit precision
+applies to little-endian `[N:0]` packed vectors (the common case); big-endian
+`[0:N]` vectors and multi-bit-element packed arrays (`[3:0][7:0]`) are handled
+at signal granularity (also conservative). Whole-signal queries (no bit-select)
+are unchanged. Bit ranges are shown only for proper sub-ranges (additive
+output).
 
 Reading the output:
 

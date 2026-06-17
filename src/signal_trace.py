@@ -762,7 +762,11 @@ class SignalTracer:
         return (min(s[0] for s in spans), max(s[1] for s in spans))
 
     def _load_bits(self, symbol, bounds):
-        """(display_label, bounds) for a load reading `symbol` over `bounds`."""
+        """(display_label, bounds) for a load reading `symbol` over `bounds`.
+        A non-simple type is kept conservatively (no range), so a bit-select
+        never drops a reader whose coordinates we can't trust."""
+        if bounds is None or not self._is_simple_vector(symbol):
+            return "", None
         norm = self._norm_bits(symbol, bounds)
         return (bit_label(norm) if norm else ""), bounds
 
@@ -866,15 +870,63 @@ class SignalTracer:
         except Exception:
             return ""
 
+    @staticmethod
+    def _is_simple_vector(sym):
+        """True for a scalar or a little-endian ``[N:0]`` packed bit vector — the
+        types where a declared bit index equals slang's internal LSB0 offset, so
+        our bit arithmetic and slang's bounds agree.  Big-endian ``[0:N]`` vectors
+        and multi-bit-element packed arrays (``[3:0][7:0]``) are excluded: their
+        bits are reported conservatively (whole signal) rather than risk a
+        declared-vs-internal coordinate mismatch."""
+        try:
+            t = sym.type
+            if t.isScalar:
+                return True
+            return bool(t.isPackedArray and t.elementType.bitWidth == 1
+                        and t.range.isDescending)
+        except Exception:
+            return False
+
+    def _to_internal(self, sym, rng):
+        """Map a user-written declared bit range to slang's internal LSB0
+        coordinates (identity for little-endian) so a `-s sig[bits]` query lines
+        up with the driver/read bounds the analysis reports.  Best-effort: a
+        non-vector or unfoldable type is returned unchanged."""
+        if rng is None:
+            return None
+        try:
+            t = sym.type
+            if not (t.isPackedArray and t.elementType.bitWidth == 1):
+                return rng
+            r = t.range
+            a, b = r.translateIndex(int(rng[0])), r.translateIndex(int(rng[1]))
+            return (min(a, b), max(a, b))
+        except Exception:
+            return rng
+
     def _norm_bits(self, sym, bounds):
-        """Drop a bit range that spans the whole signal so whole-signal edges
-        stay byte-for-byte identical to before (additive output); a proper
-        sub-range is kept as a normalized (lo, hi) tuple."""
-        if bounds is None:
+        """Normalize an edge bit range for display/propagation: None for a range
+        that spans the whole signal (so whole-signal edges stay byte-for-byte
+        identical — additive output), and None for a type whose declared and
+        internal bit numbering may differ (big-endian / packed array), which is
+        then handled conservatively at signal granularity."""
+        if bounds is None or not self._is_simple_vector(sym):
             return None
         full = self._signal_full_bounds(sym)
         b = (int(bounds[0]), int(bounds[1]))
         return None if full is not None and b == full else b
+
+    def _edge_bits(self, src, dst, sb, db, off):
+        """Normalize an edge's (source_bits, target_bits, bit_offset).
+
+        Bits and offset are trusted only when BOTH endpoints are simple vectors
+        (declared == internal LSB0).  If either side is a big-endian vector or a
+        multi-bit-element packed array, the whole edge degrades to whole→whole
+        (None, None, None): a wrong source width would otherwise mis-clamp even
+        a simple target's bits.  Conservative and never mis-numbered."""
+        if not (self._is_simple_vector(src) and self._is_simple_vector(dst)):
+            return (None, None, None)
+        return (self._norm_bits(src, sb), self._norm_bits(dst, db), off)
 
     def _copy_bits(self, src_sym, src_bits, dst_sym, dst_bits):
         """Bit correspondence for a positional copy (assign / select / trunc /
@@ -895,6 +947,8 @@ class SignalTracer:
         if source is None or target is None:
             return None
         f, ln = self._loc_sym(loc_sym) if loc_sym is not None else ("", 0)
+        sb, db, off = self._edge_bits(source, target, source_bits,
+                                      target_bits, bit_offset)
         return FlowEdge(
             source=self._sym_path(source),
             target=self._sym_path(target),
@@ -904,9 +958,9 @@ class SignalTracer:
             description=description,
             file=f,
             line=ln,
-            source_bits=self._norm_bits(source, source_bits),
-            target_bits=self._norm_bits(target, target_bits),
-            bit_offset=bit_offset,
+            source_bits=sb,
+            target_bits=db,
+            bit_offset=off,
         )
 
     def _port_symbol(self, port):
@@ -965,12 +1019,11 @@ class SignalTracer:
                     pairs = self._continuous_assign_pairs(proc)
 
                 for src, dst, sbits, dbits, off in pairs:
+                    sb, db, o = self._edge_bits(src, dst, sbits, dbits, off)
                     templates.append((
                         self._sym_path(src), self._sym_path(dst),
                         self._sym_type(src), self._sym_type(dst),
-                        kind, desc, f, ln, clocked,
-                        self._norm_bits(src, sbits),
-                        self._norm_bits(dst, dbits), off))
+                        kind, desc, f, ln, clocked, sb, db, o))
             except Exception:
                 continue
         self._proc_edge_cache[key] = templates
@@ -1125,6 +1178,23 @@ class SignalTracer:
                 out.append((src, dst, sb, None, None))
         return out
 
+    def _collapse_pairs(self, pairs):
+        """Collapse (src, dst, ...) tuples sharing a (src, dst): a symbol pair
+        carrying two different bit segments has no single-valued bit map, so it
+        downgrades to whole-signal (None, None, None) — conservative, and
+        reachable for any bit-select.  This mirrors the edge-build's key dedup
+        (which keeps one edge per (src,dst,kind,file,line)), so a multi-segment
+        assign like ``o = {a[3:0], a[7:4]}`` stays reachable from every o bit."""
+        out = {}
+        for (src, dst, sb, db, off) in pairs:
+            k = (self._sym_path(src), self._sym_path(dst))
+            if k in out:
+                s, d, *_ = out[k]
+                out[k] = (s, d, None, None, None)
+            else:
+                out[k] = (src, dst, sb, db, off)
+        return list(out.values())
+
     def _continuous_assign_pairs(self, proc):
         """Bit-aware (src, dst, src_bits, dst_bits, offset) for one continuous
         assign.  A single-driver assign gets full structural precision from its
@@ -1142,7 +1212,8 @@ class SignalTracer:
                 allowed = [s for (s, _b) in rds]
                 segs = self._segments_for(dst_base, getattr(asgn, "right", None),
                                           allowed)
-                return [(s, dsym, sb, db, off) for (s, sb, db, off) in segs]
+                return self._collapse_pairs(
+                    [(s, dsym, sb, db, off) for (s, sb, db, off) in segs])
         out = []
         for dsym, dbnd in drv:
             for rsym, rbnd in rds:
@@ -1642,8 +1713,12 @@ class SignalTracer:
 
     def flow(self, signal_name, scope_path, mode, max_depth=4, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
+        self._check_bit_range(sym, signal_name, bit_range)
 
         start = self._sym_path(sym)
+        # Match the query to slang's internal bit numbering (identity for
+        # little-endian); the declared bit_range is kept on FlowResult for display.
+        sel = self._to_internal(sym, bit_range)
 
         # Demand-driven, bit-aware BFS: the frontier carries (node, range) where
         # range is the bits still of interest (None = whole signal).  An edge is
@@ -1653,8 +1728,8 @@ class SignalTracer:
         # reproduces the symbol-level traversal edge-for-edge.
         traversed = []
         seen_edges = set()
-        seen_nodes = {(start, bit_range)}
-        frontier = [(start, bit_range)]
+        seen_nodes = {(start, sel)}
+        frontier = [(start, sel)]
         depth = 0
         max_depth = max(0, int(max_depth))
         while frontier and depth < max_depth:
@@ -1972,27 +2047,34 @@ class SignalTracer:
                 continue
         return paths
 
+    def _check_bit_range(self, sym, signal_name, bit_range):
+        """Reject a bit-select outside the signal's width (shared by trace and
+        fanin/fanout).  Declared indices run 0..width-1 for either endianness."""
+        if bit_range is None:
+            return
+        try:
+            width = int(sym.type.bitWidth)
+        except Exception:
+            width = None
+        if width and bit_range[1] >= width:
+            raise rtl_cli.CliError(
+                agent_json.ERR_SIGNAL_NOT_FOUND,
+                f"bit {bit_label(bit_range)} out of range for "
+                f"'{signal_name}' ({sym.type}, {width} bits)", 1)
+
     def trace(self, signal_name, scope_path, bit_range=None):
         inst, sym = self._lookup(signal_name, scope_path)
-
-        if bit_range is not None:
-            try:
-                width = int(sym.type.bitWidth)
-            except Exception:
-                width = None
-            if width and bit_range[1] >= width:
-                raise rtl_cli.CliError(
-                    agent_json.ERR_SIGNAL_NOT_FOUND,
-                    f"bit {bit_label(bit_range)} out of range for "
-                    f"'{signal_name}' ({sym.type}, {width} bits)", 1)
+        self._check_bit_range(sym, signal_name, bit_range)
 
         drivers = self._analyze_drivers(sym, inst)
         loads = self._analyze_loads(sym, inst.body, inst)
         if bit_range is not None:
             # Bit-select: narrow both the driver origin and the loads to the
-            # readers/writers that actually touch those bits.
-            drivers = [d for d in drivers if bits_overlap(d.bounds, bit_range)]
-            loads = [ld for ld in loads if bits_overlap(ld.bounds, bit_range)]
+            # readers/writers that actually touch those bits.  Driver/read bounds
+            # are slang-internal, so match against the internal-coord query.
+            sel = self._to_internal(sym, bit_range)
+            drivers = [d for d in drivers if bits_overlap(d.bounds, sel)]
+            loads = [ld for ld in loads if bits_overlap(ld.bounds, sel)]
 
         r = TraceResult(
             signal_name=signal_name, signal_type=str(sym.type),
