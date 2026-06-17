@@ -68,6 +68,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `scope`/`xref` collected none at all. All structural commands now surface
   real diagnostics — correct severity, human-readable message, and
   file/line/column — through the same `DiagnosticEngine` `lint` uses.
+- **`comb-loop` no longer silently drops a real loop.** When a multi-node
+  combinational cycle's lexicographically-smallest node also had a structural
+  self-assign (`assign a = a & …;`), the cycle reconstruction closed on that
+  trivial self-edge and returned a length-1 path, which the caller discarded —
+  so the whole strongly-connected component went unreported. The reconstruction
+  now requires a real hop before closing the cycle, so the multi-node loop is
+  reported.
+- **CDC clock-domain map cache is keyed by the reset configuration.** The cached
+  `{register → clock domain}` map ignored the reset predicate, so a tracer
+  reused across calls with different `[lint.cdc] reset` globs could hand back the
+  first call's stale map. It is now keyed by the reset-glob set (no effect on the
+  normal single-call path).
 
 ## [0.2.0] - 2026-06-16
 

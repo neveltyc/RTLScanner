@@ -164,6 +164,34 @@ class ResetAndGating(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
+class ClockDomainCache(unittest.TestCase):
+    """The clock-domain map is cached, but the cache must be keyed by the reset
+    configuration: a second call on the SAME tracer with a different reset
+    predicate must not hand back the first call's stale map."""
+
+    SRC = """
+        module top(input logic clk, input logic wibble,
+                   input logic d, output logic q);
+          logic a;
+          always_ff @(posedge clk)    a <= d;
+          always_ff @(posedge wibble) q <= a;   // second clock net 'wibble'
+        endmodule
+        """
+
+    def test_cache_respects_reset_predicate(self):
+        tr = _tracer(self.SRC)
+        # 'wibble' is a real second clock -> clk -> wibble is a crossing.
+        strict = tr.cdc_crossings(lambda n: False)
+        self.assertTrue(strict, "two distinct clock nets should cross")
+        # Same tracer, but now classify 'wibble' as a reset -> its flop has no
+        # clock domain, so there is no crossing.  A reset-agnostic cache would
+        # still return the first (stale) map and wrongly report a crossing.
+        relaxed = tr.cdc_crossings(lambda n: n == "wibble")
+        self.assertEqual(relaxed, [],
+                         "with 'wibble' treated as reset, no crossing remains")
+
+
+@unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
 class EdgeClassification(unittest.TestCase):
     """`FlowEdge.clocked` underpins both CDC and loop detection: it is set for
     edges driven by a sequential block and clear for combinational ones."""
