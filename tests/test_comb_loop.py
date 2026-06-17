@@ -88,6 +88,23 @@ class LoopDetection(unittest.TestCase):
         self.assertEqual(len(loops), 1)
         self.assertEqual(_leaf_sets(loops)[0], {"a"})
 
+    def test_self_loop_on_min_node_does_not_hide_multinode_cycle(self):
+        # Regression: a multi-node combinational SCC whose lexicographically
+        # smallest node ('a') ALSO has a structural self-loop must still be
+        # reported.  Cycle reconstruction used to close on 'a's trivial self-edge
+        # and return the length-1 path [a], which the caller then dropped --
+        # silently losing the real a<->b loop (and the self-loop with it).
+        loops = _loops("""
+            module m(input logic en, output logic y);
+              logic a, b;
+              assign a = a & b & en;   // 'a' self-loop + a<-b
+              assign b = a | en;       // b<-a closes the a<->b loop
+              assign y = a;
+            endmodule
+            """)
+        self.assertEqual(len(loops), 1)
+        self.assertLessEqual({"a", "b"}, _leaf_sets(loops)[0])
+
     def test_clean_pipeline_has_no_loop(self):
         loops = _loops("""
             module m(input logic clk, input logic d, output logic o);

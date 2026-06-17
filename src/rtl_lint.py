@@ -395,7 +395,8 @@ class CDCAnalyzer:
     def findings(self) -> list:
         tracer = self._tracer or SignalTracer(self._comp)
         out = []
-        for c in tracer.cdc_crossings(self._looks_like_reset):
+        for c in tracer.cdc_crossings(self._looks_like_reset,
+                                      reset_key=tuple(self._reset_globs)):
             frm = "/".join(c.from_domains) or "?"
             to = "/".join(c.to_domains) or "?"
             msg = (f"signal '{c.launch_name}' crosses clock domains: launched "

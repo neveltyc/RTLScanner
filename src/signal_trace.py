@@ -496,7 +496,12 @@ def _reconstruct_cycle(comp, succ):
         for nxt in succ.get(node, ()):
             if nxt not in compset:
                 continue
-            if nxt == s:
+            # Close the cycle only after a real hop.  A self-edge on the start
+            # node (s -> s) can't close a *multi-node* cycle; returning the
+            # length-1 path [s] here would make the caller drop the entire SCC
+            # and miss the real loop (regression: a multi-node SCC whose min
+            # node also has a structural self-assign).
+            if nxt == s and len(path) >= 2:
                 return path
             if nxt not in visited:
                 visited.add(nxt)
@@ -520,7 +525,7 @@ class SignalTracer:
         self._proc_edge_cache = {}
         # Clock-domain caches (see clock_domain_map / cdc_crossings).
         self._clock_tmpl_cache = {}    # body key -> {driver path -> [clk path]}
-        self._clock_domain_cache = None  # reg node path -> ClockDomain
+        self._clock_domain_cache = {}    # reset-glob key -> {reg path -> ClockDomain}
         # Demand-driven flow-graph caches (see _build_flow_edges / flow).
         self._inst_proc_cache = {}     # inst path -> [FlowEdge] (proc/assign)
         self._inst_port_cache = {}     # inst path -> [FlowEdge] (own ports)
@@ -1469,15 +1474,22 @@ class SignalTracer:
             seen.add(cur)
         return cur
 
-    def clock_domain_map(self, is_reset):
+    def clock_domain_map(self, is_reset, reset_key=None):
         """``{registered_node_path -> ClockDomain}`` over the whole design.
 
         A registered node is any signal driven by a sequential procedure; its
         domain is the *source net* its clock resolves to (``is_reset`` drops
-        async-reset events from the clock set).  Built once and cached.
+        async-reset events from the clock set).
+
+        The result depends on ``is_reset``, so the cache is keyed by
+        ``reset_key`` -- the reset-glob set the predicate was built from.  A
+        tracer reused across calls with *different* reset configurations no
+        longer hands back the first call's stale map.  When ``reset_key`` is
+        None (an ad-hoc caller passing a bare predicate) the map is recomputed
+        every call rather than risk serving a result for a different predicate.
         """
-        if self._clock_domain_cache is not None:
-            return self._clock_domain_cache
+        if reset_key is not None and reset_key in self._clock_domain_cache:
+            return self._clock_domain_cache[reset_key]
         domains = {}
         for inst in iter_instances(self._root):
             if getattr(inst, 'body', None) is None:
@@ -1507,12 +1519,13 @@ class SignalTracer:
                 else:
                     rec.domains |= doms
                     rec.names |= names
-        self._clock_domain_cache = domains
+        if reset_key is not None:
+            self._clock_domain_cache[reset_key] = domains
         return domains
 
     # ── whole-graph analyses (CDC / combinational loops) ───────────────
 
-    def cdc_crossings(self, is_reset):
+    def cdc_crossings(self, is_reset, reset_key=None):
         """Clock-domain crossings on the flow graph.
 
         For each capture register, walk *combinationally* backward from its
@@ -1521,9 +1534,12 @@ class SignalTracer:
         whose domain is disjoint from the capture's domain is an unsynchronized
         crossing.  Cross-hierarchy by construction: the whole-graph build folds
         in port-connection and hierarchical-reference edges alike.
+
+        ``reset_key`` (the reset-glob set behind ``is_reset``) keys the cached
+        clock-domain map so a reused tracer is correct across reset configs.
         """
         edges = self._build_flow_edges()
-        reg_domain = self.clock_domain_map(is_reset)
+        reg_domain = self.clock_domain_map(is_reset, reset_key)
         if not reg_domain:
             return []
 
