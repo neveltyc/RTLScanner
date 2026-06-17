@@ -78,6 +78,10 @@ reset = ["nrst_*", "por_*"]           # extra reset-signal name globs
 
 [xref]
 path_style = "relative"                # relative|absolute|name (rel/abs aliases ok)
+
+[flow]
+unroll     = true                      # prune constant if/case + unroll constant loops (default on)
+max_unroll = 2048                      # cap on total unrolled iterations per block
 ```
 
 ### Filelist precedence over dir scan
@@ -234,6 +238,24 @@ applies to little-endian `[N:0]` packed vectors (the common case); big-endian
 at signal granularity (also conservative). Whole-signal queries (no bit-select)
 are unchanged. Bit ranges are shown only for proper sub-ranges (additive
 output).
+
+**Constant pruning & loop unrolling** (on by default; `--no-unroll` to disable).
+Before building procedural edges the block is walked structurally: an `if`/`case`
+whose condition folds to a compile-time constant keeps only the live branch
+(dead-branch reads/assignments never become edges), and a `for`/`repeat` loop
+with constant bounds is unrolled with the loop variable bound — so a windowed
+access like `hi[i] = a[i+2]` recovers the exact slice (`hi ← a[3:2]`) instead of
+blurring to the whole signal, and the loop variable stops appearing as a
+spurious read. `while`/`do-while`/`foreach`, non-constant conditions/bounds, and
+any loop exceeding `--max-unroll N` (default 2048 total iterations per block)
+fall back to the conservative whole-signal handling, so a cone is never
+under-reported. `--no-unroll` restores the pre-pass behaviour byte-for-byte.
+
+```bash
+rtlscanner fanin -d examples/unroll -s q  --scope prune              # dead branch dropped
+rtlscanner fanin -d examples/unroll -s hi --scope window             # hi ← a[3:2], precise
+rtlscanner fanin -d examples/unroll -s q  --scope prune --no-unroll  # conservative baseline
+```
 
 Reading the output:
 

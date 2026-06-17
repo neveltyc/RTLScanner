@@ -83,10 +83,88 @@ def expr_symbols(expr) -> list:
 # live alongside expr_symbols (which stays symbol-only); callers that want bits
 # opt in, everything else is unaffected.
 
-def _const_int(expr):
-    """Fold an expression to a Python int, or None when not statically known."""
+# ── Constant evaluation (with optional loop-variable binding) ────────
+#
+# slang pre-folds genuinely-constant expressions into ``expr.constant`` (static
+# select indices, parameter values) — all the bit-range extraction below needs
+# by default.  Constant-condition pruning and loop unrolling need more: an
+# ``if (EN)`` predicate or a loop bound ``i < N`` is not pre-folded, and an index
+# ``p[i]`` only becomes constant once the loop variable ``i`` is bound to an
+# iteration value.  An EvalContext (anchored at the procedure, carrying
+# ``createLocal`` loop-var bindings) provides exactly that.  Every helper here
+# no-ops to "non-constant" when given no context, so the default path is
+# unchanged.
+
+def make_eval_context(symbol):
+    """A constant-evaluation context anchored at `symbol`, or None."""
+    if ast is None or symbol is None:
+        return None
+    try:
+        return ast.EvalContext(symbol)
+    except Exception:
+        return None
+
+
+def _cv_to_int(cv):
+    """ConstantValue -> Python int, or None when not a determinate integer."""
+    if cv is None:
+        return None
+    try:
+        if not bool(cv) or cv.hasUnknown():
+            return None
+    except Exception:
+        return None
+    try:
+        return int(cv.convertToInt().value)
+    except Exception:
+        pass
+    try:
+        return int(cv.value)
+    except Exception:
+        return None
+
+
+def try_eval_bool(expr, eval_ctx):
+    """True / False / None(=non-constant) for a condition expression."""
+    if eval_ctx is None or expr is None:
+        return None
+    try:
+        cv = expr.eval(eval_ctx)
+        if not bool(cv) or cv.hasUnknown():
+            return None
+        if cv.isTrue():
+            return True
+        if cv.isFalse():
+            return False
+    except Exception:
+        return None
+    return None
+
+
+def try_eval_int(expr, eval_ctx):
+    """Python int, or None when the expression isn't a determinate constant."""
+    if eval_ctx is None or expr is None:
+        return None
+    try:
+        return _cv_to_int(expr.eval(eval_ctx))
+    except Exception:
+        return None
+
+
+def _const_int(expr, eval_ctx=None):
+    """Fold an expression to a Python int, or None when not statically known.
+
+    With an ``eval_ctx`` (e.g. inside an unrolled loop, where the loop variable
+    is bound) an otherwise dynamic-looking index such as ``p[i]`` folds to a
+    concrete value; without one, only slang's pre-computed ``expr.constant`` is
+    consulted — byte-for-byte the original behaviour.
+    """
     if expr is None:
         return None
+    if eval_ctx is not None:
+        v = try_eval_int(expr, eval_ctx)
+        if v is not None:
+            return v
     try:
         c = expr.constant
     except Exception:
@@ -117,20 +195,20 @@ def full_bounds(sym):
     return None
 
 
-def _range_select_bounds(expr, base_lo):
+def _range_select_bounds(expr, base_lo, eval_ctx=None):
     """Constant (lo, hi) of a RangeSelectExpression in base coordinates, or
     None when a governing index is non-constant (dynamic part-select)."""
     kind = getattr(getattr(expr, "selectionKind", None), "name", "")
-    left = _const_int(getattr(expr, "left", None))
+    left = _const_int(getattr(expr, "left", None), eval_ctx)
     if kind == "Simple":
-        right = _const_int(getattr(expr, "right", None))
+        right = _const_int(getattr(expr, "right", None), eval_ctx)
         if left is None or right is None:
             return None
         lo, hi = (right, left) if left >= right else (left, right)
         return (base_lo + lo, base_lo + hi)
     # Indexed part-select a[base +: w] / a[base -: w]: width is constant, the
     # base may be dynamic (then the covered range is unknown -> conservative).
-    width = _const_int(getattr(expr, "right", None))
+    width = _const_int(getattr(expr, "right", None), eval_ctx)
     if left is None or width is None or width <= 0:
         return None
     if kind == "IndexedUp":
@@ -142,7 +220,7 @@ def _range_select_bounds(expr, base_lo):
     return (base_lo + lo, base_lo + hi)
 
 
-def lsp_bounds(expr):
+def lsp_bounds(expr, eval_ctx=None):
     """Longest static prefix of a value access: (symbol, (lo, hi) | None).
 
     Walks down a (possibly nested) bit/part-select chain to the named value at
@@ -150,37 +228,38 @@ def lsp_bounds(expr):
     own 0-based coordinates.  A dynamic index or unsupported construct yields
     (symbol, None) — read conservatively as "the whole signal".  (None, None)
     when no single named value underlies the expression (e.g. ``a + b``, a
-    concatenation).
+    concatenation).  An ``eval_ctx`` folds loop-variable indices (``p[i]``) to
+    concrete bits during unrolling; without one only static selects resolve.
     """
     if ast is None or expr is None:
         return (None, None)
     tn = type(expr).__name__
     if tn == "ConversionExpression":
-        return lsp_bounds(getattr(expr, "operand", None))
+        return lsp_bounds(getattr(expr, "operand", None), eval_ctx)
     if tn in ("NamedValueExpression", "HierarchicalValueExpression"):
         sym = getattr(expr, "symbol", None)
         return (sym, full_bounds(sym)) if sym is not None else (None, None)
     if tn == "ElementSelectExpression":
-        sym, base = lsp_bounds(getattr(expr, "value", None))
+        sym, base = lsp_bounds(getattr(expr, "value", None), eval_ctx)
         if sym is None:
             return (None, None)
         if base is None:
             return (sym, None)
-        idx = _const_int(getattr(expr, "selector", None))
+        idx = _const_int(getattr(expr, "selector", None), eval_ctx)
         if idx is None:
             return (sym, None)
         return (sym, (base[0] + idx, base[0] + idx))
     if tn == "RangeSelectExpression":
-        sym, base = lsp_bounds(getattr(expr, "value", None))
+        sym, base = lsp_bounds(getattr(expr, "value", None), eval_ctx)
         if sym is None:
             return (None, None)
         if base is None:
             return (sym, None)
-        return (sym, _range_select_bounds(expr, base[0]))
+        return (sym, _range_select_bounds(expr, base[0], eval_ctx))
     return (None, None)
 
 
-def expr_reads_with_bounds(expr):
+def expr_reads_with_bounds(expr, eval_ctx=None):
     """Like expr_symbols, but pairs each read symbol with the constant bit
     range it is read over: ``[(symbol, (lo, hi) | None), ...]``.
 
@@ -188,7 +267,8 @@ def expr_reads_with_bounds(expr):
     swaps this in keeps identical connectivity — while bits are filled in where
     a static select makes them knowable.  A symbol read over two different
     static ranges, or via a dynamic index / arithmetic, is reported with None
-    (whole signal): the conservative answer.
+    (whole signal): the conservative answer.  An ``eval_ctx`` folds loop-variable
+    indices to concrete bits during unrolling.
     """
     precise = {}   # symbol_key -> (lo, hi); a conflict downgrades to None
 
@@ -207,7 +287,7 @@ def expr_reads_with_bounds(expr):
         tn = type(e).__name__
         if tn in ("NamedValueExpression", "HierarchicalValueExpression",
                   "ElementSelectExpression", "RangeSelectExpression"):
-            capture(*lsp_bounds(e))
+            capture(*lsp_bounds(e, eval_ctx))
             # A dynamic index / part-select base is itself a read.
             if tn == "ElementSelectExpression":
                 walk(getattr(e, "selector", None))
