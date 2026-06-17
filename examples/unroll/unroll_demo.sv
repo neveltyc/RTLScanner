@@ -39,6 +39,21 @@ module window (
             hi[i] = a[i + 2];         // hi[0]<-a[2], hi[1]<-a[3]
 endmodule
 
+// Bit reversal: each iteration maps one source bit to a different target bit
+// with a *different* offset, so the map is a permutation no single affine
+// offset can express.  Unrolling keeps the exact per-bit correspondence
+// (`fanout din` shows din[7]->rev[0], din[6]->rev[1], …) instead of blurring
+// to a whole-signal din -> rev edge.
+//   rtlscanner fanout -d examples/unroll -s din --scope reverse
+module reverse (
+    input  logic [7:0] din,
+    output logic [7:0] rev
+);
+    always_comb
+        for (int i = 0; i < 8; i++)
+            rev[i] = din[7 - i];      // rev[0]<-din[7], rev[1]<-din[6], …
+endmodule
+
 // Per-iteration pruning: with the loop variable bound, the inner predicate
 // folds each iteration, so only the live assignment survives.
 module loop_prune (

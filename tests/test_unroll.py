@@ -116,6 +116,62 @@ class LoopUnrollTests(unittest.TestCase):
             self.assertIn(name, s)
 
 
+def segments(env, source, target):
+    """{(source_bits, target_bits)} of the (source -> target) edge's bit map."""
+    for e in env["data"]["edges"]:
+        if e["source"] == source and e["target"] == target:
+            return {(s["source_bits"], s["target_bits"])
+                    for s in e.get("segments", [])}
+    return set()
+
+
+class PermutationMapTests(unittest.TestCase):
+    """A loop whose per-bit copy offset varies (a reversal / swap) is a
+    permutation no single affine offset expresses.  Unrolling keeps the exact
+    per-bit map on the fanout edge instead of blurring to a whole signal."""
+
+    def test_loop_reversal_keeps_per_bit_fanout_map(self):
+        # for i: rev[i] = din[7-i]  -> fanout din carries din[7]->rev[0], …
+        env = run_json("fanout", DEMO, "-s", "din", "--scope", "reverse",
+                       "--depth", "1")
+        segs = segments(env, "reverse.din", "reverse.rev")
+        self.assertEqual(
+            segs,
+            {(f"[{i}]", f"[{7 - i}]") for i in range(8)})
+
+    def test_no_unroll_blurs_reversal_to_whole_signal(self):
+        # The conservative baseline keeps the symbol edge but no per-bit map.
+        env = run_json("fanout", DEMO, "-s", "din", "--scope", "reverse",
+                       "--depth", "1", "--no-unroll")
+        self.assertIn("reverse.din",
+                      {e["source"] for e in env["data"]["edges"]})
+        self.assertEqual(segments(env, "reverse.din", "reverse.rev"), set())
+
+    def test_bit_select_converges_across_reversal(self):
+        # rev[0] traces back to exactly din[7] across the permutation.
+        env = run_json("fanin", DEMO, "-s", "rev[0]", "--scope", "reverse",
+                       "--depth", "1")
+        self.assertEqual({e["source"] for e in env["data"]["edges"]},
+                         {"reverse.din"})
+        # and din[7] fans out to rev (reaching rev[0]); din[6] does not stay home
+        env7 = run_json("fanout", DEMO, "-s", "din[7]", "--scope", "reverse",
+                        "--depth", "1")
+        self.assertEqual({e["target"] for e in env7["data"]["edges"]},
+                         {"reverse.rev"})
+
+    def test_continuous_concat_swap_keeps_segments(self):
+        # A continuous-assign half swap o = {a[3:0], a[7:4]} is the same kind of
+        # permutation and is kept on the single (a -> o) edge.
+        sv = write_sv("""
+            module m(input logic [7:0] a, output logic [7:0] o);
+              assign o = {a[3:0], a[7:4]};
+            endmodule
+        """)
+        env = run_json("fanout", sv, "-s", "a", "--scope", "m", "--depth", "1")
+        self.assertEqual(segments(env, "m.a", "m.o"),
+                         {("[7:4]", "[3:0]"), ("[3:0]", "[7:4]")})
+
+
 class ConservativeFallbackTests(unittest.TestCase):
     def test_max_unroll_falls_back_without_underreporting(self):
         # A loop past the cap must not be partially unrolled: the data edge
