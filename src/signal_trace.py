@@ -22,7 +22,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 try:
@@ -337,6 +337,25 @@ class FlowEdge:
 
     def key(self):
         return (self.source, self.target, self.kind, self.file, self.line)
+
+    def trimmed_to(self, near_rng, mode):
+        """A display copy whose permutation ``segments`` are narrowed to those
+        overlapping ``near_rng`` on the near side (target for fanin, source for
+        fanout), so a bit-select shows exactly the segments it asked for
+        (``fanin rev[0]`` -> just ``din[7] -> rev[0]``).  Returns ``self`` when
+        there is nothing to trim — no segments, a whole-signal query
+        (``near_rng is None``), or every segment already overlaps."""
+        if not self.segments or near_rng is None:
+            return self
+        kept = []
+        for (sb, db, off) in self.segments:
+            near = db if mode == "fanin" else sb
+            if near is not None and not (near_rng[1] < near[0]
+                                         or near_rng[0] > near[1]):
+                kept.append((sb, db, off))
+        if not kept or len(kept) == len(self.segments):
+            return self
+        return replace(self, segments=tuple(kept))
 
     @property
     def source_label(self):
@@ -2138,7 +2157,10 @@ class SignalTracer:
                     ekey = edge.key()
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
-                        traversed.append((edge, depth))
+                        # `rng` is the bits of interest on the near node (the
+                        # target for fanin, the source for fanout); trim a
+                        # permutation edge's segments to just those bits.
+                        traversed.append((edge.trimmed_to(rng, mode), depth))
                     nxt = edge.source if mode == "fanin" else edge.target
                     if (nxt, nxt_rng) not in seen_nodes:
                         seen_nodes.add((nxt, nxt_rng))

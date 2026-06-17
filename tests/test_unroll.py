@@ -159,6 +159,27 @@ class PermutationMapTests(unittest.TestCase):
         self.assertEqual({e["target"] for e in env7["data"]["edges"]},
                          {"reverse.rev"})
 
+    def test_bit_select_trims_displayed_segments(self):
+        # A bit-select shows only the segments it asked for, not the whole map.
+        env = run_json("fanin", DEMO, "-s", "rev[0]", "--scope", "reverse",
+                       "--depth", "1")
+        self.assertEqual(segments(env, "reverse.din", "reverse.rev"),
+                         {("[7]", "[0]")})
+        env7 = run_json("fanout", DEMO, "-s", "din[7]", "--scope", "reverse",
+                        "--depth", "1")
+        self.assertEqual(segments(env7, "reverse.din", "reverse.rev"),
+                         {("[7]", "[0]")})
+        # a range select keeps exactly that window's segments
+        env_lo = run_json("fanin", DEMO, "-s", "rev[3:0]", "--scope", "reverse",
+                          "--depth", "1")
+        self.assertEqual(
+            segments(env_lo, "reverse.din", "reverse.rev"),
+            {(f"[{7 - i}]", f"[{i}]") for i in range(4)})
+        # a whole-signal query still carries the full permutation
+        env_all = run_json("fanout", DEMO, "-s", "din", "--scope", "reverse",
+                           "--depth", "1")
+        self.assertEqual(len(segments(env_all, "reverse.din", "reverse.rev")), 8)
+
     def test_continuous_concat_swap_keeps_segments(self):
         # A continuous-assign half swap o = {a[3:0], a[7:4]} is the same kind of
         # permutation and is kept on the single (a -> o) edge.

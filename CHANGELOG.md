@@ -39,10 +39,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   express, so the edge used to blur to a whole-signal `din -> rev`. The edge now
   carries a `segments` array of `{source_bits, target_bits}` sub-copies, so
   `fanout din` shows `din[7] -> rev[0]`, `din[6] -> rev[1]`, … and a bit-select
-  (`fanin rev[0]`) still converges to the exact driving bit (`din[7]`) across the
-  map. Additive (single-offset and whole-signal edges are unchanged; `segments`
-  is emitted only for a true permutation) and requires unrolling — `--no-unroll`
-  keeps the conservative whole-signal edge.
+  trims the map to just what it asked for (`fanin rev[0]` -> only
+  `din[7] -> rev[0]`; a whole-signal query keeps the full map). Additive
+  (single-offset and whole-signal edges are unchanged; `segments` is emitted only
+  for a true permutation) and requires unrolling — `--no-unroll` keeps the
+  conservative whole-signal edge.
 
 ### Changed
 

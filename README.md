@@ -233,7 +233,7 @@ A copy whose per-bit offset *varies* — a bit reversal `rev[i] = din[7-i]`, a h
 swap `o = {a[3:0], a[7:4]}` — is a permutation no single offset can express, so
 the edge carries a `segments` array of `{source_bits, target_bits}` sub-copies:
 `fanout din` shows `din[7] → rev[0]`, `din[6] → rev[1]`, …, and a bit-select
-(`fanin rev[0]`) still converges to the exact driving bit (`din[7]`) across it.
+trims the map to just what it asked for (`fanin rev[0]` → only `din[7] → rev[0]`).
 
 Precision matches the RTL: bit/part-selects, concatenation, mux (`?:`), bitwise
 `& | ^ ~`, truncation, and zero/sign-extend are exact; arithmetic (`a + b`),
