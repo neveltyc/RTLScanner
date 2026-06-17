@@ -16,6 +16,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that legitimately compile their whole filelist as one unit. Available on every
   subcommand.
 
+- **`lint --rules comb-loop`** — combinational-loop detection. Runs cycle
+  detection (Tarjan strongly-connected components) over the **non-sequential
+  edges** of the dataflow flow graph (the same graph `fanin`/`fanout` use): a
+  registered edge breaks feedback, so legitimate sequential feedback is left
+  alone while a true combinational cycle (`assign a = b; assign b = a;`, an
+  `always_comb` reading its own output, or a loop that closes through child
+  instance ports) is flagged. Findings are regular entries with
+  `rule="comb-loop"`, `check="comb-loop"`, at `warning` severity. Opt-in
+  (excluded from `default` and `bugs`, like `cdc`); compose with
+  `--rules default,comb-loop`.
+
+- **`clocked` on dataflow edges** — every `fanin`/`fanout` edge now carries a
+  `clocked` boolean (emitted only when true) marking a *registered* edge — one
+  whose target is driven by an edge-triggered `always_ff` / latch / edge-sensitive
+  `always`. It is the flip-flop boundary the CDC and combinational-loop checks
+  key off, and it is additive (combinational edges simply omit the field).
+
+### Changed
+
+- **Graph-based, cross-hierarchy CDC** — `--rules cdc` now detects clock-domain
+  crossings on the dataflow flow graph instead of a single-module `always_ff`
+  scan, and resolves each flop's clock to its **source net** before comparing
+  domains. Consequences: (1) a launch flop feeding — combinationally — a capture
+  flop in a different domain is found even across module boundaries wired through
+  ports; (2) two flops on the *same physical clock* are one domain even when
+  their local clock ports are named differently (`clk` vs `clock`) or live in
+  different instances — fixing both the false negative (same-named ports on
+  different clock nets) and the false positive (one net, differently-named
+  ports) of the old name comparison; (3) a gated/divided clock is its own
+  domain. Findings keep the same `rule="cdc-crossing"` / `check="cdc"` shape and
+  the `[lint.cdc] reset = [...]` reset-name vocabulary. The previous version
+  also silently saw no procedures for deduplicated instances (generate arrays,
+  repeated modules); the graph path analyses through canonical bodies, so those
+  are now covered.
+
 ### Fixed
 
 - **Structural commands no longer hand back a phantom result for a design that

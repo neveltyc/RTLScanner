@@ -23,20 +23,20 @@
     "findings": [
       {
         "file": "./examples/lint/cdc_demo.sv",
-        "line": 26,
-        "col": 26,
+        "line": 24,
+        "col": 0,
         "severity": "warning",
         "rule": "cdc-crossing",
-        "message": "signal 'src_data' crosses clock domains: written in 'clka' domain, read in 'clkb' domain (written at ./examples/lint/cdc_demo.sv:20)",
+        "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'q' in 'clkb' domain (launch cdc_violation.src_data, capture cdc_violation.q)",
         "check": "cdc"
       },
       {
         "file": "./examples/lint/cdc_demo.sv",
-        "line": 48,
-        "col": 21,
+        "line": 43,
+        "col": 0,
         "severity": "warning",
         "rule": "cdc-crossing",
-        "message": "signal 'src_data' crosses clock domains: written in 'clka' domain, read in 'clkb' domain (written at ./examples/lint/cdc_demo.sv:38)",
+        "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'meta' in 'clkb' domain (launch cdc_safe_2ff.src_data, capture cdc_safe_2ff.meta)",
         "check": "cdc"
       }
     ],

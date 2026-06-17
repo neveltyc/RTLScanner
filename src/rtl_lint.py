@@ -42,6 +42,7 @@ import rtl_cli
 from agent_json import emit
 from rtl_config import lint_config
 from rtl_scope import ScopeAnalyzer
+from signal_trace import SignalTracer
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -91,14 +92,17 @@ class LintRunner:
 
     def __init__(self, compilation, check_unused=True, check_shadow=False,
                  weverything=False, check_cdc=False, cdc_reset_globs=None,
-                 check_port_connect=False, root=None):
+                 check_port_connect=False, check_comb_loop=False, root=None):
         self._comp = compilation
         self._sm = compilation.sourceManager
         self._check_unused = check_unused
         self._check_shadow = check_shadow
         self._check_cdc = check_cdc
         self._check_port_connect = check_port_connect
+        self._check_comb_loop = check_comb_loop
         self._cdc_reset_globs = cdc_reset_globs or []
+        # CDC and combinational-loop checks share one flow graph (built lazily).
+        self._tracer = None
         self._eng = pyslang.DiagnosticEngine(self._sm)
         if weverything:
             try:
@@ -243,6 +247,13 @@ class LintRunner:
                            rule=rule, message=message, check=check,
                            module=module)
 
+    def _shared_tracer(self):
+        """A single ``SignalTracer`` (and its flow graph / analysis manager)
+        shared by the CDC and combinational-loop checks, built on first use."""
+        if self._tracer is None:
+            self._tracer = SignalTracer(self._comp)
+        return self._tracer
+
     # ── public API ────────────────────────────────────────────────────
 
     def run(self) -> list[LintFinding]:
@@ -284,14 +295,25 @@ class LintRunner:
             except Exception as e:
                 print(f"Warning: analysis pass failed: {e}", file=sys.stderr)
 
-        # 3. CDC analysis (opt-in) — flop-to-flop clock domain crossings
+        # 3. CDC analysis (opt-in) — graph-based, cross-hierarchy crossings.
         if self._check_cdc:
             try:
                 cdc = CDCAnalyzer(self._comp, reset_globs=self._cdc_reset_globs,
-                                  rel=self._rel)
+                                  rel=self._rel, tracer=self._shared_tracer())
                 findings.extend(cdc.findings())
             except Exception as e:
                 print(f"Warning: CDC analysis failed: {e}", file=sys.stderr)
+
+        # 3b. Combinational-loop analysis (opt-in) — cycle detection on the
+        # non-sequential edges of the same flow graph.
+        if self._check_comb_loop:
+            try:
+                cl = CombLoopAnalyzer(self._comp, rel=self._rel,
+                                      tracer=self._shared_tracer())
+                findings.extend(cl.findings())
+            except Exception as e:
+                print(f"Warning: combinational-loop analysis failed: {e}",
+                      file=sys.stderr)
 
         # 4. Port connection checks (opt-in) -- direct replacement for the
         # old ports --check surface.
@@ -340,210 +362,79 @@ _DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*rst_n",
 
 
 class CDCAnalyzer:
-    """Detect flop-to-flop clock domain crossings.
+    """Detect clock-domain crossings on the dataflow flow graph.
 
-    A signal driven inside ``always_ff @(posedge clkA …)`` and then read
-    inside ``always_ff @(posedge clkB …)`` (clkB ≠ clkA) constitutes a
-    CDC crossing that typically needs an explicit synchronizer.  We
-    report one ``cdc-crossing`` finding per (signal, reader-domain) pair,
-    pointing at the procedural block that does the unsafe read.
+    A *launch* register in one clock domain that feeds, through combinational
+    logic only, the data input of a *capture* register in a different domain is
+    a CDC crossing that typically needs an explicit synchronizer.  The launch /
+    capture relationship is found on :class:`signal_trace.SignalTracer`'s flow
+    graph, so it is **cross-hierarchy** (a launch and capture in different
+    modules wired through ports are still related); each flop's clock is
+    resolved to its **source net**, so two flops on the same physical clock are
+    one domain even when the local clock ports are named differently or live in
+    different instances (and conversely one net reaching ports named
+    ``clk``/``clock`` is one domain, not two).
 
-    Signals that look like resets (matched against ``reset_globs``) are
-    ignored in the timing event list so a single-clock design with an
-    asynchronous reset doesn't get flagged.
+    Signals that look like resets (matched against ``reset_globs``) are dropped
+    from the clock set so a single-clock design with an asynchronous reset, and
+    the async-reset term of an ``if (!rst_n)`` capture, are not mistaken for a
+    crossing.  This class keeps the reset-name vocabulary; the graph traversal
+    lives in ``SignalTracer.cdc_crossings``.
     """
 
-    def __init__(self, compilation, reset_globs=None, rel=None):
+    def __init__(self, compilation, reset_globs=None, rel=None, tracer=None):
         self._comp = compilation
-        self._sm = compilation.sourceManager
         self._reset_globs = list(reset_globs or []) + list(_DEFAULT_RESET_GLOBS)
         self._rel = rel or (lambda x: x)
-        mgr = analysis.AnalysisManager(analysis.AnalysisOptions())
-        mgr.analyze(compilation)
-        self._mgr = mgr
-
-    # ── helpers ───────────────────────────────────────────────────────
+        self._tracer = tracer
 
     def _looks_like_reset(self, name: str) -> bool:
         n = (name or "").lower()
         return any(fnmatch.fnmatch(n, g.lower()) for g in self._reset_globs)
 
-    def _clock_and_timing_syms(self, proc):
-        """Return (primary_clock_name, {all_timing_signal_names}) or (None, set())."""
-        if not proc.timingControls:
-            return None, set()
-        tc = proc.timingControls[0].timing
-        events = tc.events if hasattr(tc, 'events') else [tc]
-        timing_syms = set()
-        non_reset = []
-        for ev in events:
-            e = getattr(ev, 'expr', None)
-            if e is None or not hasattr(e, 'symbol'):
-                continue
-            n = safe_str(e.symbol.name, "")
-            if not n:
-                continue
-            timing_syms.add(n)
-            if not self._looks_like_reset(n):
-                non_reset.append(n)
-        # Heuristic: if exactly one non-reset event signal, that's the
-        # clock; otherwise prefer the first non-reset, else fall back to
-        # whatever timing signal we saw first.
-        if non_reset:
-            return non_reset[0], timing_syms
-        if timing_syms:
-            return next(iter(timing_syms)), timing_syms
-        return None, timing_syms
-
-    def _sym_key(self, sym):
-        """Stable identity key for a pyslang symbol — uses hierarchicalPath
-        because Python id() of pybind11 wrappers is recycled across GC.
-        """
-        try:
-            hp = safe_str(sym.hierarchicalPath, "")
-            if hp:
-                return hp
-        except Exception:
-            pass
-        return safe_str(getattr(sym, 'name', ''), '')
-
-    def _walk_reads(self, proc, exclude_names):
-        """Walk the procedure body and collect (sym_key, name, source_loc) for
-        every NamedValueExpression that isn't a clock/reset.
-        """
+    def findings(self) -> list:
+        tracer = self._tracer or SignalTracer(self._comp)
         out = []
-        sym_key = self._sym_key
-        def visit(node):
-            if type(node).__name__ != 'NamedValueExpression':
-                return
-            try:
-                sym = node.symbol
-                name = sym.name
-            except Exception:
-                return
-            if name in exclude_names:
-                return
-            try:
-                loc = node.sourceRange.start
-            except Exception:
-                loc = None
-            out.append((sym_key(sym), name, loc))
-        try:
-            proc.analyzedSymbol.body.visit(f=visit)
-        except Exception:
-            pass
+        for c in tracer.cdc_crossings(self._looks_like_reset):
+            frm = "/".join(c.from_domains) or "?"
+            to = "/".join(c.to_domains) or "?"
+            msg = (f"signal '{c.launch_name}' crosses clock domains: launched "
+                   f"in '{frm}' domain, captured by '{c.capture_name}' in "
+                   f"'{to}' domain (launch {c.launch}, capture {c.capture})")
+            out.append(LintFinding(
+                file=self._rel(c.file) if c.file else "",
+                line=c.line, col=0, severity="warning",
+                rule="cdc-crossing", message=msg, check="cdc"))
         return out
 
-    def _loc(self, loc):
-        try:
-            return self._rel(safe_str(self._sm.getFileName(loc))), \
-                   int(self._sm.getLineNumber(loc)), \
-                   int(self._sm.getColumnNumber(loc))
-        except Exception:
-            return "", 0, 0
 
-    def _proc_loc(self, proc):
-        """Location of the procedure block itself (for the timing-control line)."""
-        try:
-            sym = proc.analyzedSymbol
-            return self._loc(sym.location)
-        except Exception:
-            return "", 0, 0
+class CombLoopAnalyzer:
+    """Detect combinational feedback loops on the dataflow flow graph.
 
-    # ── main analysis ─────────────────────────────────────────────────
+    Runs cycle detection over the graph's **non-sequential** (non-clocked)
+    edges — a registered edge breaks feedback, so what is left is pure
+    combinational connectivity, and any strongly-connected component with a real
+    cycle is a combinational loop.  Cross-hierarchy by construction (the loop
+    may close through port connections).  The graph algorithm lives in
+    ``SignalTracer.combinational_loops``.
+    """
+
+    def __init__(self, compilation, rel=None, tracer=None):
+        self._comp = compilation
+        self._rel = rel or (lambda x: x)
+        self._tracer = tracer
 
     def findings(self) -> list:
-        # Per scope, build write/read maps keyed by symbol identity (we
-        # use the Python id of the symbol so two same-named signals in
-        # different modules don't collide).
-        writers = {}   # sym_id -> {'name': str, 'clocks': set, 'locs': [(file,line,col)]}
-        readers = {}   # sym_id -> list of {'clock':..., 'loc':..., 'proc_loc':...}
-
-        insts = []
-        def _ci(s):
-            insts.append(s)
-        try:
-            self._comp.getRoot().visit(lookup_table={ast.SymbolKind.Instance: _ci})
-        except Exception:
-            pass
-
-        for inst in insts:
-            try:
-                body = inst.body
-                sc = self._mgr.getAnalyzedScope(body)
-            except Exception:
-                continue
-            if sc is None:
-                continue
-            for p in sc.procedures:
-                try:
-                    pk = p.analyzedSymbol.procedureKind
-                    if 'AlwaysFF' not in safe_str(pk, ""):
-                        continue
-                except Exception:
-                    continue
-                clk, timing_syms = self._clock_and_timing_syms(p)
-                if not clk:
-                    continue
-
-                # Writes: pyslang gives us ValueDrivers
-                driven_keys = set()
-                driven_names = set()
-                for d in (p.drivers or []):
-                    try:
-                        if d.flags & analysis.DriverFlags.InputPort:
-                            continue
-                    except Exception:
-                        pass
-                    try:
-                        key = self._sym_key(d.symbol)
-                        driven_keys.add(key)
-                        driven_names.add(d.symbol.name)
-                        rec = writers.setdefault(key, {
-                            'name': d.symbol.name, 'clocks': set(),
-                            'locs': []})
-                        rec['clocks'].add(clk)
-                        rec['locs'].append(self._proc_loc(p))
-                    except Exception:
-                        continue
-
-                # Reads: walk the body, skip the signals used purely for
-                # timing (clock + reset) and skip self-reads of the
-                # signals this same proc drives (a flip-flop reading its
-                # own output is fine, same domain).
-                exclude = set(timing_syms) | driven_names
-                for key, sym_name, loc in self._walk_reads(p, exclude):
-                    readers.setdefault(key, []).append({
-                        'clock': clk,
-                        'loc': self._loc(loc) if loc else self._proc_loc(p),
-                        'name': sym_name,
-                    })
-
-        # Build findings — one per (signal, reader-clock) crossing
+        tracer = self._tracer or SignalTracer(self._comp)
         out = []
-        for key, wrec in writers.items():
-            w_clocks = wrec['clocks']
-            for r in readers.get(key, ()):
-                if r['clock'] in w_clocks:
-                    continue
-                rfile, rline, rcol = r['loc']
-                # First writer location for context
-                if wrec['locs']:
-                    wfile, wline, _ = wrec['locs'][0]
-                    where = f" (written at {wfile}:{wline})" if wfile else ""
-                else:
-                    where = ""
-                msg = (f"signal '{wrec['name']}' crosses clock domains: "
-                       f"written in '{'/'.join(sorted(w_clocks))}' domain, "
-                       f"read in '{r['clock']}' domain{where}")
-                out.append(LintFinding(
-                    file=rfile, line=rline, col=rcol,
-                    severity="warning", rule="cdc-crossing",
-                    message=msg, check="cdc",
-                ))
+        for lp in tracer.combinational_loops():
+            chain = " -> ".join(lp.nodes + lp.nodes[:1]) if lp.nodes else ""
+            out.append(LintFinding(
+                file=self._rel(lp.file) if lp.file else "",
+                line=lp.line, col=0, severity="warning",
+                rule="comb-loop", message=f"combinational loop: {chain}",
+                check="comb-loop"))
         return out
-
-
 
 
 # ── Rule selection model ─────────────────────────────────────────────
@@ -554,7 +445,7 @@ class CDCAnalyzer:
 #   * rule name:     width-trunc | unused-port | ...
 #   * glob:          width-* | unused-*
 
-FAMILIES = {"semantic", "unused", "shadow", "cdc", "port-connect"}
+FAMILIES = {"semantic", "unused", "shadow", "cdc", "port-connect", "comb-loop"}
 DEFAULT_FAMILIES = ["semantic", "unused"]
 WARNING_OPTIONS = {"everything"}
 META_KEYWORDS = {"default", "all", "none", "bugs"}
@@ -596,6 +487,7 @@ _RULE_RUN_FAMILY = {
 # these, so they must be recognized explicitly.
 CUSTOM_RULES = frozenset({
     "cdc-crossing", "port-unconnected", "port-width-mismatch", "port-connect",
+    "comb-loop",
 })
 
 
@@ -607,7 +499,8 @@ def _expand_meta(specs):
             out.extend(DEFAULT_FAMILIES)
         elif s == "all":
             out.extend(DEFAULT_FAMILIES)
-            out.extend(["shadow", "cdc", "port-connect", "everything"])
+            out.extend(["shadow", "cdc", "port-connect", "comb-loop",
+                        "everything"])
         elif s == "bugs":
             out.extend(BUGS_RULES)
         elif s == "none":
@@ -942,8 +835,8 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
     rs.add_argument("--rules", action=agent_json.CommaListAction, default=[],
                     metavar="SPEC",
                     help="Rule white list. SPEC = rule name | family "
-                         "(semantic/unused/shadow/cdc/port-connect) | warning option "
-                         "(everything) | glob | "
+                         "(semantic/unused/shadow/cdc/port-connect/comb-loop) | "
+                         "warning option (everything) | glob | "
                          "default/all/none/bugs. 'bugs' = curated real-bug rules "
                          "+ all compile errors. Comma-list or repeat. "
                          "Default: 'default' (semantic + unused).")
@@ -993,6 +886,7 @@ def run(args, env):
         check_cdc=("cdc" in run_families),
         cdc_reset_globs=cdc_reset_globs,
         check_port_connect=("port-connect" in run_families),
+        check_comb_loop=("comb-loop" in run_families),
         root=prepared.resolved_inputs.root,
     )
 

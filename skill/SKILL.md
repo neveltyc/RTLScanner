@@ -52,6 +52,7 @@ rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
 rtlscanner xref   -f rtl.f --module fifo --json
 rtlscanner lint   -f rtl.f --rules bugs --json
 rtlscanner lint   -f rtl.f --rules default,cdc --json
+rtlscanner lint   -f rtl.f --rules default,comb-loop --json
 rtlscanner lint   -f rtl.f --rules port-connect --json
 ```
 
@@ -101,15 +102,15 @@ the RTL: `xref` for where it's declared and which blocks/ports touch it, then
 you *where and why* in source.
 
 **Lint in CI.** `rtlscanner lint -f rtl.f --strict --json` — `--strict` promotes any
-finding to a gate (exit 1). Use `--rules default,cdc,port-connect` for the broad sweep;
+finding to a gate (exit 1). Use `--rules default,cdc,comb-loop,port-connect` for the broad sweep;
 permanent project waivers belong in `.rtlscanner.toml` under `[lint] waive = [...]`
 (module-basename globs), not on the command line.
 
 ## lint rule model (quick form)
 
 `--rules SPEC[,...]` is a whitelist. SPEC is a rule name (`width-trunc`), a family alias
-(`semantic`, `unused`, `shadow`, `cdc`, `port-connect`), a glob (`width-*`), or a meta
-value (`default` = semantic+unused, `all`, `none`, `bugs`). `--skip RULE[,...]` subtracts
+(`semantic`, `unused`, `shadow`, `cdc`, `port-connect`, `comb-loop`), a glob (`width-*`),
+or a meta value (`default` = semantic+unused, `all`, `none`, `bugs`). `--skip RULE[,...]` subtracts
 (glob ok). `semantic` is the normalized slang diagnostic stream (parse, type, binding,
 elaboration); for compile/front-end errors only, use `--rules semantic`, and for child
 instance port issues use `--rules port-connect`. **`--rules bugs`** is the curated
@@ -135,7 +136,8 @@ typo'd rule/skip token now emits a did-you-mean `note` instead of silently selec
 - **Lint is noisy on mature RTL — don't scan 100+ findings.** For "are there real
   *bugs*?", run **`--rules bugs`**: a curated high-precision set (inferred latches,
   unassigned/undriven values, port-width problems, truncation) plus all compile errors,
-  with style noise dropped. Add CDC with `--rules bugs,cdc`. Otherwise read the summary
+  with style noise dropped. Add the cross-hierarchy graph checks with
+  `--rules bugs,cdc,comb-loop` (CDC crossings + combinational loops). Otherwise read the summary
   (`summary.by_severity` / `summary.has_error`) rather than the full `findings[]`; narrow
   with `--min-severity error` or `--skip case-default,...`.
 - **Module name → instance path.** `--scope` wants an instance path (`testbench.uut`), not

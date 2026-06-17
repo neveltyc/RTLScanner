@@ -492,6 +492,12 @@ _TRACE_FLOW_EDGE = {
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
         "depth":       {"type": "integer"},
+        "clocked":     {"type": "boolean",
+                        "description": "Present and true when the edge is "
+                        "registered (its target is driven by an edge-triggered "
+                        "always_ff / latch / edge-sensitive always) — i.e. a "
+                        "flip-flop boundary; absent for combinational edges "
+                        "(continuous assign, always_comb, port connection)."},
     },
     "additionalProperties": True,
 }
@@ -581,13 +587,13 @@ _LINT_FINDING = {
                      "description": "Open enum. Known rules include "
                      "`inferred-latch`, `unassigned-variable`, `undriven-port`, "
                      "`width-trunc`, `port-width-mismatch`, `port-width-trunc`, "
-                     "`cdc-crossing`, `unused-port`, `case-default`. The "
-                     "`--rules bugs` preset keeps the real-bug subset plus all "
-                     "compile errors."},
+                     "`cdc-crossing`, `comb-loop`, `unused-port`, `case-default`. "
+                     "The `--rules bugs` preset keeps the real-bug subset plus "
+                     "all compile errors."},
         "message":  {"type": "string"},
         "check":    {"type": "string",
                      "enum": ["semantic", "unused", "shadow", "cdc",
-                              "port-connect"]},
+                              "port-connect", "comb-loop"]},
         "module":   {"type": "string",
                      "description": "Design unit (module / interface / ...) the "
                      "finding sits in, attributed by source range. Absent when "
@@ -632,9 +638,11 @@ _LINT_SCHEMA = _envelope_schema(
     },
     description=("Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. "
                  "CDC findings appear as regular entries in `data.findings` with "
-                 "`rule=\"cdc-crossing\"` and `check=\"cdc\"`. Note: SystemVerilog "
-                 "`` `pragma diagnostic ignore `` does NOT suppress `cdc-crossing` "
-                 "— use `[lint].waive` in `.rtlscanner.toml` instead."),
+                 "`rule=\"cdc-crossing\"` and `check=\"cdc\"`; combinational-loop "
+                 "findings with `rule=\"comb-loop\"` and `check=\"comb-loop\"`. Both "
+                 "are opt-in (`--rules cdc` / `--rules comb-loop`). Note: SystemVerilog "
+                 "`` `pragma diagnostic ignore `` does NOT suppress these heuristic "
+                 "findings — use `[lint].waive` in `.rtlscanner.toml` instead."),
 )
 
 

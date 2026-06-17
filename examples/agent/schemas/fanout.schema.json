@@ -105,6 +105,10 @@
                   },
                   "depth": {
                     "type": "integer"
+                  },
+                  "clocked": {
+                    "type": "boolean",
+                    "description": "Present and true when the edge is registered (its target is driven by an edge-triggered always_ff / latch / edge-sensitive always) — i.e. a flip-flop boundary; absent for combinational edges (continuous assign, always_comb, port connection)."
                   }
                 },
                 "additionalProperties": true
