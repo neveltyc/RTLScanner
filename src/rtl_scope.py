@@ -878,8 +878,10 @@ def _sections(args) -> set[str]:
     return selected or set(_DEFAULT_SECTIONS)
 
 
-def _prepare(args):
-    prepared = rtl_cli.prepare_compilation(args)
+def _prepare(args, env):
+    # Fail with COMPILE_FAILED before touching the (possibly phantom) design, so
+    # a broken compile never yields a confident-looking scope dump.
+    prepared = rtl_cli.prepare_compilation_checked(args, env)
     analyzer = ScopeAnalyzer(prepared.comp)
     scope = rtl_cli.resolve_scope(args.scope, analyzer.get_top_paths())
     return analyzer, scope
@@ -964,7 +966,7 @@ def _print_pretty(data: dict[str, Any], totals: dict[str, int]) -> None:
 
 
 def run(args, env):
-    analyzer, scope = _prepare(args)
+    analyzer, scope = _prepare(args, env)
     data = analyzer.describe(scope, _sections(args))
     if data is None:
         raise rtl_cli.scope_not_found_error(analyzer._root, scope)

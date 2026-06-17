@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`--single-unit`** — opt back into single-compilation-unit mode (the
+  pre-0.2.0 / slang `--single-unit` model) so `$unit`-scoped `typedef`s and
+  macros declared in an earlier file stay visible to later files. The per-file
+  default (added in 0.2.0) is unchanged; this is the escape hatch for projects
+  that legitimately compile their whole filelist as one unit. Available on every
+  subcommand.
+
+### Fixed
+
+- **Structural commands no longer hand back a phantom result for a design that
+  does not compile.** `tree`/`scope`/`xref`/`trace`/`fanin`/`fanout` built their
+  output from slang's error-recovery AST and reported `status:"ok"` with an empty
+  `errors[]` — so an agent following the documented "read `status` first" rule
+  would happily reason about the structure of a design that never compiled (a
+  latent bug exposed by 0.2.0's per-file compilation units). They now return
+  `status:"error"` with `errors[0].code = "COMPILE_FAILED"` and `data:null` when
+  the design has compile errors. `lint` is unchanged — reporting those errors as
+  findings is its job, so it stays `status:"ok"`.
+- **Compilation diagnostics are now formatted correctly.** `tree` emitted each
+  diagnostic as a raw `<...Diagnostic object at 0x...>` repr hardcoded to
+  severity `"warning"` (so an error-level diagnostic could never flip `status`),
+  and `scope`/`xref` collected none at all. All structural commands now surface
+  real diagnostics — correct severity, human-readable message, and
+  file/line/column — through the same `DiagnosticEngine` `lint` uses.
+
 ## [0.2.0] - 2026-06-16
 
 Second release. Hardens the agent JSON contract, makes `fanin`/`fanout`

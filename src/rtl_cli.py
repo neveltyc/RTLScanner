@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import agent_json
-from rtl_common import FileList, build_compilation
+from rtl_common import CompileDiag, FileList, build_compilation
 from rtl_config import (
     ResolvedInputs,
     build_filelist,
@@ -38,7 +38,7 @@ class PreparedInputs:
 @dataclass
 class PreparedCompilation(PreparedInputs):
     comp: Any = None
-    diagnostics: List[str] = field(default_factory=list)
+    diagnostics: List[CompileDiag] = field(default_factory=list)
 
 
 def prepare_inputs(
@@ -116,6 +116,8 @@ def prepare_compilation(
             fl.include_dirs,
             fl.defines,
             collect_diagnostics=collect_diagnostics,
+            single_unit=getattr(args, "single_unit", False),
+            root=prepared.resolved_inputs.root,
         )
     except Exception as e:
         raise CliError(
@@ -132,6 +134,71 @@ def prepare_compilation(
         comp=comp,
         diagnostics=diagnostics,
     )
+
+
+def surface_diagnostics(
+    prepared: PreparedCompilation,
+    env,
+    *,
+    human_error_rc: int = 2,
+    cap: int = 50,
+) -> None:
+    """Surface compile diagnostics, then fail hard if any are errors.
+
+    Adds every collected diagnostic to the JSON envelope (or, in human mode,
+    prints the error-severity ones to stderr).  If any diagnostic is
+    error-severity, raises COMPILE_FAILED so the command reports
+    ``status="error"`` instead of handing back a phantom structure recovered
+    from a broken parse.  Warnings never fail the run: a design that compiles
+    with only warnings still succeeds, with the warnings in ``diagnostics``.
+
+    main() reuses the same ``env`` to build the failure envelope, so diagnostics
+    added here are preserved alongside the COMPILE_FAILED error.
+    """
+    diags = prepared.diagnostics
+    errors = [d for d in diags if d.severity == "error"]
+    if env is not None:
+        for d in diags[:cap]:
+            env.add_diagnostic(d.severity, d.file, d.line, d.col, d.message)
+    elif errors:
+        for d in errors[:cap]:
+            print(str(d), file=sys.stderr)
+    if errors:
+        first = errors[0]
+        n = len(errors)
+        msg = f"compilation failed: {n} error" + ("" if n == 1 else "s")
+        detail = str(first).strip()
+        if detail:
+            msg += f"; {detail}"
+        raise CliError(
+            agent_json.ERR_COMPILE_FAILED, msg, human_error_rc,
+            details={"error_count": n},
+        )
+
+
+def prepare_compilation_checked(
+    args,
+    env,
+    *,
+    require_sources: bool = True,
+    human_error_rc: int = 2,
+) -> PreparedCompilation:
+    """Prepare a compilation and fail on compile errors.
+
+    The structural commands (tree/scope/xref/trace/fanin/fanout) all funnel
+    through this: it collects diagnostics, surfaces them on the envelope, and
+    raises COMPILE_FAILED when the design does not compile -- so none of them
+    can hand back a phantom design with ``status="ok"``.  ``lint`` deliberately
+    does NOT use this (reporting compile errors is its job).
+    """
+    prepared = prepare_compilation(
+        args,
+        require_sources=require_sources,
+        human_error_rc=human_error_rc,
+        collect_diagnostics=True,
+    )
+    surface_diagnostics(prepared, env, human_error_rc=human_error_rc)
+    return prepared
 
 
 def resolve_scope(

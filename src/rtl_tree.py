@@ -308,8 +308,7 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
             ))
         return 0
 
-    prepared = rtl_cli.prepare_compilation(
-        args, human_error_rc=1, collect_diagnostics=True)
+    prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
     filelist = prepared.filelist
     try:
         tops = build_hierarchy_from_comp(prepared.comp, args.top)
@@ -322,12 +321,13 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
             f"compilation failed: {e}",
             1,
         )
-    diags = prepared.diagnostics
 
-    if env is not None:
-        for d in diags[:50]:
-            env.add_diagnostic('warning', '', 0, 0, str(d))
-    elif args.diag and diags:
+    # Error-severity diagnostics already raised COMPILE_FAILED in
+    # prepare_compilation_checked (which also put every diagnostic on the JSON
+    # envelope).  Anything left here is a warning/note; mirror it to stderr for
+    # human --diag.
+    if env is None and args.diag and prepared.diagnostics:
+        diags = prepared.diagnostics
         print(f"\n{Color.red('Parser diagnostics:')}", file=sys.stderr)
         for d in diags[:20]: print(f"  {d}", file=sys.stderr)
         if len(diags) > 20: print(f"  ... and {len(diags)-20} more", file=sys.stderr)
