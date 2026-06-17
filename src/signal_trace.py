@@ -1020,21 +1020,23 @@ class SignalTracer:
                 if is_data_symbol(s)]
 
     def _map_concat(self, dst_base, operands, depth):
-        """Map a concatenation onto ``dst_base``.  The first operand is the MSB,
-        so fill dst from the top down, recursing into each operand's slice."""
-        out = []
+        """Map a concatenation onto ``dst_base``.  The first operand is the MSB;
+        assignment aligns by LSB (SV truncation drops the high bits), so place
+        each operand by its bit position within the concat, lowest first, and
+        drop any that fall above ``dst_base`` (truncated away)."""
         dlo, dhi = dst_base
-        pos = dhi
-        for op in operands:
-            w = self._expr_width(op)
+        widths = [self._expr_width(op) for op in operands]
+        out = []
+        rpos = sum(widths)          # exclusive top of the next operand (RHS coords)
+        for op, w in zip(operands, widths):
             if w <= 0:
-                break
-            seg_lo = max(pos - w + 1, dlo)
-            if pos >= dlo and seg_lo <= dhi:
-                out += self._map_rhs((seg_lo, min(pos, dhi)), op, depth + 1)
-            pos = seg_lo - 1
-            if pos < dlo:
-                break
+                return out          # can't place precisely; safety net covers it
+            rlo, rhi = rpos - w, rpos - 1
+            rpos = rlo
+            d_lo, d_hi = dlo + rlo, dlo + rhi
+            if d_lo > dhi or d_hi < dlo:
+                continue            # operand truncated away
+            out += self._map_rhs((max(d_lo, dlo), min(d_hi, dhi)), op, depth + 1)
         return out
 
     def _map_rhs(self, dst_base, rhs, depth=0):

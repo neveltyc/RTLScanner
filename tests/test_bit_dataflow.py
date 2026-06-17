@@ -206,6 +206,16 @@ class P4StructuralOps(unittest.TestCase):
         srcs = {e["source"] for e in env["data"]["edges"]}
         self.assertEqual(srcs, {"ops_top.a"})       # not b
 
+    def test_truncated_concat_keeps_lsb(self):
+        # trunc8 = {a, b} into 4 bits: SV keeps the low bits, so b[3:0] drives
+        # it precisely; a is the truncated-away MSB (kept conservative, not
+        # falsely mapped to a[3:0]).
+        got = self._fanin("trunc8")
+        self.assertIn(("ops_top.b", "ops_top.trunc8", "[3:0]", None), got)
+        self.assertIn(("ops_top.a", "ops_top.trunc8", None, None), got)
+        # a must NOT be reported as precisely driving the low nibble.
+        self.assertNotIn(("ops_top.a", "ops_top.trunc8", "[3:0]", None), got)
+
 
 if __name__ == "__main__":
     unittest.main()
