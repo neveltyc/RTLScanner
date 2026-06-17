@@ -48,16 +48,20 @@ from rtl_slang import (
     is_data_symbol,
     iter_instances,
     lsp_bounds,
+    make_eval_context,
     procedure_label,
     procedure_reads_symbol,
     resolve_scope,
     scope_visit,
     symbol_key,
+    try_eval_bool,
+    try_eval_int,
 )
 
 import agent_json
 import rtl_cli
 from agent_json import emit
+from rtl_config import flow_config
 
 
 # ── Display glyphs ───────────────────────────────────────────────────
@@ -543,10 +547,17 @@ def _reconstruct_cycle(comp, succ):
 class SignalTracer:
     """Analyzes signal drivers and loads in an elaborated SV design."""
 
-    def __init__(self, compilation):
+    def __init__(self, compilation, *, unroll=False, max_unroll=2048):
         self._comp = compilation
         self._root = compilation.getRoot()
         self._sm = compilation.sourceManager
+        # Constant-condition pruning / procedural loop unrolling.  When on, the
+        # per-block walk evaluates constant if/case conditions to drop dead
+        # branches and unrolls constant-bound for/repeat loops (folding p[i] to
+        # concrete bits).  Off => the flat walk, byte-for-byte the prior output.
+        # max_unroll bounds the *total* unrolled iterations per block.
+        self._unroll = bool(unroll)
+        self._max_unroll = max(0, int(max_unroll))
         # AnalysisManager.analyze() requires a fully-elaborated compilation;
         # getSemanticDiagnostics() forces elaboration (sets isElaborated).
         _ = compilation.getSemanticDiagnostics()
@@ -1069,15 +1080,21 @@ class SignalTracer:
         sb, db, off = self._copy_bits(src_sym, src_bits, None, dst_base)
         return (src_sym, sb, db, off)
 
-    def _mix(self, dst_base, expr):
+    @staticmethod
+    def _live(syms, skip):
+        """Symbols minus the bound loop variables (treated as constants)."""
+        return [s for s in syms if symbol_key(s) not in skip] if skip else syms
+
+    def _mix(self, dst_base, expr, eval_ctx=None, skip=frozenset()):
         """Conservative contribution: every read of `expr` feeds the whole
         ``dst_base`` with no positional map (offset None) — for arithmetic,
         reductions, dynamic indices, and anything not structurally understood."""
         return [(s, sb, dst_base, None)
-                for (s, sb) in expr_reads_with_bounds(expr)
-                if is_data_symbol(s)]
+                for (s, sb) in expr_reads_with_bounds(expr, eval_ctx)
+                if is_data_symbol(s) and symbol_key(s) not in skip]
 
-    def _map_concat(self, dst_base, operands, depth):
+    def _map_concat(self, dst_base, operands, depth, eval_ctx=None,
+                    skip=frozenset()):
         """Map a concatenation onto ``dst_base``.  The first operand is the MSB;
         assignment aligns by LSB (SV truncation drops the high bits), so place
         each operand by its bit position within the concat, lowest first, and
@@ -1094,56 +1111,67 @@ class SignalTracer:
             d_lo, d_hi = dlo + rlo, dlo + rhi
             if d_lo > dhi or d_hi < dlo:
                 continue            # operand truncated away
-            out += self._map_rhs((max(d_lo, dlo), min(d_hi, dhi)), op, depth + 1)
+            out += self._map_rhs((max(d_lo, dlo), min(d_hi, dhi)), op, depth + 1,
+                                  eval_ctx, skip)
         return out
 
-    def _map_rhs(self, dst_base, rhs, depth=0):
+    def _map_rhs(self, dst_base, rhs, depth=0, eval_ctx=None, skip=frozenset()):
         """Structural bit-flow: how ``rhs`` drives the dst bits ``dst_base``.
 
         Returns [(src_sym, src_bits, dst_bits, offset)] — offset set for a
         positional copy, None for a many-to-many (whole-signal) contribution.
         Precise for value accesses, concatenation, mux (``?:``), and bitwise
         and/or/xor/not; conservative (whole source) for arithmetic, reductions,
-        shifts, and dynamic indices.  ``dst_base`` is a concrete (lo, hi)."""
+        shifts, and dynamic indices.  ``dst_base`` is a concrete (lo, hi).  An
+        ``eval_ctx`` folds loop-variable indices to concrete bits (unrolling),
+        and ``skip`` are the bound loop variables to read as constants — so
+        ``p[i]`` with ``i`` bound counts as a lone value access, not ``a[b]``."""
         if rhs is None or dst_base is None or depth > 64:
             return []
         tn = type(rhs).__name__
         if tn == "ConversionExpression":
-            return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
+            return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1,
+                                 eval_ctx, skip)
         # A single value access (named / static select) is a positional copy.
-        sym, sbits = lsp_bounds(rhs)
-        if sym is not None and is_data_symbol(sym) and len(expr_symbols(rhs)) == 1:
+        sym, sbits = lsp_bounds(rhs, eval_ctx)
+        if sym is not None and is_data_symbol(sym) \
+                and len(self._live(expr_symbols(rhs), skip)) == 1:
             return [self._seg(sym, sbits, dst_base)]
         if tn == "ConcatenationExpression":
-            return self._map_concat(dst_base, list(rhs.operands), depth)
+            return self._map_concat(dst_base, list(rhs.operands), depth, eval_ctx,
+                                    skip)
         if tn == "ConditionalExpression":
             out = []
             for arm in (getattr(rhs, "left", None), getattr(rhs, "right", None)):
-                out += self._map_rhs(dst_base, arm, depth + 1)
+                out += self._map_rhs(dst_base, arm, depth + 1, eval_ctx, skip)
             for cond in (getattr(rhs, "conditions", None) or []):
-                for s in expr_symbols(getattr(cond, "expr", cond)):
+                for s in self._live(expr_symbols(getattr(cond, "expr", cond)), skip):
                     if is_data_symbol(s):
                         out.append((s, None, dst_base, None))   # predicate: whole
             return out
         if tn == "BinaryExpression":
             if getattr(getattr(rhs, "op", None), "name", "") in self._BITWISE_BIN:
-                return (self._map_rhs(dst_base, getattr(rhs, "left", None), depth + 1)
-                        + self._map_rhs(dst_base, getattr(rhs, "right", None), depth + 1))
-            return self._mix(dst_base, rhs)
+                return (self._map_rhs(dst_base, getattr(rhs, "left", None),
+                                      depth + 1, eval_ctx, skip)
+                        + self._map_rhs(dst_base, getattr(rhs, "right", None),
+                                        depth + 1, eval_ctx, skip))
+            return self._mix(dst_base, rhs, eval_ctx, skip)
         if tn == "UnaryExpression":
             if getattr(getattr(rhs, "op", None), "name", "") == "BitwiseNot":
-                return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
-            return self._mix(dst_base, rhs)
-        return self._mix(dst_base, rhs)
+                return self._map_rhs(dst_base, getattr(rhs, "operand", None),
+                                     depth + 1, eval_ctx, skip)
+            return self._mix(dst_base, rhs, eval_ctx, skip)
+        return self._mix(dst_base, rhs, eval_ctx, skip)
 
-    def _segments_for(self, dst_base, rhs, allowed_syms):
+    def _segments_for(self, dst_base, rhs, allowed_syms, eval_ctx=None,
+                      skip=frozenset()):
         """Per-source segments of ``rhs`` driving ``dst_base``, restricted to the
         symbols in ``allowed_syms``.  Any allowed symbol not placed precisely is
         added as a whole-signal contributor, so the emitted source set is exactly
         ``allowed_syms`` — preserving the symbol-level connectivity (parity)."""
         allowed = {symbol_key(s): s for s in allowed_syms}
         segs, covered = [], set()
-        for (sym, sb, db, off) in self._map_rhs(dst_base, rhs):
+        for (sym, sb, db, off) in self._map_rhs(dst_base, rhs, 0, eval_ctx, skip):
             k = symbol_key(sym)
             if k in allowed:
                 segs.append((sym, sb, db, off))
@@ -1153,7 +1181,7 @@ class SignalTracer:
                 segs.append((sym, None, dst_base, None))
         return segs
 
-    def _assignment_bit_pairs(self, node):
+    def _assignment_bit_pairs(self, node, eval_ctx=None, skip=frozenset()):
         """Bit-aware (src, dst, src_bits, dst_bits, offset) for one assignment.
 
         Targets are ``expr_symbols(left)`` and sources are exactly
@@ -1161,24 +1189,31 @@ class SignalTracer:
         walk (parity) — with bit ranges and a copy offset attached via the
         structural analyzer.  A single target gets full structural precision
         (concat / mux / bitwise / select); a multi-target LHS concat is kept
-        conservative per source read.
+        conservative per source read.  An ``eval_ctx`` (loop variable bound)
+        folds ``p[i]``-style indices to concrete bits during unrolling, and
+        ``skip`` drops those bound loop variables from the source/target symbol
+        sets so an unrolled ``p[i+1] = p[i]`` reads as the single value ``p``.
         """
         left = getattr(node, "left", None)
         right = getattr(node, "right", None)
-        tgts = expr_symbols(left)
+        tgts = self._live(expr_symbols(left), skip)
         if not tgts:
             return []
-        reads = expr_symbols(right)
+        reads = self._live(expr_symbols(right), skip)
         if len(tgts) == 1:
             dst = tgts[0]
-            dst_base = lsp_bounds(left)[1] or self._signal_full_bounds(dst)
+            dst_base = lsp_bounds(left, eval_ctx)[1] or self._signal_full_bounds(dst)
             if dst_base is None:
                 return [(s, dst, sb, None, None)
-                        for (s, sb) in expr_reads_with_bounds(right)]
+                        for (s, sb) in expr_reads_with_bounds(right, eval_ctx)
+                        if symbol_key(s) not in skip]
             return [(s, dst, sb, db, off)
-                    for (s, sb, db, off) in self._segments_for(dst_base, right, reads)]
+                    for (s, sb, db, off)
+                    in self._segments_for(dst_base, right, reads, eval_ctx, skip)]
         out = []
-        for src, sb in expr_reads_with_bounds(right):
+        for src, sb in expr_reads_with_bounds(right, eval_ctx):
+            if symbol_key(src) in skip:
+                continue
             for dst in tgts:
                 out.append((src, dst, sb, None, None))
         return out
@@ -1230,28 +1265,24 @@ class SignalTracer:
         for one procedural block.  Returns unique
         (src_sym, dst_sym, src_bits, dst_bits, bit_offset) tuples.
 
-        Data is precise (an assignment's RHS feeds only its own LHS).  Control
-        conditions (if / case / loop) are attributed to every driver in the
-        block — a small, never-under-reporting over-approximation that avoids
-        a per-branch scoping walk.  A symbol pair driven by more than one
-        statement/condition loses its single-valued bit map (falls back to the
-        whole signal), which never under-reports.
+        Data is precise (an assignment's RHS feeds only its own LHS).  With
+        unrolling enabled, constant if/case branches are pruned and constant-
+        bound for/repeat loops are unrolled (so per-iteration ``p[i]`` indices
+        fold to concrete bits); otherwise the flat walk attributes every control
+        condition to every driver.  Either way a symbol pair driven by more than
+        one statement/condition loses its single-valued bit map (whole signal),
+        which never under-reports.
         """
-        assigns = []      # [AssignmentExpression]
-        control = []      # control-condition reads
+        bit_pairs = None
+        control = []
+        if self._unroll:
+            wp, wc, ok = self._walk_proc_pairs(proc)
+            if ok and (wp or wc):
+                bit_pairs, control = wp, wc
+        if bit_pairs is None:
+            bit_pairs, control = self._flat_proc_pairs(proc)
 
-        def collect(node):
-            if type(node).__name__ == "AssignmentExpression":
-                assigns.append(node)
-            else:
-                control.extend(self._statement_control_reads(node))
-
-        try:
-            proc.analyzedSymbol.body.visit(f=collect)
-        except Exception:
-            assigns = []
-
-        if not assigns:
+        if bit_pairs is None:
             # Degenerate walk; fall back to the coarse reads x drivers so we
             # never silently under-report.
             reads = [r.symbol for r in (proc.readSet or [])
@@ -1271,13 +1302,310 @@ class SignalTracer:
             else:
                 pairs[k] = (src, dst, sb, db, off)
 
-        for node in assigns:
-            for src, dst, sb, db, off in self._assignment_bit_pairs(node):
-                add(src, dst, sb, db, off)
+        for (src, dst, sb, db, off) in bit_pairs:
+            add(src, dst, sb, db, off)
         for dst in drivers:
             for cr in control:
                 add(cr, dst)
         return list(pairs.values())
+
+    def _flat_proc_pairs(self, proc):
+        """The flat body walk — used when unrolling is off or unproductive.
+        Collects every AssignmentExpression's bit pairs (whole-signal indices)
+        plus all control-condition reads.  Returns (bit_pairs | None, control);
+        a None bit_pairs signals a degenerate walk (caller uses readSet x
+        drivers).  This is exactly the pre-unrolling behaviour."""
+        assigns = []
+        control = []
+
+        def collect(node):
+            if type(node).__name__ == "AssignmentExpression":
+                assigns.append(node)
+            else:
+                control.extend(self._statement_control_reads(node))
+
+        try:
+            proc.analyzedSymbol.body.visit(f=collect)
+        except Exception:
+            return (None, control)
+        if not assigns:
+            return (None, control)
+        bit_pairs = []
+        for node in assigns:
+            bit_pairs.extend(self._assignment_bit_pairs(node))
+        return (bit_pairs, control)
+
+    def _merge_segments(self, pairs):
+        """Collapse the per-iteration segments of an unrolled loop that share a
+        (src, dst) symbol pair: segments with one consistent copy offset merge
+        into a single spanning-range edge (so ``y[i] = a[i+k]`` keeps its bit
+        map); a mix of offsets, or any whole-signal contribution, downgrades that
+        pair to the whole signal.  A sparse index set is over-approximated to its
+        [min, max] span — conservative (never under-reports)."""
+        groups, order = {}, []
+        for (src, dst, sb, db, off) in pairs:
+            k = (self._sym_path(src), self._sym_path(dst))
+            if k not in groups:
+                groups[k] = (src, dst, [])
+                order.append(k)
+            groups[k][2].append((sb, db, off))
+        out = []
+        for k in order:
+            src, dst, segs = groups[k]
+            if len(segs) == 1:
+                out.append((src, dst) + segs[0])
+                continue
+            offs = {off for (_s, _d, off) in segs}
+            if (len(offs) == 1 and None not in offs
+                    and all(sb is not None and db is not None
+                            for (sb, db, _o) in segs)):
+                off = next(iter(offs))
+                slo = min(sb[0] for (sb, _d, _o) in segs)
+                shi = max(sb[1] for (sb, _d, _o) in segs)
+                dlo = min(db[0] for (_s, db, _o) in segs)
+                dhi = max(db[1] for (_s, db, _o) in segs)
+                out.append((src, dst, (slo, shi), (dlo, dhi), off))
+            else:
+                out.append((src, dst, None, None, None))   # whole signal
+        return out
+
+    def _walk_proc_pairs(self, proc):
+        """Structured prune + unroll walk of a procedural block.
+
+        Descends the statement tree: constant if/case conditions skip the dead
+        branch; constant-bound for/repeat loops are unrolled with the loop
+        variable bound in an EvalContext, so per-iteration ``p[i]`` indices fold
+        to concrete bits (slang-netlist-style bit precision).  Returns
+        (bit_pairs, control, ok); ok=False asks the caller to fall back to the
+        flat walk.  Never raises.  Anything not handled — while/do-while/foreach,
+        non-constant bounds, an over-budget loop, an unknown statement kind —
+        degrades to the conservative flat handling for that subtree, so the
+        result never under-reports edges.
+
+        Pairs assigned outside any unrolled loop are produced exactly as the flat
+        walk would (eval context off, nothing skipped), so a block with no
+        prunable/unrollable construct yields byte-for-byte the flat result; only
+        loop-generated segments are offset-merged.  ``bound`` holds the symbol
+        keys of the currently-bound loop variables (read as constants, not data).
+        """
+        try:
+            sym = proc.analyzedSymbol
+            ctx = make_eval_context(sym)
+        except Exception:
+            return ([], [], False)
+        if ctx is None:
+            return ([], [], False)
+
+        loop_pairs = []      # segments produced inside an unrolled loop
+        top_pairs = []       # segments produced at block top level (flat parity)
+        control = []
+        bound = set()        # symbol_key of currently-bound loop variables
+        budget = [self._max_unroll]      # global iteration budget across loops
+
+        def emit_assign(node):
+            in_loop = bool(bound)
+            try:
+                segs = self._assignment_bit_pairs(
+                    node, ctx if in_loop else None, frozenset(bound))
+            except Exception:
+                return
+            (loop_pairs if in_loop else top_pairs).extend(segs)
+
+        def emit_expr(expr):
+            if expr is None:
+                return
+
+            def cb(n):
+                if type(n).__name__ == "AssignmentExpression":
+                    emit_assign(n)
+            try:
+                expr.visit(f=cb)
+            except Exception:
+                pass
+
+        def flat_subtree(node):
+            # Safety net for an unrecognized statement kind: exactly the flat
+            # walk (assignments + control reads) over just this subtree.
+            def cb(n):
+                if type(n).__name__ == "AssignmentExpression":
+                    emit_assign(n)
+                else:
+                    control.extend(self._statement_control_reads(n))
+            try:
+                node.visit(f=cb)
+            except Exception:
+                pass
+
+        def conservative_stmt(node):
+            # Loop/branch kept whole: its bounds/conditions become control reads
+            # (every driver) and its body is walked once — never under-reports.
+            try:
+                control.extend(self._statement_control_reads(node))
+            except Exception:
+                pass
+            walk(getattr(node, "body", None))
+
+        def handle_cond(node):
+            conds = list(getattr(node, "conditions", None) or [])
+            if_true = getattr(node, "ifTrue", None)
+            if_false = getattr(node, "ifFalse", None)
+            has_pattern = any(getattr(c, "pattern", None) is not None for c in conds)
+            verdict = None
+            if conds and not has_pattern:
+                results = [try_eval_bool(getattr(c, "expr", None), ctx)
+                           for c in conds]
+                if any(r is False for r in results):
+                    verdict = False
+                elif all(r is True for r in results):
+                    verdict = True
+            if verdict is True:
+                walk(if_true)
+                return
+            if verdict is False:
+                walk(if_false)
+                return
+            for c in conds:                  # non-constant: predicate is control
+                control.extend(expr_symbols(getattr(c, "expr", c)))
+            walk(if_true)
+            walk(if_false)
+
+        def handle_case(node):
+            expr = getattr(node, "expr", None)
+            items = list(getattr(node, "items", None) or [])
+            default = getattr(node, "defaultCase", None)
+            sel = try_eval_int(expr, ctx)
+            if sel is not None:
+                matched, bail = None, False
+                for item in items:
+                    vals = [try_eval_int(lab, ctx)
+                            for lab in (getattr(item, "expressions", None) or [])]
+                    if any(v == sel for v in vals if v is not None):
+                        matched = item        # definitely taken (first match wins)
+                        break
+                    if any(v is None for v in vals):
+                        bail = True           # a non-constant label might match
+                        break
+                if not bail:
+                    if matched is not None:
+                        walk(getattr(matched, "stmt", None))
+                    elif default is not None:
+                        walk(default)
+                    return
+            control.extend(expr_symbols(expr))   # non-constant / bailed
+            for item in items:
+                walk(getattr(item, "stmt", None))
+            walk(default)
+
+        def bind_initial(loop_vars):
+            for v in loop_vars:
+                init = getattr(v, "initializer", None)
+                if init is None:
+                    return False
+                try:
+                    iv = init.eval(ctx)
+                except Exception:
+                    return False
+                if not bool(iv) or iv.hasUnknown():
+                    return False
+                ctx.createLocal(v, iv)
+            return True
+
+        def try_unroll_for(node):
+            loop_vars = list(getattr(node, "loopVars", None) or [])
+            stop = getattr(node, "stopExpr", None)
+            steps = list(getattr(node, "steps", None) or [])
+            body = getattr(node, "body", None)
+            # Only the `for (int i = ...; ...; ...)` form (declared loop vars with
+            # foldable initializers) is unrolled; other shapes go conservative.
+            if not loop_vars or stop is None or body is None:
+                return False
+            keys = [symbol_key(v) for v in loop_vars]
+            try:
+                if not bind_initial(loop_vars):
+                    return False
+                # Pre-flight: count iterations WITHOUT walking the body, so an
+                # over-budget loop bails wholesale (no partial unroll => the
+                # never-under-report invariant holds).
+                n = 0
+                while True:
+                    cv = stop.eval(ctx)
+                    if not bool(cv) or cv.hasUnknown():
+                        return False
+                    if not cv.isTrue():
+                        break
+                    n += 1
+                    if n > budget[0]:
+                        return False
+                    for st in steps:
+                        st.eval(ctx)
+                # Real pass: rebind to the initial value and walk the body n times.
+                if not bind_initial(loop_vars):
+                    return False
+                bound.update(keys)
+                try:
+                    for _ in range(n):
+                        walk(body)
+                        for st in steps:
+                            st.eval(ctx)
+                finally:
+                    bound.difference_update(keys)
+                budget[0] -= n
+                return True
+            except Exception:
+                return False
+            finally:
+                for v in reversed(loop_vars):
+                    try:
+                        ctx.deleteLocal(v)
+                    except Exception:
+                        pass
+
+        def handle_repeat(node):
+            count = try_eval_int(getattr(node, "count", None), ctx)
+            body = getattr(node, "body", None)
+            if count is None or body is None or count < 0 or count > budget[0]:
+                return conservative_stmt(node)
+            for _ in range(count):
+                walk(body)
+            budget[0] -= count
+
+        def walk(node):
+            if node is None:
+                return
+            tn = type(node).__name__
+            if tn == "StatementList":
+                for s in (getattr(node, "list", None) or []):
+                    walk(s)
+            elif tn == "BlockStatement":
+                walk(getattr(node, "body", None))
+            elif tn == "ExpressionStatement":
+                emit_expr(getattr(node, "expr", None))
+            elif tn == "ConditionalStatement":
+                handle_cond(node)
+            elif tn == "CaseStatement":
+                handle_case(node)
+            elif tn == "ForLoopStatement":
+                if not try_unroll_for(node):
+                    conservative_stmt(node)
+            elif tn == "RepeatLoopStatement":
+                handle_repeat(node)
+            elif tn in ("WhileLoopStatement", "DoWhileLoopStatement",
+                        "ForeachLoopStatement"):
+                conservative_stmt(node)
+            elif tn == "TimedStatement":
+                walk(getattr(node, "stmt", None))
+            elif tn in ("VariableDeclStatement", "EmptyStatement",
+                        "ReturnStatement", "BreakStatement", "ContinueStatement",
+                        "DisableStatement"):
+                return
+            else:
+                flat_subtree(node)
+
+        try:
+            walk(getattr(sym, "body", None))
+        except Exception:
+            return ([], [], False)
+        return (self._merge_segments(loop_pairs) + top_pairs, control, True)
 
     @staticmethod
     def _statement_control_reads(node):
@@ -2113,7 +2441,14 @@ def _prepare(args, env, *, need_signal=False):
     a trailing bit-select.  Returns (tracer, scope, signal, bit_range);
     raises CliError on any input/compile/scope failure."""
     prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
-    tracer = SignalTracer(prepared.comp)
+    fcfg = flow_config(prepared.config)
+    unroll = getattr(args, 'unroll', None)
+    if unroll is None:
+        unroll = fcfg["unroll"] if fcfg["unroll"] is not None else True
+    max_unroll = getattr(args, 'max_unroll', None)
+    if max_unroll is None:
+        max_unroll = fcfg["max_unroll"] if fcfg["max_unroll"] is not None else 2048
+    tracer = SignalTracer(prepared.comp, unroll=unroll, max_unroll=max_unroll)
     scope = rtl_cli.resolve_scope(
         args.scope,
         tracer.get_top_paths(),
@@ -2141,6 +2476,23 @@ def _prepare(args, env, *, need_signal=False):
     return tracer, scope, signal, bit_range
 
 
+# ── Shared dataflow-precision flags ──────────────────────────────────
+def _add_unroll_args(p):
+    """Constant-condition pruning / procedural loop unrolling (default on).
+    Folds constant if/case branches and unrolls constant-bound for/repeat loops
+    so dead-branch edges drop out and ``p[i]`` resolves to concrete bits."""
+    g = p.add_argument_group('precision')
+    g.add_argument('--unroll', dest='unroll', action='store_true', default=None,
+                   help='Prune constant if/case branches and unroll constant-'
+                        'bound for/repeat loops (default: on)')
+    g.add_argument('--no-unroll', dest='unroll', action='store_false',
+                   help='Disable pruning / loop unrolling (conservative, '
+                        'symbol-level control over-approximation)')
+    g.add_argument('--max-unroll', type=int, default=None, metavar='N',
+                   help='Cap on total unrolled iterations per block (default: '
+                        '2048); a loop exceeding it stays conservative')
+
+
 # ── Subcommand: trace ────────────────────────────────────────────────
 def add_trace_args(p):
     g = p.add_argument_group('trace')
@@ -2151,6 +2503,7 @@ def add_trace_args(p):
                    help='Hierarchical scope; auto-detect when single top')
     g.add_argument('--filter', default=None, metavar='GLOB',
                    help='Shell glob on instance names to narrow loads')
+    _add_unroll_args(p)
 
 
 def run_trace(args, env):
@@ -2188,6 +2541,7 @@ def add_flow_args(p):
                    help='Maximum BFS traversal depth (default: 4)')
     g.add_argument('--summary', action='store_true',
                    help='Counts + direct neighbors only; omit the full node/edge graph')
+    _add_unroll_args(p)
 
 
 def _emit_flow_summary(env, r, mode, scope, signal):
