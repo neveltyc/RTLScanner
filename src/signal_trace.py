@@ -301,6 +301,14 @@ class FlowEdge:
     target_type: str = ""
     file: str = ""
     line: int = 0
+    # True when the edge is *registered* — its target is driven by an
+    # edge-triggered/level-held sequential procedure (always_ff / always_latch
+    # / an edge-sensitive `always`).  A clocked edge breaks combinational
+    # feedback (loop detection ignores it) and marks a flip-flop boundary
+    # (CDC keys launch/capture domains off it).  Continuous assigns and port
+    # connections are never clocked.  Deliberately NOT part of ``key()`` so the
+    # demand-driven / whole-graph parity (test_flow_lazy) is unaffected.
+    clocked: bool = False
 
     def key(self):
         return (self.source, self.target, self.kind, self.file, self.line)
@@ -312,6 +320,8 @@ class FlowEdge:
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
+        if self.clocked:
+            d['clocked'] = True
         if depth is not None:
             d['depth'] = depth
         return d
@@ -377,6 +387,123 @@ class FlowResult:
         print()
 
 
+# ── Graph-analysis result records (CDC / combinational loops) ────────
+@dataclass
+class ClockDomain:
+    """The clock domain(s) a registered node belongs to."""
+    domains: set = field(default_factory=set)   # resolved clock *source* paths
+    names: set = field(default_factory=set)     # leaf names of those sources
+
+
+@dataclass
+class CDCCrossing:
+    """One launch→capture clock-domain crossing found on the flow graph."""
+    launch: str             # launch (source) register node path
+    capture: str            # capture (destination) register node path
+    from_domains: list      # launch clock-domain display names
+    to_domains: list        # capture clock-domain display names
+    file: str = ""
+    line: int = 0
+
+    @property
+    def launch_name(self):
+        return self.launch.rsplit('.', 1)[-1]
+
+    @property
+    def capture_name(self):
+        return self.capture.rsplit('.', 1)[-1]
+
+
+@dataclass
+class CombLoop:
+    """One combinational feedback loop (a cyclic path of non-clocked edges)."""
+    nodes: list             # cycle node paths a->b->c (closes c->a)
+    file: str = ""
+    line: int = 0
+
+    @property
+    def display(self):
+        leaves = [n.rsplit('.', 1)[-1] for n in self.nodes]
+        return " → ".join(leaves + [leaves[0]]) if leaves else ""
+
+
+# ── Tarjan strongly-connected components (iterative) ─────────────────
+def _tarjan_scc(nodes, succ):
+    """Iterative Tarjan SCC.  ``succ`` maps a node to its successor list.
+
+    Returns the list of strongly-connected components (each a list of nodes).
+    Iterative (explicit stack) so a long combinational chain — the 200-deep
+    pipeline in the tests — cannot overflow Python's recursion limit.
+    """
+    index = {}
+    low = {}
+    on_stack = set()
+    stack = []
+    order = [0]
+    out = []
+
+    for root in nodes:
+        if root in index:
+            continue
+        # work stack of (node, iterator-position)
+        work = [(root, 0)]
+        while work:
+            node, pi = work[-1]
+            if pi == 0:
+                index[node] = low[node] = order[0]
+                order[0] += 1
+                stack.append(node)
+                on_stack.add(node)
+            succs = succ.get(node, ())
+            if pi < len(succs):
+                work[-1] = (node, pi + 1)
+                nxt = succs[pi]
+                if nxt not in index:
+                    work.append((nxt, 0))
+                elif nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            else:
+                if low[node] == index[node]:
+                    comp = []
+                    while True:
+                        w = stack.pop()
+                        on_stack.discard(w)
+                        comp.append(w)
+                        if w == node:
+                            break
+                    out.append(comp)
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    low[parent] = min(low[parent], low[node])
+    return out
+
+
+def _reconstruct_cycle(comp, succ):
+    """A representative cycle within strongly-connected component ``comp``.
+
+    Returns the node path ``[s, …]`` whose last node has an edge back to ``s``
+    (the caller renders the closing ``→ s``).  Deterministic start for stable
+    output; bounded by the SCC size.
+    """
+    compset = set(comp)
+    s = min(comp)
+    # DFS for a path from s back to s using only comp-internal edges.
+    stack = [(s, [s])]
+    visited = {s}
+    while stack:
+        node, path = stack.pop()
+        for nxt in succ.get(node, ()):
+            if nxt not in compset:
+                continue
+            if nxt == s:
+                return path
+            if nxt not in visited:
+                visited.add(nxt)
+                stack.append((nxt, path + [nxt]))
+    return [s]
+
+
 # ── Core: Signal Tracer ─────────────────────────────────────────────
 class SignalTracer:
     """Analyzes signal drivers and loads in an elaborated SV design."""
@@ -391,6 +518,9 @@ class SignalTracer:
         self._mgr = analysis.AnalysisManager()
         self._mgr.analyze(compilation)
         self._proc_edge_cache = {}
+        # Clock-domain caches (see clock_domain_map / cdc_crossings).
+        self._clock_tmpl_cache = {}    # body key -> {driver path -> [clk path]}
+        self._clock_domain_cache = None  # reg node path -> ClockDomain
         # Demand-driven flow-graph caches (see _build_flow_edges / flow).
         self._inst_proc_cache = {}     # inst path -> [FlowEdge] (proc/assign)
         self._inst_port_cache = {}     # inst path -> [FlowEdge] (own ports)
@@ -720,10 +850,15 @@ class SignalTracer:
                 if not drivers or not reads:
                     continue
                 pkind = proc.analyzedSymbol.kind
+                clocked = False
                 if pkind == ast.SymbolKind.ContinuousAssign:
                     kind, desc = "continuous_assign", "assign"
                 elif pkind == ast.SymbolKind.ProceduralBlock:
                     kind, desc = "procedural", procedure_label(proc)
+                    # A registered edge: its target is held by a flip-flop /
+                    # latch, so it breaks combinational feedback and marks a
+                    # clock-domain boundary for CDC.
+                    clocked = self._proc_is_clocked(proc)
                 else:
                     kind, desc = "procedure", str(pkind)
                 f, ln = self._loc_sym(proc.analyzedSymbol)
@@ -738,7 +873,7 @@ class SignalTracer:
                     templates.append((
                         self._sym_path(src), self._sym_path(dst),
                         self._sym_type(src), self._sym_type(dst),
-                        kind, desc, f, ln))
+                        kind, desc, f, ln, clocked))
             except Exception:
                 continue
         self._proc_edge_cache[key] = templates
@@ -843,8 +978,8 @@ class SignalTracer:
         edges = [
             FlowEdge(source=view.remap(src), target=view.remap(dst),
                      source_type=st, target_type=dt, kind=kind,
-                     description=desc, file=f, line=ln)
-            for (src, dst, st, dt, kind, desc, f, ln)
+                     description=desc, file=f, line=ln, clocked=clk)
+            for (src, dst, st, dt, kind, desc, f, ln, clk)
             in self._proc_edge_templates(view)
         ]
         self._inst_proc_cache[key] = edges
@@ -1208,6 +1343,285 @@ class SignalTracer:
             scope_module=inst.body.name, start=start,
             edges=traversed, max_depth=max_depth,
         )
+
+    # ── clock / sequential classification ─────────────────────────────
+
+    @staticmethod
+    def _event_is_edge(ev):
+        """True when a timing event is edge-sensitive (posedge/negedge/both)."""
+        try:
+            e = getattr(ev, 'edge', None)
+            return e is not None and e in (ast.EdgeKind.PosEdge,
+                                           ast.EdgeKind.NegEdge,
+                                           ast.EdgeKind.BothEdges)
+        except Exception:
+            return False
+
+    @staticmethod
+    def _proc_timing_events(proc):
+        """The leading timing control's events (or [] when level/none)."""
+        try:
+            tcs = proc.timingControls
+        except Exception:
+            tcs = None
+        if not tcs:
+            return []
+        try:
+            tc = tcs[0].timing
+            return list(tc.events) if hasattr(tc, 'events') else [tc]
+        except Exception:
+            return []
+
+    def _proc_is_clocked(self, proc):
+        """True when a procedural block is sequential (registered).
+
+        ``always_ff`` / ``always_latch`` are sequential by construction; a bare
+        ``always`` is sequential only when its timing control is edge-sensitive
+        (``always @(posedge clk)``) and combinational otherwise (``always @*``).
+        Classify by ``procedureKind`` first (proven, cheap), falling back to the
+        edge probe only for the ambiguous generic ``always``.
+        """
+        try:
+            pk = safe_str(proc.analyzedSymbol.procedureKind, "")
+        except Exception:
+            pk = ""
+        if "AlwaysFF" in pk or "AlwaysLatch" in pk:
+            return True
+        if "AlwaysComb" in pk:
+            return False
+        return any(self._event_is_edge(ev)
+                   for ev in self._proc_timing_events(proc))
+
+    def _clock_templates(self, view):
+        """Per canonical body: ``{driver_path -> [clock_event_path, …]}``.
+
+        For every sequential procedure, map each driven (non-input-port) data
+        signal to the symbols named in the block's *edge* events — clocks plus
+        asynchronous resets.  Reset filtering is deferred to
+        :meth:`clock_domain_map`, so this stays reset-policy-agnostic and is
+        cached once per unique module body (then stamped per instance with
+        ``view.remap``, exactly like :meth:`_proc_edge_templates`).
+        """
+        key = self._body_key(view.body)
+        cached = self._clock_tmpl_cache.get(key)
+        if cached is not None:
+            return cached
+        out = {}
+        for proc in analyzed_procedures(self._mgr, view.body):
+            try:
+                if proc.analyzedSymbol.kind != ast.SymbolKind.ProceduralBlock:
+                    continue
+                if not self._proc_is_clocked(proc):
+                    continue
+                clk_paths = []
+                for ev in self._proc_timing_events(proc):
+                    if not self._event_is_edge(ev):
+                        continue
+                    try:
+                        cp = self._sym_path(ev.expr.symbol)
+                    except Exception:
+                        continue
+                    if cp and cp not in clk_paths:
+                        clk_paths.append(cp)
+                if not clk_paths:
+                    continue
+                for d in (proc.drivers or []):
+                    try:
+                        if d.flags & analysis.DriverFlags.InputPort:
+                            continue
+                    except Exception:
+                        pass
+                    if not is_data_symbol(d.symbol):
+                        continue
+                    bucket = out.setdefault(self._sym_path(d.symbol), [])
+                    for cp in clk_paths:
+                        if cp not in bucket:
+                            bucket.append(cp)
+            except Exception:
+                continue
+        self._clock_tmpl_cache[key] = out
+        return out
+
+    def _resolve_clock_source(self, node):
+        """Resolve a clock node to its *source net* by walking connectivity
+        fanin (port connections + continuous assigns) up the hierarchy.
+
+        Two flops driven by the same physical clock then share a domain key
+        even when the local clock ports are named differently or live in
+        different instances.  Stops at a primary net (no connectivity driver)
+        or at a gate/mux (>1 connectivity driver), so a gated/divided clock is
+        its own domain.  A visited-set bounds a pathological clock-net cycle.
+        """
+        cur = node
+        seen = {cur}
+        for _ in range(256):
+            preds = []
+            for e in self._incident_edges(cur, "fanin"):
+                if e.clocked:
+                    continue
+                if e.kind not in ("port_connection", "continuous_assign"):
+                    continue
+                if e.source not in preds:
+                    preds.append(e.source)
+            if len(preds) != 1 or preds[0] in seen:
+                break
+            cur = preds[0]
+            seen.add(cur)
+        return cur
+
+    def clock_domain_map(self, is_reset):
+        """``{registered_node_path -> ClockDomain}`` over the whole design.
+
+        A registered node is any signal driven by a sequential procedure; its
+        domain is the *source net* its clock resolves to (``is_reset`` drops
+        async-reset events from the clock set).  Built once and cached.
+        """
+        if self._clock_domain_cache is not None:
+            return self._clock_domain_cache
+        domains = {}
+        for inst in iter_instances(self._root):
+            if getattr(inst, 'body', None) is None:
+                continue
+            try:
+                view = canonical_view(self._root, inst)
+            except Exception:
+                continue
+            tmpl = self._clock_templates(view)
+            if not tmpl:
+                continue
+            for drv_canon, clk_canons in tmpl.items():
+                node = view.remap(drv_canon)
+                doms, names = set(), set()
+                for clk_canon in clk_canons:
+                    clk_node = view.remap(clk_canon)
+                    if is_reset(clk_node.rsplit('.', 1)[-1]):
+                        continue
+                    src = self._resolve_clock_source(clk_node)
+                    doms.add(src)
+                    names.add(src.rsplit('.', 1)[-1])
+                if not doms:
+                    continue
+                rec = domains.get(node)
+                if rec is None:
+                    domains[node] = ClockDomain(domains=doms, names=names)
+                else:
+                    rec.domains |= doms
+                    rec.names |= names
+        self._clock_domain_cache = domains
+        return domains
+
+    # ── whole-graph analyses (CDC / combinational loops) ───────────────
+
+    def cdc_crossings(self, is_reset):
+        """Clock-domain crossings on the flow graph.
+
+        For each capture register, walk *combinationally* backward from its
+        data inputs (clocked edges, minus reset-named sources) and collect the
+        launch registers reached, stopping at each register boundary.  A launch
+        whose domain is disjoint from the capture's domain is an unsynchronized
+        crossing.  Cross-hierarchy by construction: the whole-graph build folds
+        in port-connection and hierarchical-reference edges alike.
+        """
+        edges = self._build_flow_edges()
+        reg_domain = self.clock_domain_map(is_reset)
+        if not reg_domain:
+            return []
+
+        clocked_fanin = {}   # capture node -> [clocked FlowEdge feeding it]
+        comb_fanin = {}      # node -> [combinational predecessor node]
+        for e in edges:
+            if e.clocked:
+                clocked_fanin.setdefault(e.target, []).append(e)
+            else:
+                comb_fanin.setdefault(e.target, []).append(e.source)
+
+        out, seen = [], set()
+        for cap in sorted(reg_domain):
+            cap_dom = reg_domain[cap]
+            cap_edges = clocked_fanin.get(cap, [])
+            if not cap_edges:
+                continue
+            cap_edge = cap_edges[0]
+            seeds = [e.source for e in cap_edges
+                     if not is_reset(e.source.rsplit('.', 1)[-1])]
+            if not seeds:
+                continue
+
+            visited, launches = set(), set()
+            stack = list(seeds)
+            while stack:
+                n = stack.pop()
+                if n in visited:
+                    continue
+                visited.add(n)
+                if n != cap and n in reg_domain:
+                    launches.add(n)          # launch flop; stop at the boundary
+                    continue
+                for p in comb_fanin.get(n, ()):
+                    if p not in visited:
+                        stack.append(p)
+
+            for launch in sorted(launches):
+                l_dom = reg_domain[launch]
+                if cap_dom.domains & l_dom.domains:
+                    continue                 # same physical clock => safe
+                key = (launch, cap)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(CDCCrossing(
+                    launch=launch, capture=cap,
+                    from_domains=sorted(l_dom.names),
+                    to_domains=sorted(cap_dom.names),
+                    file=cap_edge.file, line=cap_edge.line))
+        return out
+
+    def combinational_loops(self):
+        """Combinational feedback loops: Tarjan SCCs over the non-clocked edges.
+
+        A clocked (registered) edge breaks feedback, so excluding it leaves only
+        combinational connectivity; any strongly-connected component with a real
+        cycle is a combinational loop.  Multi-node SCCs are always reported; a
+        single-node SCC is reported only for a structural self-edge
+        (``assign a = a;`` / a self port connection), not a procedural one — the
+        graph's conservative control-condition modeling can otherwise synthesize
+        a spurious ``a → a``.
+        """
+        edges = [e for e in self._build_flow_edges() if not e.clocked]
+        succ = {}
+        nodes = set()
+        first_edge = {}      # (src, tgt) -> FlowEdge (for a location)
+        self_edges = {}      # node -> structural self FlowEdge
+        for e in edges:
+            nodes.add(e.source)
+            nodes.add(e.target)
+            lst = succ.setdefault(e.source, [])
+            if e.target not in lst:
+                lst.append(e.target)
+            first_edge.setdefault((e.source, e.target), e)
+            if e.source == e.target and e.kind in ("continuous_assign",
+                                                    "port_connection"):
+                self_edges.setdefault(e.source, e)
+
+        loops = []
+        for comp in _tarjan_scc(nodes, succ):
+            if len(comp) >= 2:
+                path = _reconstruct_cycle(comp, succ)
+                if len(path) < 2:
+                    continue
+                # location: the first edge along the reconstructed cycle.
+                ekey = (path[0], path[1])
+                e = first_edge.get(ekey)
+                loops.append(CombLoop(nodes=path,
+                                      file=e.file if e else "",
+                                      line=e.line if e else 0))
+            else:
+                n = comp[0]
+                e = self_edges.get(n)
+                if e is not None:
+                    loops.append(CombLoop(nodes=[n], file=e.file, line=e.line))
+        loops.sort(key=lambda lp: (lp.file, lp.line, lp.nodes))
+        return loops
 
     # ── public API ───────────────────────────────────────────────────
 
