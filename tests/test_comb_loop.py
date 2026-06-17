@@ -28,10 +28,11 @@ except Exception:  # pragma: no cover
     HAVE_PYSLANG = False
 
 
-def _loops(text):
+def _loops(text, unroll=False):
     p = Path(tempfile.mkdtemp()) / "loop.sv"
     p.write_text(textwrap.dedent(text))
-    return SignalTracer(build_compilation([str(p)])[0]).combinational_loops()
+    return SignalTracer(build_compilation([str(p)])[0],
+                        unroll=unroll).combinational_loops()
 
 
 def _leaf_sets(loops):
@@ -116,6 +117,28 @@ class LoopDetection(unittest.TestCase):
             """)
         self.assertEqual(loops, [])
 
+    def test_constant_dead_branch_is_not_a_loop(self):
+        # Regression: the only edge that would close a y -> z -> y cycle (`z = y`)
+        # lives in a branch guarded by a constant-0 condition, so it is dead in
+        # elaborated hardware.  With constant-condition pruning on (the same pass
+        # fanin/fanout/trace use) the dead edge drops out and there is no loop;
+        # without it a phantom y -> z -> y loop appears.  This pins that comb-loop
+        # runs on the pruned graph.
+        design = """
+            module top(input logic a, output logic y, output logic z);
+              localparam bit C = 1'b0;
+              assign y = z & a;
+              always_comb begin
+                if (C) z = y;        // dead branch: phantom z <- y edge
+                else   z = a;
+              end
+            endmodule
+            """
+        self.assertEqual(_loops(design, unroll=True), [])      # pruned: no loop
+        # The unpruned graph still over-approximates the dead edge into a loop,
+        # so this proves pruning is what removes the false positive.
+        self.assertEqual(len(_loops(design, unroll=False)), 1)
+
     def test_cross_hierarchy_loop_through_ports(self):
         loops = _loops("""
             module inv(input logic i, output logic o);
@@ -158,6 +181,18 @@ class LintRuleWiring(unittest.TestCase):
         # the registered_feedback module is legal sequential feedback
         msgs = " ".join(f["message"] for f in env["data"]["findings"])
         self.assertNotIn("registered_feedback", msgs)
+
+    def test_constant_dead_branch_not_flagged(self):
+        # Regression: the lint comb-loop check runs on the pruned dataflow graph
+        # (constant if/case dead branches dropped), the same graph fanin/fanout/
+        # CDC use.  The const_dead_branch module has only a phantom y -> z -> y
+        # loop that exists solely through a constant-0 dead branch, so it must
+        # NOT be reported.
+        env = self._run("examples/lint/comb_loop_demo.sv", "--rules", "comb-loop")
+        msgs = " ".join(f["message"] for f in env["data"]["findings"])
+        self.assertNotIn("const_dead_branch", msgs)
+        # the real loops in the demo are still caught
+        self.assertIn("comb_loop", msgs)
 
     def test_default_and_bugs_exclude_comb_loop(self):
         env = self._run("examples/lint/comb_loop_demo.sv")          # default
