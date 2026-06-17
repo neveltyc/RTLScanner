@@ -40,7 +40,7 @@ from rtl_common import (
 import agent_json
 import rtl_cli
 from agent_json import emit
-from rtl_config import lint_config
+from rtl_config import flow_config, lint_config
 from rtl_scope import ScopeAnalyzer
 from signal_trace import SignalTracer
 
@@ -92,7 +92,8 @@ class LintRunner:
 
     def __init__(self, compilation, check_unused=True, check_shadow=False,
                  weverything=False, check_cdc=False, cdc_reset_globs=None,
-                 check_port_connect=False, check_comb_loop=False, root=None):
+                 check_port_connect=False, check_comb_loop=False, root=None,
+                 unroll=True, max_unroll=2048):
         self._comp = compilation
         self._sm = compilation.sourceManager
         self._check_unused = check_unused
@@ -102,6 +103,13 @@ class LintRunner:
         self._check_comb_loop = check_comb_loop
         self._cdc_reset_globs = cdc_reset_globs or []
         # CDC and combinational-loop checks share one flow graph (built lazily).
+        # Both run on the *pruned* graph — constant if/case dead branches dropped
+        # and constant-bound loops unrolled — so they match the precision of the
+        # fanin/fanout/trace commands (a constant dead-branch edge is not a real
+        # CDC crossing nor a real combinational loop).  Defaults match the flow
+        # commands' defaults; `run()` overrides them from the [flow] config.
+        self._unroll = bool(unroll)
+        self._max_unroll = max(0, int(max_unroll))
         self._tracer = None
         self._eng = pyslang.DiagnosticEngine(self._sm)
         if weverything:
@@ -249,9 +257,14 @@ class LintRunner:
 
     def _shared_tracer(self):
         """A single ``SignalTracer`` (and its flow graph / analysis manager)
-        shared by the CDC and combinational-loop checks, built on first use."""
+        shared by the CDC and combinational-loop checks, built on first use.
+
+        It carries the same constant-condition pruning / loop unrolling the
+        fanin/fanout/trace commands use, so a constant dead-branch edge never
+        manufactures a phantom CDC crossing or combinational loop."""
         if self._tracer is None:
-            self._tracer = SignalTracer(self._comp)
+            self._tracer = SignalTracer(self._comp, unroll=self._unroll,
+                                        max_unroll=self._max_unroll)
         return self._tracer
 
     # ── public API ────────────────────────────────────────────────────
@@ -879,6 +892,13 @@ def run(args, env):
 
     run_families, _, _, warning_options, _ = resolve_rules(rules_specs)
 
+    # The graph-based checks (CDC, comb-loop) share the dataflow flow graph with
+    # the fanin/fanout/trace commands, so honor the same [flow] precision config
+    # (constant-condition pruning / loop unrolling), defaulting to on.
+    fcfg = flow_config(prepared.config)
+    unroll = fcfg["unroll"] if fcfg["unroll"] is not None else True
+    max_unroll = fcfg["max_unroll"] if fcfg["max_unroll"] is not None else 2048
+
     runner = LintRunner(
         prepared.comp,
         check_unused=("unused" in run_families),
@@ -889,6 +909,8 @@ def run(args, env):
         check_port_connect=("port-connect" in run_families),
         check_comb_loop=("comb-loop" in run_families),
         root=prepared.resolved_inputs.root,
+        unroll=unroll,
+        max_unroll=max_unroll,
     )
 
     # Flag typo'd rule/skip tokens that would otherwise select 0 findings

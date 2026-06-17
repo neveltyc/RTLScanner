@@ -229,6 +229,12 @@ rtlscanner fanin  -d ./rtl -s 'dout[5]' --scope top   # converges to the exact d
 rtlscanner fanout -d ./rtl -s 'a[7:4]'  --scope top   # only where that nibble goes
 ```
 
+A copy whose per-bit offset *varies* — a bit reversal `rev[i] = din[7-i]`, a half
+swap `o = {a[3:0], a[7:4]}` — is a permutation no single offset can express, so
+the edge carries a `segments` array of `{source_bits, target_bits}` sub-copies:
+`fanout din` shows `din[7] → rev[0]`, `din[6] → rev[1]`, …, and a bit-select
+trims the map to just what it asked for (`fanin rev[0]` → only `din[7] → rev[0]`).
+
 Precision matches the RTL: bit/part-selects, concatenation, mux (`?:`), bitwise
 `& | ^ ~`, truncation, and zero/sign-extend are exact; arithmetic (`a + b`),
 shifts, reductions, comparisons, and dynamic indices (`a[i]`) fall back to the
@@ -264,6 +270,7 @@ Reading the output:
 | **node**  | A signal at one elaborated hierarchical path. The starting signal is depth 0. |
 | **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. A registered edge (driven by `always_ff`, a latch, or an edge-sensitive `always`) also carries `clocked: true`. |
 | **bits**  | `source_bits` / `target_bits`: the bit sub-range the edge reads / drives, e.g. `a[2] → dout[5]`. Absent when the whole signal is touched. |
+| **segments** | For a per-bit permutation (reversal / swap), the list of `{source_bits, target_bits}` sub-copies, e.g. `din[7] → rev[0]`. Absent for single-offset and whole-signal edges. |
 | **depth** | BFS distance in hops from the starting signal. |
 
 ## `rtlscanner xref` — source cross-reference lookup
@@ -420,7 +427,10 @@ edges** of the same flow graph — a registered edge (driven by `always_ff`, a
 latch, or an edge-sensitive `always`) breaks the feedback, so legitimate
 sequential feedback is not flagged while a true combinational cycle
 (`assign a = b; assign b = a;`, an `always_comb` that reads its own output) is.
-Loops that close through child-instance ports are caught (cross-hierarchy).
+Loops that close through child-instance ports are caught (cross-hierarchy). The
+check runs on the same constant-pruned graph as `fanin`/`fanout` (honoring the
+`[flow]` precision config), so a feedback path that exists only through a
+constant-false `if`/`case` dead branch is not reported as a loop.
 
 `comb-loop` is opt-in and reported at `warning` severity; like `cdc` it is
 excluded from `default` and the `bugs` preset because it inherits the flow

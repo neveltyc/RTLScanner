@@ -33,6 +33,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `always`. It is the flip-flop boundary the CDC and combinational-loop checks
   key off, and it is additive (combinational edges simply omit the field).
 
+- **`segments` on dataflow edges — per-bit permutation maps.** A copy whose
+  per-bit offset *varies* — a bit reversal `for (i) rev[i] = din[7-i]`, a half
+  swap `o = {a[3:0], a[7:4]}` — is a permutation no single `bit_offset` can
+  express, so the edge used to blur to a whole-signal `din -> rev`. The edge now
+  carries a `segments` array of `{source_bits, target_bits}` sub-copies, so
+  `fanout din` shows `din[7] -> rev[0]`, `din[6] -> rev[1]`, … and a bit-select
+  trims the map to just what it asked for (`fanin rev[0]` -> only
+  `din[7] -> rev[0]`; a whole-signal query keeps the full map). Additive
+  (single-offset and whole-signal edges are unchanged; `segments` is emitted only
+  for a true permutation) and requires unrolling — `--no-unroll` keeps the
+  conservative whole-signal edge.
+
 ### Changed
 
 - **Graph-based, cross-hierarchy CDC** — `--rules cdc` now detects clock-domain
@@ -53,6 +65,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`lint --rules comb-loop` (and `cdc`) now run on the *pruned* dataflow graph,
+  killing constant-dead-branch false positives.** The graph-based lint checks
+  built their shared `SignalTracer` without the constant-condition pruning /
+  loop unrolling that `fanin`/`fanout`/`trace` enable by default, so a feedback
+  path that exists *only* through a constant-false `if`/`case` branch — e.g.
+  `assign y = z & a; always_comb if (C) z = y; else z = a;` with `C` a constant
+  `0` — was reported as a combinational loop (`top.y -> top.z -> top.y`) even
+  though `fanin z` already (correctly) showed no `y -> z` edge. The lint tracer
+  now honors the same `[flow]` precision config (defaulting to on), so comb-loop
+  and CDC see exactly the dead-branch-pruned graph the flow commands do; a real
+  loop with no constant in its path is still flagged.
 - **A user-listed source that declares only `$unit`-scoped `typedef`s is no
   longer silently dropped.** The file classifier decided a `.v`/`.sv` was a
   compilation source vs. an include header by sniffing it for a top-level

@@ -22,7 +22,7 @@ from __future__ import annotations
 import fnmatch
 import re
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 try:
@@ -326,9 +326,36 @@ class FlowEdge:
     source_bits: Optional[tuple] = None
     target_bits: Optional[tuple] = None
     bit_offset: Optional[int] = None
+    # A bit *permutation* between the same (source, target) pair — a tuple of
+    # (source_bits, target_bits, offset) sub-copies — for maps a single affine
+    # offset cannot express (a bit reversal ``rev[i]=din[7-i]``, a half swap
+    # ``o={a[3:0],a[7:4]}``).  Each segment is a precise positional copy; source/
+    # target_bits hold the spanning union for coarse overlap/display, bit_offset
+    # is None.  Lets fanin/fanout still answer "rev[0] ← din[7]" across the map.
+    # None for a single-segment edge.  Not part of key() (parity preserved).
+    segments: Optional[tuple] = None
 
     def key(self):
         return (self.source, self.target, self.kind, self.file, self.line)
+
+    def trimmed_to(self, near_rng, mode):
+        """A display copy whose permutation ``segments`` are narrowed to those
+        overlapping ``near_rng`` on the near side (target for fanin, source for
+        fanout), so a bit-select shows exactly the segments it asked for
+        (``fanin rev[0]`` -> just ``din[7] -> rev[0]``).  Returns ``self`` when
+        there is nothing to trim — no segments, a whole-signal query
+        (``near_rng is None``), or every segment already overlaps."""
+        if not self.segments or near_rng is None:
+            return self
+        kept = []
+        for (sb, db, off) in self.segments:
+            near = db if mode == "fanin" else sb
+            if near is not None and not (near_rng[1] < near[0]
+                                         or near_rng[0] > near[1]):
+                kept.append((sb, db, off))
+        if not kept or len(kept) == len(self.segments):
+            return self
+        return replace(self, segments=tuple(kept))
 
     @property
     def source_label(self):
@@ -346,6 +373,10 @@ class FlowEdge:
             d['source_bits'] = bit_label(self.source_bits)
         if self.target_bits is not None:
             d['target_bits'] = bit_label(self.target_bits)
+        if self.segments:
+            d['segments'] = [
+                {'source_bits': bit_label(sb), 'target_bits': bit_label(db)}
+                for (sb, db, _off) in self.segments]
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
@@ -932,17 +963,24 @@ class SignalTracer:
         b = (int(bounds[0]), int(bounds[1]))
         return None if full is not None and b == full else b
 
-    def _edge_bits(self, src, dst, sb, db, off):
-        """Normalize an edge's (source_bits, target_bits, bit_offset).
+    def _edge_bits(self, src, dst, sb, db, off, segments=None):
+        """Normalize an edge's (source_bits, target_bits, bit_offset, segments).
 
         Bits and offset are trusted only when BOTH endpoints are simple vectors
         (declared == internal LSB0).  If either side is a big-endian vector or a
         multi-bit-element packed array, the whole edge degrades to whole→whole
-        (None, None, None): a wrong source width would otherwise mis-clamp even
-        a simple target's bits.  Conservative and never mis-numbered."""
+        (None, None, None, None): a wrong source width would otherwise mis-clamp
+        even a simple target's bits.  Conservative and never mis-numbered.  A
+        permutation map is carried through only when every segment is precise;
+        otherwise it drops (the coarse source/target bits still apply)."""
         if not (self._is_simple_vector(src) and self._is_simple_vector(dst)):
-            return (None, None, None)
-        return (self._norm_bits(src, sb), self._norm_bits(dst, db), off)
+            return (None, None, None, None)
+        seg = None
+        if segments:
+            if all(s is not None and d is not None and o is not None
+                   for (s, d, o) in segments):
+                seg = tuple(segments)
+        return (self._norm_bits(src, sb), self._norm_bits(dst, db), off, seg)
 
     def _copy_bits(self, src_sym, src_bits, dst_sym, dst_bits):
         """Bit correspondence for a positional copy (assign / select / trunc /
@@ -963,8 +1001,8 @@ class SignalTracer:
         if source is None or target is None:
             return None
         f, ln = self._loc_sym(loc_sym) if loc_sym is not None else ("", 0)
-        sb, db, off = self._edge_bits(source, target, source_bits,
-                                      target_bits, bit_offset)
+        sb, db, off, seg = self._edge_bits(source, target, source_bits,
+                                           target_bits, bit_offset)
         return FlowEdge(
             source=self._sym_path(source),
             target=self._sym_path(target),
@@ -977,6 +1015,7 @@ class SignalTracer:
             source_bits=sb,
             target_bits=db,
             bit_offset=off,
+            segments=seg,
         )
 
     def _port_symbol(self, port):
@@ -1034,12 +1073,13 @@ class SignalTracer:
                     # A single continuous assign: every read feeds the LHS.
                     pairs = self._continuous_assign_pairs(proc)
 
-                for src, dst, sbits, dbits, off in pairs:
-                    sb, db, o = self._edge_bits(src, dst, sbits, dbits, off)
+                for src, dst, sbits, dbits, off, segs in pairs:
+                    sb, db, o, sg = self._edge_bits(src, dst, sbits, dbits,
+                                                    off, segs)
                     templates.append((
                         self._sym_path(src), self._sym_path(dst),
                         self._sym_type(src), self._sym_type(dst),
-                        kind, desc, f, ln, clocked, sb, db, o))
+                        kind, desc, f, ln, clocked, sb, db, o, sg))
             except Exception:
                 continue
         self._proc_edge_cache[key] = templates
@@ -1204,10 +1244,10 @@ class SignalTracer:
             dst = tgts[0]
             dst_base = lsp_bounds(left, eval_ctx)[1] or self._signal_full_bounds(dst)
             if dst_base is None:
-                return [(s, dst, sb, None, None)
+                return [(s, dst, sb, None, None, None)
                         for (s, sb) in expr_reads_with_bounds(right, eval_ctx)
                         if symbol_key(s) not in skip]
-            return [(s, dst, sb, db, off)
+            return [(s, dst, sb, db, off, None)
                     for (s, sb, db, off)
                     in self._segments_for(dst_base, right, reads, eval_ctx, skip)]
         out = []
@@ -1215,30 +1255,79 @@ class SignalTracer:
             if symbol_key(src) in skip:
                 continue
             for dst in tgts:
-                out.append((src, dst, sb, None, None))
+                out.append((src, dst, sb, None, None, None))
+        return out
+
+    @staticmethod
+    def _fuse_segments(segs):
+        """Fuse the bit segments of one (src, dst) symbol pair into a single
+        edge's ``(source_bits, target_bits, bit_offset, segments)``:
+
+          * one segment            -> that segment, no permutation map
+          * all share one offset   -> a single spanning affine copy
+          * several precise copies  -> spanning bits + the permutation map
+                                      (``segments``), bit_offset None
+          * any whole-signal / non-copy contribution -> whole signal
+
+        A precise copy is one with concrete ``(src_bits, dst_bits, offset)``;
+        the permutation map is what lets a bit reversal keep ``din[7]->rev[0]``
+        instead of collapsing to a single affine offset it cannot express."""
+        uniq, seen = [], set()
+        for s in segs:
+            if s not in seen:
+                seen.add(s)
+                uniq.append(s)
+        if not uniq:
+            return (None, None, None, None)
+        if len(uniq) == 1:
+            sb, db, off = uniq[0]
+            return (sb, db, off, None)
+        if any(sb is None or db is None or off is None for (sb, db, off) in uniq):
+            return (None, None, None, None)          # an imprecise contribution
+        slo = min(sb[0] for (sb, _d, _o) in uniq)
+        shi = max(sb[1] for (sb, _d, _o) in uniq)
+        dlo = min(db[0] for (_s, db, _o) in uniq)
+        dhi = max(db[1] for (_s, db, _o) in uniq)
+        if len({o for (_s, _d, o) in uniq}) == 1:
+            return ((slo, shi), (dlo, dhi), uniq[0][2], None)   # one affine copy
+        segments = tuple(sorted(uniq, key=lambda t: (t[1], t[0])))
+        return ((slo, shi), (dlo, dhi), None, segments)
+
+    def _fuse_pairs(self, pairs):
+        """Group raw per-segment ``(src, dst, src_bits, dst_bits, offset, ...)``
+        tuples by their (src, dst) symbol pair and fuse each group into one
+        ``(src, dst, src_bits, dst_bits, offset, segments)`` edge tuple via
+        :meth:`_fuse_segments`.  First-seen order of each pair is preserved.
+
+        This mirrors the edge-build's key dedup (one edge per
+        ``(src,dst,kind,file,line)``): a pair carrying several precise copies
+        keeps the per-bit permutation (``o = {a[3:0], a[7:4]}`` stays mapped),
+        and anything not expressible as positional copies downgrades to the
+        whole signal — conservative, reachable from every bit."""
+        groups, order = {}, []
+        for tup in pairs:
+            src, dst, sb, db, off = tup[0], tup[1], tup[2], tup[3], tup[4]
+            k = (self._sym_path(src), self._sym_path(dst))
+            if k not in groups:
+                groups[k] = (src, dst, [])
+                order.append(k)
+            groups[k][2].append((sb, db, off))
+        out = []
+        for k in order:
+            src, dst, segs = groups[k]
+            sb, db, off, segments = self._fuse_segments(segs)
+            out.append((src, dst, sb, db, off, segments))
         return out
 
     def _collapse_pairs(self, pairs):
-        """Collapse (src, dst, ...) tuples sharing a (src, dst): a symbol pair
-        carrying two different bit segments has no single-valued bit map, so it
-        downgrades to whole-signal (None, None, None) — conservative, and
-        reachable for any bit-select.  This mirrors the edge-build's key dedup
-        (which keeps one edge per (src,dst,kind,file,line)), so a multi-segment
-        assign like ``o = {a[3:0], a[7:4]}`` stays reachable from every o bit."""
-        out = {}
-        for (src, dst, sb, db, off) in pairs:
-            k = (self._sym_path(src), self._sym_path(dst))
-            if k in out:
-                s, d, *_ = out[k]
-                out[k] = (s, d, None, None, None)
-            else:
-                out[k] = (src, dst, sb, db, off)
-        return list(out.values())
+        """Fuse the per-source segments of one continuous assign — see
+        :meth:`_fuse_pairs`."""
+        return self._fuse_pairs(pairs)
 
     def _continuous_assign_pairs(self, proc):
-        """Bit-aware (src, dst, src_bits, dst_bits, offset) for one continuous
-        assign.  A single-driver assign gets full structural precision from its
-        expression (over the same readSet symbols, so parity holds); a
+        """Bit-aware (src, dst, src_bits, dst_bits, offset, segments) for one
+        continuous assign.  A single-driver assign gets full structural precision
+        from its expression (over the same readSet symbols, so parity holds); a
         multi-driver LHS concat keeps the conservative reads x drivers map."""
         drv = [(d.symbol, self._driver_bounds(d)) for d in (proc.drivers or [])
                if is_data_symbol(d.symbol)]
@@ -1257,21 +1346,22 @@ class SignalTracer:
         out = []
         for dsym, dbnd in drv:
             for rsym, rbnd in rds:
-                out.append((rsym, dsym, rbnd, dbnd, None))
+                out.append((rsym, dsym, rbnd, dbnd, None, None))
         return out
 
     def _proc_statement_deps(self, proc, drivers):
         """Per-statement LHS<-RHS bit-aware deps + conservative control reads
         for one procedural block.  Returns unique
-        (src_sym, dst_sym, src_bits, dst_bits, bit_offset) tuples.
+        (src_sym, dst_sym, src_bits, dst_bits, bit_offset, segments) tuples.
 
         Data is precise (an assignment's RHS feeds only its own LHS).  With
         unrolling enabled, constant if/case branches are pruned and constant-
         bound for/repeat loops are unrolled (so per-iteration ``p[i]`` indices
         fold to concrete bits); otherwise the flat walk attributes every control
-        condition to every driver.  Either way a symbol pair driven by more than
-        one statement/condition loses its single-valued bit map (whole signal),
-        which never under-reports.
+        condition to every driver.  A symbol pair fed by a single coherent set of
+        positional copies keeps its bit map (an affine offset, or a permutation
+        via ``segments``); a pair fed by more than one statement/condition loses
+        it (whole signal), which never under-reports.
         """
         bit_pairs = None
         control = []
@@ -1287,23 +1377,23 @@ class SignalTracer:
             # never silently under-report.
             reads = [r.symbol for r in (proc.readSet or [])
                      if is_data_symbol(r.symbol)]
-            return [(s, d, None, None, None) for s in reads for d in drivers]
+            return [(s, d, None, None, None, None) for s in reads for d in drivers]
 
         control = [s for s in control if is_data_symbol(s)]
-        pairs = {}        # (src_path, dst_path) -> 5-tuple
+        pairs = {}        # (src_path, dst_path) -> 6-tuple
 
-        def add(src, dst, sb=None, db=None, off=None):
+        def add(src, dst, sb=None, db=None, off=None, segs=None):
             if not (is_data_symbol(src) and is_data_symbol(dst)):
                 return
             k = (self._sym_path(src), self._sym_path(dst))
             if k in pairs:
                 s, d, *_ = pairs[k]
-                pairs[k] = (s, d, None, None, None)
+                pairs[k] = (s, d, None, None, None, None)   # conflict -> whole
             else:
-                pairs[k] = (src, dst, sb, db, off)
+                pairs[k] = (src, dst, sb, db, off, segs)
 
-        for (src, dst, sb, db, off) in bit_pairs:
-            add(src, dst, sb, db, off)
+        for (src, dst, sb, db, off, segs) in bit_pairs:
+            add(src, dst, sb, db, off, segs)
         for dst in drivers:
             for cr in control:
                 add(cr, dst)
@@ -1336,38 +1426,14 @@ class SignalTracer:
         return (bit_pairs, control)
 
     def _merge_segments(self, pairs):
-        """Collapse the per-iteration segments of an unrolled loop that share a
-        (src, dst) symbol pair: segments with one consistent copy offset merge
-        into a single spanning-range edge (so ``y[i] = a[i+k]`` keeps its bit
-        map); a mix of offsets, or any whole-signal contribution, downgrades that
-        pair to the whole signal.  A sparse index set is over-approximated to its
-        [min, max] span — conservative (never under-reports)."""
-        groups, order = {}, []
-        for (src, dst, sb, db, off) in pairs:
-            k = (self._sym_path(src), self._sym_path(dst))
-            if k not in groups:
-                groups[k] = (src, dst, [])
-                order.append(k)
-            groups[k][2].append((sb, db, off))
-        out = []
-        for k in order:
-            src, dst, segs = groups[k]
-            if len(segs) == 1:
-                out.append((src, dst) + segs[0])
-                continue
-            offs = {off for (_s, _d, off) in segs}
-            if (len(offs) == 1 and None not in offs
-                    and all(sb is not None and db is not None
-                            for (sb, db, _o) in segs)):
-                off = next(iter(offs))
-                slo = min(sb[0] for (sb, _d, _o) in segs)
-                shi = max(sb[1] for (sb, _d, _o) in segs)
-                dlo = min(db[0] for (_s, db, _o) in segs)
-                dhi = max(db[1] for (_s, db, _o) in segs)
-                out.append((src, dst, (slo, shi), (dlo, dhi), off))
-            else:
-                out.append((src, dst, None, None, None))   # whole signal
-        return out
+        """Fuse the per-iteration segments of an unrolled loop that share a
+        (src, dst) symbol pair: one consistent copy offset merges into a single
+        spanning-range affine edge (so ``y[i] = a[i+k]`` keeps its bit map); a
+        true permutation (``rev[i] = din[7-i]``, offsets differ per bit) keeps
+        each segment as a permutation map; any whole-signal contribution
+        downgrades the pair to the whole signal.  A sparse same-offset index set
+        is over-approximated to its [min, max] span (never under-reports)."""
+        return self._fuse_pairs(pairs)
 
     def _walk_proc_pairs(self, proc):
         """Structured prune + unroll walk of a procedural block.
@@ -1656,8 +1722,8 @@ class SignalTracer:
             FlowEdge(source=view.remap(src), target=view.remap(dst),
                      source_type=st, target_type=dt, kind=kind,
                      description=desc, file=f, line=ln, clocked=clk,
-                     source_bits=sb, target_bits=tb, bit_offset=off)
-            for (src, dst, st, dt, kind, desc, f, ln, clk, sb, tb, off)
+                     source_bits=sb, target_bits=tb, bit_offset=off, segments=sg)
+            for (src, dst, st, dt, kind, desc, f, ln, clk, sb, tb, off, sg)
             in self._proc_edge_templates(view)
         ]
         self._inst_proc_cache[key] = edges
@@ -2026,10 +2092,25 @@ class SignalTracer:
         on the near side and mapped to the far side: precisely via bit_offset
         for a copy-like edge, else falling back to the bits the edge reads /
         drives on the far side (None = whole, the conservative answer for
-        arithmetic).  Returns _NO_OVERLAP when a concrete range misses the edge.
+        arithmetic).  A permutation edge (``segments``) maps the range through
+        each matching segment and returns the spanning union of the far bits, so
+        a bit-select still converges across a reversal/swap.  Returns _NO_OVERLAP
+        when a concrete range misses the edge.
         """
         if rng is None:
             return None
+        if edge.segments:
+            spans = []
+            for (sb, db, off) in edge.segments:
+                near = db if mode == "fanin" else sb
+                lo, hi = max(rng[0], near[0]), min(rng[1], near[1])
+                if lo > hi:
+                    continue
+                shift = -off if mode == "fanin" else off
+                spans.append((lo + shift, hi + shift))
+            if not spans:
+                return self._NO_OVERLAP
+            return (min(lo for lo, _ in spans), max(hi for _, hi in spans))
         near = edge.target_bits if mode == "fanin" else edge.source_bits
         if near is not None:
             lo, hi = max(rng[0], near[0]), min(rng[1], near[1])
@@ -2076,7 +2157,10 @@ class SignalTracer:
                     ekey = edge.key()
                     if ekey not in seen_edges:
                         seen_edges.add(ekey)
-                        traversed.append((edge, depth))
+                        # `rng` is the bits of interest on the near node (the
+                        # target for fanin, the source for fanout); trim a
+                        # permutation edge's segments to just those bits.
+                        traversed.append((edge.trimmed_to(rng, mode), depth))
                     nxt = edge.source if mode == "fanin" else edge.target
                     if (nxt, nxt_rng) not in seen_nodes:
                         seen_nodes.add((nxt, nxt_rng))
