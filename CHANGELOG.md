@@ -53,6 +53,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A user-listed source that declares only `$unit`-scoped `typedef`s is no
+  longer silently dropped.** The file classifier decided a `.v`/`.sv` was a
+  compilation source vs. an include header by sniffing it for a top-level
+  declaration (`module`/`interface`/`package`/`program`/`primitive`). A file
+  holding nothing but a `$unit` `typedef` matched none of those, so it was
+  demoted to an include directory and never compiled — leaving every later file
+  that used the type with an "undeclared identifier" error. Worst of all this
+  defeated the brand-new `--single-unit` for exactly the files it was added to
+  serve (a leading typedefs-only file sharing its `$unit` scope). Files the user
+  names directly — listed in a filelist or passed as a path — are now always
+  treated as sources regardless of their contents; the top-level-declaration
+  heuristic is kept only for directory auto-discovery, where it still skips
+  include-style `.sv` snippets.
 - **Structural commands no longer hand back a phantom result for a design that
   does not compile.** `tree`/`scope`/`xref`/`trace`/`fanin`/`fanout` built their
   output from slang's error-recovery AST and reported `status:"ok"` with an empty

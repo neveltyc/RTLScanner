@@ -137,13 +137,27 @@ def is_excluded(path: Path | str, patterns: list[str], root: Path) -> bool:
     return False
 
 
-def classify_hdl_file(path: str) -> str:
-    """Classify a file as source, include, or unsupported."""
+def classify_hdl_file(path: str, explicit: bool = False) -> str:
+    """Classify a file as source, include, or unsupported.
+
+    ``explicit`` marks a file the user named directly -- listed in a filelist or
+    passed as a path argument -- as opposed to one found by walking a directory.
+    An explicit .v/.sv file is always a ``source`` (its own compilation unit),
+    regardless of whether it declares a top-level item.  The
+    ``has_top_level_declaration`` heuristic exists only to skip include-style .sv
+    snippets (typedef-/macro-only, meant to be `included) during directory
+    auto-discovery; applying it to a user-named file silently demotes a
+    typedefs-only $unit file to an include dir, dropping it from the source list
+    -- which then defeats ``--single-unit`` for the very files it was added to
+    share.  Include-suffixed files (.svh/.vh/.svi) stay ``include`` either way.
+    """
     suffix = Path(path).suffix
     if suffix in INCLUDE_EXTENSIONS:
         return 'include'
     if suffix in SOURCE_EXTENSIONS:
-        return 'source' if has_top_level_declaration(path) else 'include'
+        if explicit or has_top_level_declaration(path):
+            return 'source'
+        return 'include'
     return 'unsupported'
 
 
@@ -153,15 +167,24 @@ def collect_filelist(
     excludes: list[str] = None,
     root: Path = None,
 ) -> FileList:
-    """Gather HDL sources and include dirs from paths."""
+    """Gather HDL sources and include dirs from paths.
+
+    A path that names a file directly is treated as *explicit* (the user asked
+    for it), so any .v/.sv file becomes a source.  Files discovered by walking a
+    directory go through the ``has_top_level_declaration`` heuristic, which
+    re-classifies include-style .sv snippets as include dirs.
+    """
     excludes = excludes or []
     root = (root or Path.cwd()).resolve()
     candidates = []
+    explicit = set()
     for p in paths:
         path = Path(p).expanduser()
         if path.is_file() and path.suffix in ALL_EXTENSIONS:
             if not is_excluded(path, excludes, root):
-                candidates.append(_norm_abs(path))
+                abs_path = _norm_abs(path)
+                candidates.append(abs_path)
+                explicit.add(abs_path)
         elif path.is_dir():
             glob_fn = path.rglob if recursive else path.glob
             for ext in ALL_EXTENSIONS:
@@ -171,7 +194,7 @@ def collect_filelist(
 
     filelist = FileList()
     for path in sorted(_dedupe(candidates)):
-        kind = classify_hdl_file(path)
+        kind = classify_hdl_file(path, explicit=path in explicit)
         if kind == 'source':
             filelist.sources.append(path)
         elif kind == 'include':
@@ -305,7 +328,9 @@ def parse_filelist(
             path_token = resolve_filelist_path(token, root, current_dir, prefix)
             if path_token.suffix in ALL_EXTENSIONS and path_token.exists():
                 path_abs = _norm_abs(path_token)
-                kind = classify_hdl_file(path_abs)
+                # A file listed in a filelist is user-explicit: a .v/.sv entry is
+                # a compilation source even if it only declares $unit typedefs.
+                kind = classify_hdl_file(path_abs, explicit=True)
                 if kind == 'source':
                     result.sources.append(path_abs)
                 elif kind == 'include':

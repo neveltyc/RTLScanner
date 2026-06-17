@@ -51,8 +51,10 @@ class CompileFailureStatusTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp()) / "rtl_cf"
         self.tmp.mkdir(parents=True)
-        # 00_defs.sv declares a $unit-scoped typedef AND a real module (so the
-        # classifier keeps it as a compiled source, not an include header).
+        # 00_defs.sv declares a $unit-scoped typedef plus the `leaf` module that
+        # top.sv instantiates.  (A bare typedefs-only file is also kept as a
+        # source now that the classifier trusts user-listed files -- see
+        # test_typedefs_only_source.py; here `leaf` is part of the design.)
         # Under per-file units, byte_t does NOT reach top.sv -> undeclared id.
         (self.tmp / "00_defs.sv").write_text(
             "typedef logic [7:0] byte_t;\n"
