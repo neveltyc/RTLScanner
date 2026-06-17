@@ -489,6 +489,15 @@ _TRACE_FLOW_EDGE = {
         "description": {"type": "string"},
         "source_type": {"type": "string"},
         "target_type": {"type": "string"},
+        "source_bits": {"type": "string",
+                        "description": "Bit sub-range of the source that this "
+                        "edge reads ('[5]' / '[7:4]'); absent when the whole "
+                        "signal is read. Bit-level dataflow (slang-netlist "
+                        "parity)."},
+        "target_bits": {"type": "string",
+                        "description": "Bit sub-range of the target that this "
+                        "edge drives; absent when the whole signal is driven. "
+                        "With source_bits, answers 'dout[5] comes from a[2]'."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
         "depth":       {"type": "integer"},
