@@ -170,5 +170,42 @@ class P3LoadsByBit(unittest.TestCase):
         self.assertNotIn("[2]", bits)         # dout[5] = a[2] excluded
 
 
+class P4StructuralOps(unittest.TestCase):
+    """Concatenation, mux (?:), and bitwise ops resolve to precise bits."""
+
+    OPS = "examples/bits/ops_top.sv"
+
+    def _fanin(self, sig, depth=1):
+        env = run_json("fanin", self.OPS, "-s", sig, "--scope", "ops_top",
+                       "--depth", str(depth))
+        return {(e["source"], e["target"], e.get("source_bits"),
+                 e.get("target_bits")) for e in env["data"]["edges"]}
+
+    def test_concat_splits_target(self):
+        got = self._fanin("cat8")
+        self.assertIn(("ops_top.a", "ops_top.cat8", "[3:0]", "[7:4]"), got)
+        self.assertIn(("ops_top.b", "ops_top.cat8", "[3:0]", "[3:0]"), got)
+
+    def test_concat_to_wider(self):
+        got = self._fanin("cat16")
+        self.assertIn(("ops_top.a", "ops_top.cat16", None, "[15:8]"), got)
+        self.assertIn(("ops_top.b", "ops_top.cat16", None, "[7:0]"), got)
+
+    def test_bitwise_of_slices_keeps_source_bits(self):
+        got = self._fanin("masked")
+        self.assertIn(("ops_top.a", "ops_top.masked", "[7:4]", None), got)
+        self.assertIn(("ops_top.b", "ops_top.masked", "[3:0]", None), got)
+
+    def test_mux_connects_arms_and_predicate(self):
+        srcs = {s for (s, _t, _sb, _tb) in self._fanin("muxed")}
+        self.assertEqual(srcs, {"ops_top.a", "ops_top.b", "ops_top.sel"})
+
+    def test_concat_bit_select_maps_through_offset(self):
+        # cat8[7] = a[3:0]->cat8[7:4] with offset +4, so cat8[7] <- a[3] only.
+        env = run_json("fanin", self.OPS, "-s", "cat8[7]", "--scope", "ops_top")
+        srcs = {e["source"] for e in env["data"]["edges"]}
+        self.assertEqual(srcs, {"ops_top.a"})       # not b
+
+
 if __name__ == "__main__":
     unittest.main()

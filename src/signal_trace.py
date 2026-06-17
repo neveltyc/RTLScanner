@@ -51,7 +51,6 @@ from rtl_slang import (
     procedure_label,
     procedure_reads_symbol,
     resolve_scope,
-    same_symbol,
     scope_visit,
     symbol_key,
 )
@@ -993,61 +992,159 @@ class SignalTracer:
         except Exception:
             return None
 
+    # Binary operators that preserve bit position (result bit i depends only on
+    # bit i of each operand) — so a source bit maps straight through.  Arithmetic
+    # (carry mixes bits), shifts by a dynamic amount, comparisons, and reductions
+    # are *not* here and fall back to the conservative whole-signal contribution.
+    _BITWISE_BIN = frozenset({"BinaryAnd", "BinaryOr", "BinaryXor", "BinaryXnor"})
+
+    @staticmethod
+    def _expr_width(expr):
+        try:
+            return int(expr.type.bitWidth)
+        except Exception:
+            return 0
+
+    def _seg(self, src_sym, src_bits, dst_base):
+        """One positional-copy segment: src bits (LSB-aligned, clamped) drive
+        the dst bits ``dst_base``.  Returns (src_sym, src_bits, dst_bits, off)."""
+        sb, db, off = self._copy_bits(src_sym, src_bits, None, dst_base)
+        return (src_sym, sb, db, off)
+
+    def _mix(self, dst_base, expr):
+        """Conservative contribution: every read of `expr` feeds the whole
+        ``dst_base`` with no positional map (offset None) — for arithmetic,
+        reductions, dynamic indices, and anything not structurally understood."""
+        return [(s, sb, dst_base, None)
+                for (s, sb) in expr_reads_with_bounds(expr)
+                if is_data_symbol(s)]
+
+    def _map_concat(self, dst_base, operands, depth):
+        """Map a concatenation onto ``dst_base``.  The first operand is the MSB,
+        so fill dst from the top down, recursing into each operand's slice."""
+        out = []
+        dlo, dhi = dst_base
+        pos = dhi
+        for op in operands:
+            w = self._expr_width(op)
+            if w <= 0:
+                break
+            seg_lo = max(pos - w + 1, dlo)
+            if pos >= dlo and seg_lo <= dhi:
+                out += self._map_rhs((seg_lo, min(pos, dhi)), op, depth + 1)
+            pos = seg_lo - 1
+            if pos < dlo:
+                break
+        return out
+
+    def _map_rhs(self, dst_base, rhs, depth=0):
+        """Structural bit-flow: how ``rhs`` drives the dst bits ``dst_base``.
+
+        Returns [(src_sym, src_bits, dst_bits, offset)] — offset set for a
+        positional copy, None for a many-to-many (whole-signal) contribution.
+        Precise for value accesses, concatenation, mux (``?:``), and bitwise
+        and/or/xor/not; conservative (whole source) for arithmetic, reductions,
+        shifts, and dynamic indices.  ``dst_base`` is a concrete (lo, hi)."""
+        if rhs is None or dst_base is None or depth > 64:
+            return []
+        tn = type(rhs).__name__
+        if tn == "ConversionExpression":
+            return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
+        # A single value access (named / static select) is a positional copy.
+        sym, sbits = lsp_bounds(rhs)
+        if sym is not None and is_data_symbol(sym) and len(expr_symbols(rhs)) == 1:
+            return [self._seg(sym, sbits, dst_base)]
+        if tn == "ConcatenationExpression":
+            return self._map_concat(dst_base, list(rhs.operands), depth)
+        if tn == "ConditionalExpression":
+            out = []
+            for arm in (getattr(rhs, "left", None), getattr(rhs, "right", None)):
+                out += self._map_rhs(dst_base, arm, depth + 1)
+            for cond in (getattr(rhs, "conditions", None) or []):
+                for s in expr_symbols(getattr(cond, "expr", cond)):
+                    if is_data_symbol(s):
+                        out.append((s, None, dst_base, None))   # predicate: whole
+            return out
+        if tn == "BinaryExpression":
+            if getattr(getattr(rhs, "op", None), "name", "") in self._BITWISE_BIN:
+                return (self._map_rhs(dst_base, getattr(rhs, "left", None), depth + 1)
+                        + self._map_rhs(dst_base, getattr(rhs, "right", None), depth + 1))
+            return self._mix(dst_base, rhs)
+        if tn == "UnaryExpression":
+            if getattr(getattr(rhs, "op", None), "name", "") == "BitwiseNot":
+                return self._map_rhs(dst_base, getattr(rhs, "operand", None), depth + 1)
+            return self._mix(dst_base, rhs)
+        return self._mix(dst_base, rhs)
+
+    def _segments_for(self, dst_base, rhs, allowed_syms):
+        """Per-source segments of ``rhs`` driving ``dst_base``, restricted to the
+        symbols in ``allowed_syms``.  Any allowed symbol not placed precisely is
+        added as a whole-signal contributor, so the emitted source set is exactly
+        ``allowed_syms`` — preserving the symbol-level connectivity (parity)."""
+        allowed = {symbol_key(s): s for s in allowed_syms}
+        segs, covered = [], set()
+        for (sym, sb, db, off) in self._map_rhs(dst_base, rhs):
+            k = symbol_key(sym)
+            if k in allowed:
+                segs.append((sym, sb, db, off))
+                covered.add(k)
+        for k, sym in allowed.items():
+            if k not in covered:
+                segs.append((sym, None, dst_base, None))
+        return segs
+
     def _assignment_bit_pairs(self, node):
         """Bit-aware (src, dst, src_bits, dst_bits, offset) for one assignment.
 
-        Targets are ``expr_symbols(left)`` and the read symbols are exactly
-        those of ``expr_symbols(right)`` — identical connectivity to the old
-        symbol-only walk (parity) — with bit ranges and a copy offset attached.
-        A single target fed by a single value access (``a`` / ``a[hi:lo]`` /
-        truncation / extend / constant shift) is an exact positional copy; an
-        arithmetic / multi-source / multi-target RHS is reported per read over
-        its read range with no single-valued bit map.
+        Targets are ``expr_symbols(left)`` and sources are exactly
+        ``expr_symbols(right)`` — identical connectivity to the old symbol-only
+        walk (parity) — with bit ranges and a copy offset attached via the
+        structural analyzer.  A single target gets full structural precision
+        (concat / mux / bitwise / select); a multi-target LHS concat is kept
+        conservative per source read.
         """
         left = getattr(node, "left", None)
         right = getattr(node, "right", None)
         tgts = expr_symbols(left)
         if not tgts:
             return []
-        single_tgt_bits = lsp_bounds(left)[1] if len(tgts) == 1 else None
-        rsym, rbits = lsp_bounds(right)
-        if (len(tgts) == 1 and rsym is not None and is_data_symbol(rsym)
-                and len(expr_symbols(right)) == 1):
-            sb, db, off = self._copy_bits(rsym, rbits, tgts[0], single_tgt_bits)
-            return [(rsym, tgts[0], sb, db, off)]
+        reads = expr_symbols(right)
+        if len(tgts) == 1:
+            dst = tgts[0]
+            dst_base = lsp_bounds(left)[1] or self._signal_full_bounds(dst)
+            if dst_base is None:
+                return [(s, dst, sb, None, None)
+                        for (s, sb) in expr_reads_with_bounds(right)]
+            return [(s, dst, sb, db, off)
+                    for (s, sb, db, off) in self._segments_for(dst_base, right, reads)]
         out = []
         for src, sb in expr_reads_with_bounds(right):
             for dst in tgts:
-                db = single_tgt_bits if len(tgts) == 1 else None
-                out.append((src, dst, sb, db, None))
+                out.append((src, dst, sb, None, None))
         return out
 
     def _continuous_assign_pairs(self, proc):
         """Bit-aware (src, dst, src_bits, dst_bits, offset) for one continuous
-        assign.  Symbol pairs are the same reads x drivers set as before
-        (parity); bit ranges come from slang's per-assign read/driver bounds,
-        and an offset is derived for the unambiguous single-read single-driver
-        positional copy by inspecting the assignment expression."""
+        assign.  A single-driver assign gets full structural precision from its
+        expression (over the same readSet symbols, so parity holds); a
+        multi-driver LHS concat keeps the conservative reads x drivers map."""
         drv = [(d.symbol, self._driver_bounds(d)) for d in (proc.drivers or [])
                if is_data_symbol(d.symbol)]
         rds = [(r.symbol, self._read_bounds(r)) for r in (proc.readSet or [])
                if is_data_symbol(r.symbol)]
-        copy = None
-        if len(drv) == 1 and len(rds) == 1:
-            asgn = getattr(proc.analyzedSymbol, "assignment", None)
-            rsym, rbits = (lsp_bounds(getattr(asgn, "right", None))
-                           if asgn is not None else (None, None))
-            if rsym is not None and same_symbol(rsym, rds[0][0]):
-                copy = self._copy_bits(
-                    rds[0][0], rbits, drv[0][0],
-                    lsp_bounds(getattr(asgn, "left", None))[1])
+        asgn = getattr(proc.analyzedSymbol, "assignment", None)
+        if len(drv) == 1 and asgn is not None:
+            dsym, dbnd = drv[0]
+            dst_base = dbnd or self._signal_full_bounds(dsym)
+            if dst_base is not None:
+                allowed = [s for (s, _b) in rds]
+                segs = self._segments_for(dst_base, getattr(asgn, "right", None),
+                                          allowed)
+                return [(s, dsym, sb, db, off) for (s, sb, db, off) in segs]
         out = []
         for dsym, dbnd in drv:
             for rsym, rbnd in rds:
-                if copy is not None:
-                    out.append((rsym, dsym) + copy)
-                else:
-                    out.append((rsym, dsym, rbnd, dbnd, None))
+                out.append((rsym, dsym, rbnd, dbnd, None))
         return out
 
     def _proc_statement_deps(self, proc, drivers):

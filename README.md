@@ -225,11 +225,12 @@ rtlscanner fanin  -d ./rtl -s 'dout[5]' --scope top   # converges to the exact d
 rtlscanner fanout -d ./rtl -s 'a[7:4]'  --scope top   # only where that nibble goes
 ```
 
-Precision matches the RTL: bit-selects, part-selects, concatenations,
-truncation, and constant shifts are exact; arithmetic (`a + b`), reductions,
-and dynamic indices (`a[i]`) fall back to the whole signal — conservative, so a
-cone is never under-reported. Whole-signal queries (no bit-select) are
-unchanged. Bit ranges are shown only for proper sub-ranges (additive output).
+Precision matches the RTL: bit/part-selects, concatenation, mux (`?:`), bitwise
+`& | ^ ~`, truncation, and zero/sign-extend are exact; arithmetic (`a + b`),
+shifts, reductions, comparisons, and dynamic indices (`a[i]`) fall back to the
+whole signal — conservative, so a cone is never under-reported. Whole-signal
+queries (no bit-select) are unchanged. Bit ranges are shown only for proper
+sub-ranges (additive output).
 
 Reading the output:
 
