@@ -448,6 +448,10 @@ _TRACE_LOAD = {
         "instance":    {"type": "string"},
         "port":        {"type": "string"},
         "direction":   {"type": "string"},
+        "bits":        {"type": "string",
+                        "description": "Bit sub-range of the signal this load "
+                        "reads ('[3]' / '[7:4]'); absent when it reads the "
+                        "whole signal."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
     },
@@ -464,9 +468,9 @@ _TRACE_RESULT = {
         "module":               {"type": "string"},
         "bit_select":           {"type": "string",
                                  "description": "Present when the query used a "
-                                 "bit-select (e.g. '[3]', '[7:4]'): drivers are "
-                                 "narrowed to that range and loads are omitted "
-                                 "(a driver-origin query)."},
+                                 "bit-select (e.g. '[3]', '[7:4]'): both drivers "
+                                 "and loads are narrowed to the readers/writers "
+                                 "that actually touch those bits."},
         "driver":               {"oneOf": [_TRACE_DRIVER, {"type": "null"}]},
         "extra_drivers":        {"type": "array", "items": _TRACE_DRIVER},
         "multi_driver_warning": {"type": "boolean",

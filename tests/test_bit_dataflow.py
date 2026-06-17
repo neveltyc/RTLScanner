@@ -141,5 +141,34 @@ class P2BitAwareFlow(unittest.TestCase):
         self.assertIn("chain_top.hi", nodes)
 
 
+class P3LoadsByBit(unittest.TestCase):
+    """trace -s sig[bits] narrows loads to the readers that touch those bits."""
+
+    def _trace(self, sig):
+        return run_json("trace", FIX, "-s", sig,
+                        "--scope", "bits_top")["data"]["results"][0]
+
+    def test_whole_signal_lists_all_readers(self):
+        # a is read by dout[5]=a[2], dout[3:0]=a[7:4], and sum=a+b.
+        self.assertEqual(self._trace("a")["load_count"], 3)
+
+    def test_bit_select_filters_loads(self):
+        r = self._trace("a[2]")
+        self.assertEqual(r["bit_select"], "[2]")
+        # the a[2] reader + the whole-a arithmetic reader; a[7:4] reader excluded
+        self.assertEqual(r["load_count"], 2)
+        bits = [ld.get("bits") for ld in r["loads"]]
+        self.assertIn("[2]", bits)            # dout[5] = a[2]
+        self.assertIn(None, bits)             # sum = a + b (whole signal)
+        self.assertNotIn("[7:4]", bits)       # dout[3:0] = a[7:4] excluded
+
+    def test_bit_select_other_bit(self):
+        r = self._trace("a[7]")
+        self.assertEqual(r["load_count"], 2)
+        bits = [ld.get("bits") for ld in r["loads"]]
+        self.assertIn("[7:4]", bits)          # dout[3:0] = a[7:4]
+        self.assertNotIn("[2]", bits)         # dout[5] = a[2] excluded
+
+
 if __name__ == "__main__":
     unittest.main()

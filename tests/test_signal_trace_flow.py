@@ -223,8 +223,9 @@ class BitSelectTraceTests(unittest.TestCase):
         self.assertEqual(res["bit_select"], "[3]")
         self.assertEqual(res["driver"]["bits"], "[3:0]")
         self.assertNotIn("extra_drivers", res)        # only the covering driver
-        self.assertNotIn("loads", res)                # driver-origin query
-        self.assertNotIn("load_count", res)
+        # loads-by-bit: status is an output (no internal readers) -> empty.
+        self.assertEqual(res["loads"], [])
+        self.assertEqual(res["load_count"], 0)
 
     def test_bit7_narrows_to_upper_driver(self):
         res = self._trace("status[7]")["data"]["results"][0]

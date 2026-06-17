@@ -165,11 +165,10 @@ Multiple drivers are reported with the bit range each one covers
 overlap — per-bit generate outputs are legal single-driver RTL.
 
 A **bit-select** on `-s` (`status[3]`, `status[7:4]`) narrows the report to
-the driver(s) covering those bits — "where does this bit come from". It is a
-driver-origin query, so loads are omitted; the queried range appears as
-`bit_select` in JSON. It applies to `trace` only (ignored with a note on
-`fanin`/`fanout`, where multi-hop bit propagation through arithmetic isn't
-exact).
+the driver(s) **and** loads that actually touch those bits — "where does this
+bit come from, and who reads it". The queried range appears as `bit_select` in
+JSON; each load carries the sub-range it reads (`bits`). It works on `trace`,
+`fanin`, and `fanout` alike.
 
 Analysis results are resolved through slang's canonical instance bodies,
 so identical sibling instances (`u_dp0`/`u_dp1`) and generate-array
@@ -216,12 +215,29 @@ A cone can be large on a real design. `--summary` replaces the full
 `nodes`/`edges` with counts, an `edges_by_depth` histogram, and the `direct`
 (depth-1) neighbors — the agent-friendly view.
 
+**Bit-level dataflow.** Edges carry the bit sub-range each read/drive touches
+(`source_bits` / `target_bits` in JSON, e.g. `top.a[2] → top.dout[5]`), so the
+graph answers *which bit comes from which*. A `-s` bit-select then traverses
+only the edges touching those bits and maps the range across each hop:
+
+```bash
+rtlscanner fanin  -d ./rtl -s 'dout[5]' --scope top   # converges to the exact driving bit
+rtlscanner fanout -d ./rtl -s 'a[7:4]'  --scope top   # only where that nibble goes
+```
+
+Precision matches the RTL: bit-selects, part-selects, concatenations,
+truncation, and constant shifts are exact; arithmetic (`a + b`), reductions,
+and dynamic indices (`a[i]`) fall back to the whole signal — conservative, so a
+cone is never under-reported. Whole-signal queries (no bit-select) are
+unchanged. Bit ranges are shown only for proper sub-ranges (additive output).
+
 Reading the output:
 
 | Term      | Meaning |
 |-----------|---------|
 | **node**  | A signal at one elaborated hierarchical path. The starting signal is depth 0. |
 | **edge**  | Directed dataflow link `source → target`. `kind` is `port_connection`, `continuous_assign`, or `procedural`. A registered edge (driven by `always_ff`, a latch, or an edge-sensitive `always`) also carries `clocked: true`. |
+| **bits**  | `source_bits` / `target_bits`: the bit sub-range the edge reads / drives, e.g. `a[2] → dout[5]`. Absent when the whole signal is touched. |
 | **depth** | BFS distance in hops from the starting signal. |
 
 ## `rtlscanner xref` — source cross-reference lookup

@@ -166,6 +166,8 @@ class LoadInfo:
     scope_path: str = ""
     file: str = ""
     line: int = 0
+    bits: str = ""          # "[3]" / "[7:4]" when the load reads a sub-range
+    bounds: Optional[tuple] = None  # normalized (lo, hi) bit offsets read
 
     def to_dict(self):
         d = dict(kind=self.kind, description=self.description,
@@ -175,6 +177,8 @@ class LoadInfo:
         if self.port_name:
             d['port'] = self.port_name
             d['direction'] = self.port_direction
+        if self.bits:
+            d['bits'] = self.bits
         if self.file:
             d['file'] = self.file
             d['line'] = self.line
@@ -220,11 +224,9 @@ class TraceResult:
         if self.extra_drivers:
             d['extra_drivers'] = [x.to_dict() for x in self.extra_drivers]
             d['multi_driver_warning'] = self.multi_driver
-        # A bit-select is a driver-origin query; loads-by-bit is phase 2.
-        if self.bit_range is None:
-            loads = self.filtered_loads(load_filter)
-            d['loads'] = [ld.to_dict() for ld in loads]
-            d['load_count'] = len(loads)
+        loads = self.filtered_loads(load_filter)
+        d['loads'] = [ld.to_dict() for ld in loads]
+        d['load_count'] = len(loads)
         return d
 
     def _driver_line(self, d):
@@ -259,10 +261,7 @@ class TraceResult:
             for d in drivers:
                 print(self._driver_line(d))
 
-        # ── Loads (skipped for a bit-select: it is a driver-origin query) ──
-        if self.bit_range is not None:
-            print()
-            return
+        # ── Loads (narrowed to the queried bits on a bit-select) ──
         loads = self.filtered_loads(load_filter)
         shown, total, truncated = agent_json.clip(loads, limit)
         hdr = f"\n  {C.green(GLYPH_LOADS + ' LOADS')} ({total})"
@@ -287,7 +286,8 @@ class TraceResult:
                     print(f"    {C.dim(GLYPH_HR + GLYPH_HR + ' ' + lbl + ' (' + str(len(kind_loads)) + ') ' + GLYPH_HR + GLYPH_HR)}")
                 for ld in kind_loads:
                     loc = f"  {C.dim(ld.file + ':' + str(ld.line))}" if ld.file else ""
-                    print(f"    \u2192 {ld.description}{loc}")
+                    bits = f" {C.yellow(self.signal_name + ld.bits)}" if ld.bits else ""
+                    print(f"    \u2192 {ld.description}{bits}{loc}")
             if truncated:
                 print(f"    {C.dim(agent_json.truncation_note(len(shown), total, 'loads'))}")
 
@@ -736,6 +736,37 @@ class SignalTracer:
 
     # ── load analysis ────────────────────────────────────────────────
 
+    def _read_bits_of(self, expr, symbol):
+        """The bit range of `symbol` read within `expr`, or None (whole)."""
+        if expr is None:
+            return None
+        key = symbol_key(symbol)
+        for sym, bounds in expr_reads_with_bounds(expr):
+            if symbol_key(sym) == key:
+                return bounds
+        return None
+
+    @staticmethod
+    def _proc_read_bits(proc, proc_symbol):
+        """Span of `proc_symbol`'s read ranges in a procedure, or None."""
+        key = symbol_key(proc_symbol)
+        spans = []
+        for r in (getattr(proc, "readSet", None) or []):
+            try:
+                if symbol_key(r.symbol) == key:
+                    b = r.bitRange
+                    spans.append((int(b[0]), int(b[1])))
+            except Exception:
+                pass
+        if not spans:
+            return None
+        return (min(s[0] for s in spans), max(s[1] for s in spans))
+
+    def _load_bits(self, symbol, bounds):
+        """(display_label, bounds) for a load reading `symbol` over `bounds`."""
+        norm = self._norm_bits(symbol, bounds)
+        return (bit_label(norm) if norm else ""), bounds
+
     def _analyze_loads(self, symbol, body, scope_inst):
         C = Color
         loads = []
@@ -764,11 +795,14 @@ class SignalTracer:
                     dl = "input" if port.direction == ast.ArgumentDirection.In else "inout"
                     f, ln = self._loc_sym(inst)
                     desc = f"{C.cyan(inst_name)}.{C.yellow(port.name)} ({C.dim(dl)})"
+                    bits, bounds = self._load_bits(
+                        symbol, self._read_bits_of(expr, symbol))
                     loads.append(LoadInfo(
                         kind="port_connection", description=desc,
                         instance_name=inst_name, port_name=port.name,
                         port_direction=port.direction.name,
-                        scope_path=inst_path, file=f, line=ln))
+                        scope_path=inst_path, file=f, line=ln,
+                        bits=bits, bounds=bounds))
                 except Exception:
                     continue
 
@@ -789,10 +823,12 @@ class SignalTracer:
                 lhs_n = lhs.symbol.name if lhs and hasattr(lhs, 'symbol') else "\u2026"
                 f, ln = self._loc_sym(ca)
                 desc = f"{C.yellow('assign')} \u2192 {C.cyan(lhs_n)}"
+                bits, bounds = self._load_bits(
+                    symbol, self._read_bits_of(rhs, symbol))
                 loads.append(LoadInfo(
                     kind="continuous_assign", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
-                    file=f, line=ln))
+                    file=f, line=ln, bits=bits, bounds=bounds))
 
         # 3. Procedural blocks (readSet excludes assignment LHS symbols).
         # Analyzed procedures live on the canonical body; read-set membership
@@ -810,10 +846,12 @@ class SignalTracer:
                     continue
                 f, ln = self._loc_sym(proc.analyzedSymbol)
                 desc = f"{C.yellow(procedure_label(proc))}"
+                bits, bounds = self._load_bits(
+                    symbol, self._proc_read_bits(proc, proc_symbol))
                 loads.append(LoadInfo(
                     kind="procedural", description=desc,
                     scope_path=scope_inst.hierarchicalPath if scope_inst else "",
-                    file=f, line=ln))
+                    file=f, line=ln, bits=bits, bounds=bounds))
             except Exception:
                 continue
         return loads
@@ -1850,10 +1888,12 @@ class SignalTracer:
                     f"'{signal_name}' ({sym.type}, {width} bits)", 1)
 
         drivers = self._analyze_drivers(sym, inst)
+        loads = self._analyze_loads(sym, inst.body, inst)
         if bit_range is not None:
+            # Bit-select: narrow both the driver origin and the loads to the
+            # readers/writers that actually touch those bits.
             drivers = [d for d in drivers if bits_overlap(d.bounds, bit_range)]
-        # A bit-select is a driver-origin query: loads are phase 2.
-        loads = [] if bit_range is not None else self._analyze_loads(sym, inst.body, inst)
+            loads = [ld for ld in loads if bits_overlap(ld.bounds, bit_range)]
 
         r = TraceResult(
             signal_name=signal_name, signal_type=str(sym.type),
