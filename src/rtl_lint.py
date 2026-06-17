@@ -350,6 +350,17 @@ class LintRunner:
             except Exception as e:
                 print(f"Warning: port connection analysis failed: {e}", file=sys.stderr)
 
+        # Attribute every finding to its enclosing design unit.  The graph-based
+        # analyzers (CDC, comb-loop) and the port-connect check build findings
+        # directly without a module, so backfill it from the file:line here —
+        # otherwise a `--waive module:foo` (and the module half of a bare-glob
+        # waiver) could never reach them.  ``_module_for`` realpath-normalizes its
+        # argument, so a relative finding path resolves to the same unit index
+        # key the raw source paths do.
+        for f in findings:
+            if not f.module:
+                f.module = self._module_for(f.file, f.line)
+
         findings.sort(key=lambda f: (f.file, f.line, f.col, f.rule))
         return findings
 
@@ -486,6 +497,7 @@ _RULE_PREFIX_FAMILY = {
     "shadow-": "shadow",
     "cdc-":    "cdc",
     "port-":   "port-connect",
+    "comb-":   "comb-loop",
 }
 
 # Analysis-pass rules that lack a family prefix: selecting one by exact name

@@ -194,6 +194,30 @@ class LintRuleWiring(unittest.TestCase):
         # the real loops in the demo are still caught
         self.assertIn("comb_loop", msgs)
 
+    def test_comb_loop_selectable_by_rule_glob(self):
+        # Regression: a glob targeting the comb-loop rule must RUN the pass (like
+        # `cdc-*` runs CDC).  The `comb-` prefix was missing from the run-family
+        # map, so `--rules comb-*` silently selected zero findings.
+        for spec in ("comb-*", "comb-loop*", "comb-loop"):
+            env = self._run("examples/lint/comb_loop_demo.sv", "--rules", spec)
+            self.assertIn("comb-loop", self._rules(env),
+                          f"--rules {spec} should report comb-loop findings")
+
+    def test_comb_loop_findings_carry_module_and_are_waivable(self):
+        # Regression: comb-loop findings were built without a module, so a
+        # `--waive module:NAME` (and the module half of a bare-glob waiver) could
+        # never reach them.
+        env = self._run("examples/lint/comb_loop_demo.sv", "--rules", "comb-loop")
+        mods = {f.get("module") for f in env["data"]["findings"]}
+        self.assertIn("comb_loop", mods)
+        self.assertNotIn(None, mods)
+        for waiver in ("module:comb_loop", "comb_loop"):
+            env = self._run("examples/lint/comb_loop_demo.sv",
+                            "--rules", "comb-loop", "--waive", waiver)
+            msgs = " ".join(f["message"] for f in env["data"]["findings"])
+            self.assertNotIn("comb_loop.a", msgs)   # the comb_loop module waived
+            self.assertIn("cross_hier_loop", msgs)  # the other one kept
+
     def test_default_and_bugs_exclude_comb_loop(self):
         env = self._run("examples/lint/comb_loop_demo.sv")          # default
         self.assertNotIn("comb-loop", self._rules(env))
