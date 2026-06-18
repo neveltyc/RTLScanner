@@ -38,7 +38,6 @@ from rtl_common import (
 
 import agent_json
 import rtl_cli
-from agent_json import emit
 from rtl_config import flow_config
 from rtl_scope import ScopeAnalyzer
 from signal_trace import SignalTracer
@@ -721,8 +720,7 @@ def _counts(findings):
     return by_sev, by_rule, by_check
 
 
-def print_summary(findings):
-    by_sev, by_rule, _ = _counts(findings)
+def print_summary(by_sev, by_rule):
     print(f"\n{'─' * 50}\n  {Color.bold('Lint Summary')}\n{'─' * 50}")
     n_err = by_sev.get("error", 0)
     n_warn = by_sev.get("warning", 0)
@@ -763,6 +761,53 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
                          "Comma-list or repeat. Default: all five.")
 
 
+@dataclass
+class LintResult(agent_json.CommandResult):
+    """Typed result of ``lint``: the normalized findings plus their counts.
+
+    ``_counts`` runs once in ``__post_init__``; the JSON ``summary`` and the
+    human ``print_summary`` table both read the same ``by_severity`` /
+    ``by_rule`` / ``by_check`` maps (instead of each re-deriving them), and the
+    error-driven exit code is computed in one place.
+    """
+    findings: list
+    config_path: object = None
+    files_linted: int = 0
+
+    def __post_init__(self):
+        self.has_error = any(f.severity == "error" for f in self.findings)
+        self.by_severity, self.by_rule, self.by_check = _counts(self.findings)
+        self.exit_code = 1 if self.has_error else 0
+
+    def to_json(self, limit):
+        shown, total, truncated = agent_json.clip(self.findings, limit)
+        data = {
+            'findings':    [f.to_dict() for f in shown],
+            'config_path': str(self.config_path) if self.config_path else None,
+        }
+        summary = {
+            'total':        total,
+            'shown':        len(shown),
+            'truncated':    truncated,
+            'limit':        limit,
+            'by_severity':  self.by_severity,
+            'by_rule':      self.by_rule,
+            'by_check':     self.by_check,
+            'files_linted': self.files_linted,
+            'has_error':    self.has_error,
+        }
+        return data, summary
+
+    def render_human(self, limit):
+        shown, total, truncated = agent_json.clip(self.findings, limit)
+        print_findings(shown)
+        if truncated:
+            print(Color.dim(agent_json.truncation_note(len(shown), total, "findings")))
+        if self.findings:
+            print_summary(self.by_severity, self.by_rule)
+        return self.exit_code
+
+
 def run(args, env):
     prepared = rtl_cli.prepare_compilation(args)
     filelist = prepared.filelist
@@ -784,36 +829,9 @@ def run(args, env):
         max_unroll=max_unroll,
     )
 
-    findings = runner.run()
-    has_error = any(f.severity == "error" for f in findings)
-
-    if env is not None:
-        by_sev, by_rule, by_check = _counts(findings)
-        lim = agent_json.resolve_limit(args.limit)
-        shown, total, truncated = agent_json.clip(findings, lim)
-        data = {
-            'findings':    [f.to_dict() for f in shown],
-            'config_path': str(prepared.config_path) if prepared.config_path else None,
-        }
-        summary = {
-            'total':        total,
-            'shown':        len(shown),
-            'truncated':    truncated,
-            'limit':        lim,
-            'by_severity':  by_sev,
-            'by_rule':      by_rule,
-            'by_check':     by_check,
-            'files_linted': len(filelist.sources),
-            'has_error':    has_error,
-        }
-        rc = emit(env.ok(data, summary))
-        return 1 if has_error else rc
-
-    lim = agent_json.resolve_limit(args.limit)
-    shown, total, truncated = agent_json.clip(findings, lim)
-    print_findings(shown)
-    if truncated:
-        print(Color.dim(agent_json.truncation_note(len(shown), total, "findings")))
-    if findings:
-        print_summary(findings)
-    return 1 if has_error else 0
+    result = LintResult(
+        findings=runner.run(),
+        config_path=prepared.config_path,
+        files_linted=len(filelist.sources),
+    )
+    return agent_json.render(env, result, agent_json.resolve_limit(args.limit))
