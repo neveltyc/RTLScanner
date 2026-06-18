@@ -17,7 +17,6 @@ Install dependency:
 from __future__ import annotations
 
 import argparse
-import difflib
 import fnmatch
 import os
 import sys
@@ -40,7 +39,7 @@ from rtl_common import (
 import agent_json
 import rtl_cli
 from agent_json import emit
-from rtl_config import flow_config, lint_config
+from rtl_config import flow_config
 from rtl_scope import ScopeAnalyzer
 from signal_trace import SignalTracer
 
@@ -64,9 +63,8 @@ class LintFinding:
     severity: str       # "error" | "warning" | "note"
     rule: str           # warning option name (e.g. "width-trunc") or code name
     message: str
-    check: str          # "semantic" | "unused" | "shadow" | ...
+    check: str          # one of CATEGORIES (semantic|unused|port|cdc|comb-loop)
     module: str = ""    # design unit (module/interface/...) the finding sits in
-    waived_reason: str = ""  # set when filtered out by a waiver / disabled rule
 
     def to_dict(self):
         d = dict(file=self.file, line=self.line, col=self.col,
@@ -74,8 +72,6 @@ class LintFinding:
                  message=self.message, check=self.check)
         if self.module:
             d['module'] = self.module
-        if self.waived_reason:
-            d['waived_reason'] = self.waived_reason
         return d
 
     @property
@@ -90,18 +86,12 @@ class LintFinding:
 class LintRunner:
     """Runs pyslang's semantic + analysis checks and normalizes results."""
 
-    def __init__(self, compilation, check_unused=True, check_shadow=False,
-                 weverything=False, check_cdc=False, cdc_reset_globs=None,
-                 check_port_connect=False, check_comb_loop=False, root=None,
+    def __init__(self, compilation, categories=None, root=None,
                  unroll=True, max_unroll=2048):
         self._comp = compilation
         self._sm = compilation.sourceManager
-        self._check_unused = check_unused
-        self._check_shadow = check_shadow
-        self._check_cdc = check_cdc
-        self._check_port_connect = check_port_connect
-        self._check_comb_loop = check_comb_loop
-        self._cdc_reset_globs = cdc_reset_globs or []
+        # The closed set of check categories to run (subset of CATEGORIES).
+        self._categories = set(categories) if categories else set(CATEGORIES)
         # CDC and combinational-loop checks share one flow graph (built lazily).
         # Both run on the *pruned* graph — constant if/case dead branches dropped
         # and constant-bound loops unrolled — so they match the precision of the
@@ -112,11 +102,6 @@ class LintRunner:
         self._max_unroll = max(0, int(max_unroll))
         self._tracer = None
         self._eng = pyslang.DiagnosticEngine(self._sm)
-        if weverything:
-            try:
-                self._eng.setWarningOptions(["everything"])
-            except Exception:
-                pass
         # Honor inline `pragma diagnostic push/ignore/pop waivers written
         # directly in the RTL source.  This is standard SystemVerilog and
         # lets engineers waive a finding right where it lives.
@@ -219,15 +204,17 @@ class LintRunner:
                     best, best_span = name, span
         return best
 
-    def _finding(self, diag, check: str):
-        """Convert a pyslang Diagnostic into a LintFinding, or None if ignored."""
+    def _finding(self, diag, from_analysis=False):
+        """Convert a pyslang Diagnostic into a LintFinding, or None if ignored.
+
+        The check category is derived from the rule name (see
+        ``category_for_rule``).  ``from_analysis`` keeps an analysis-pass
+        diagnostic the engine would otherwise ignore (those checks are opt-in)."""
         loc = diag.location
         sev_enum = self._eng.getSeverity(diag.code, loc)
         severity = _SEVERITY_NAME.get(sev_enum, "warning")
-        # Analysis (unused/shadow) checks are opt-in: honor them even if the
-        # engine's default mapping would ignore the underlying code.
         if severity == "ignored":
-            if check == "semantic":
+            if not from_analysis:
                 return None
             severity = "warning"
 
@@ -252,8 +239,8 @@ class LintRunner:
         module = self._module_for(raw_fn, ln)
 
         return LintFinding(file=fn, line=ln, col=col, severity=severity,
-                           rule=rule, message=message, check=check,
-                           module=module)
+                           rule=rule, message=message,
+                           check=category_for_rule(rule), module=module)
 
     def _shared_tracer(self):
         """A single ``SignalTracer`` (and its flow graph / analysis manager)
@@ -270,56 +257,57 @@ class LintRunner:
     # ── public API ────────────────────────────────────────────────────
 
     def run(self) -> list[LintFinding]:
+        cats = self._categories
         findings = []
 
-        # 1. Native slang diagnostics.  Keep these under the existing
-        # ``semantic`` family, but use the full diagnostic stream instead of
-        # semantic-only diagnostics so frontend/preprocessor issues such as
-        # missing includes are surfaced by the same rule family.
-        for d in self._comp.getAllDiagnostics():
-            f = self._finding(d, "semantic")
-            if f is not None:
-                findings.append(f)
+        # 1. Native slang diagnostics — width truncation, missing case defaults,
+        # undeclared identifiers, multiple-driver conflicts, etc.  These are the
+        # `semantic` category (the full diagnostic stream, so frontend /
+        # preprocessor issues like a missing include are surfaced too).
+        # ``getAllDiagnostics`` also forces elaboration, which the analysis pass
+        # below requires, so always call it even when semantic isn't collected.
+        diags = self._comp.getAllDiagnostics()
+        if "semantic" in cats:
+            for d in diags:
+                f = self._finding(d)
+                if f is not None:
+                    # Every native slang diagnostic IS the semantic category by
+                    # source — including slang's own port-/width- option names
+                    # (e.g. `port-width-trunc`).  The `port` category is reserved
+                    # for the ScopeAnalyzer connectivity checks below, so don't
+                    # let a rule-name prefix reclassify a native diagnostic.
+                    f.check = "semantic"
+                    findings.append(f)
 
-        # 2. Analysis-manager checks (unused / shadow) when requested
-        flags = analysis.AnalysisFlags(0)
-        if self._check_unused:
-            flags |= analysis.AnalysisFlags.CheckUnused
-        if self._check_shadow:
-            flags |= analysis.AnalysisFlags.CheckShadow
-        if flags.value:
+        # 2. Analysis-manager pass.  It produces both `unused` findings
+        # (unused-*, undriven-port) and `semantic` correctness findings
+        # (inferred-latch, unassigned-variable), so run it when either category
+        # is selected and keep each finding by its own derived category.
+        if cats & {"semantic", "unused"}:
             try:
                 opts = analysis.AnalysisOptions()
-                opts.flags = flags
+                opts.flags = analysis.AnalysisFlags.CheckUnused
                 mgr = analysis.AnalysisManager(opts)
                 mgr.analyze(self._comp)
-                # A single analysis pass can surface both unused- and shadow-
-                # prefixed diagnostics, so derive each finding's check family
-                # from its rule name rather than from which flag ran the pass.
-                default_check = "unused" if self._check_unused else "shadow"
                 for d in mgr.getDiagnostics():
-                    f = self._finding(d, default_check)
-                    if f is not None:
-                        if f.rule.startswith("shadow-"):
-                            f.check = "shadow"
-                        elif f.rule.startswith("unused-"):
-                            f.check = "unused"
+                    f = self._finding(d, from_analysis=True)
+                    if f is not None and f.check in cats:
                         findings.append(f)
             except Exception as e:
                 print(f"Warning: analysis pass failed: {e}", file=sys.stderr)
 
-        # 3. CDC analysis (opt-in) — graph-based, cross-hierarchy crossings.
-        if self._check_cdc:
+        # 3. CDC — graph-based, cross-hierarchy clock-domain crossings.
+        if "cdc" in cats:
             try:
-                cdc = CDCAnalyzer(self._comp, reset_globs=self._cdc_reset_globs,
-                                  rel=self._rel, tracer=self._shared_tracer())
+                cdc = CDCAnalyzer(self._comp, rel=self._rel,
+                                  tracer=self._shared_tracer())
                 findings.extend(cdc.findings())
             except Exception as e:
                 print(f"Warning: CDC analysis failed: {e}", file=sys.stderr)
 
-        # 3b. Combinational-loop analysis (opt-in) — cycle detection on the
-        # non-sequential edges of the same flow graph.
-        if self._check_comb_loop:
+        # 4. Combinational loops — cycle detection on the non-sequential edges
+        # of the same flow graph.
+        if "comb-loop" in cats:
             try:
                 cl = CombLoopAnalyzer(self._comp, rel=self._rel,
                                       tracer=self._shared_tracer())
@@ -328,9 +316,9 @@ class LintRunner:
                 print(f"Warning: combinational-loop analysis failed: {e}",
                       file=sys.stderr)
 
-        # 4. Port connection checks (opt-in) -- direct replacement for the
-        # old ports --check surface.
-        if self._check_port_connect:
+        # 5. Port connectivity — unconnected ports, port/connection width
+        # mismatches on child instances.
+        if "port" in cats:
             try:
                 analyzer = ScopeAnalyzer(self._comp)
                 for issue in analyzer.connection_issues():
@@ -345,23 +333,34 @@ class LintRunner:
                         severity=issue.severity,
                         rule=rule,
                         message=issue.message,
-                        check="port-connect",
+                        check="port",
                     ))
             except Exception as e:
                 print(f"Warning: port connection analysis failed: {e}", file=sys.stderr)
+
+        # Attribute every finding to its enclosing design unit.  The graph-based
+        # analyzers (CDC, comb-loop) and the port-connect check build findings
+        # directly without a module, so backfill it from the file:line here —
+        # otherwise a `--waive module:foo` (and the module half of a bare-glob
+        # waiver) could never reach them.  ``_module_for`` realpath-normalizes its
+        # argument, so a relative finding path resolves to the same unit index
+        # key the raw source paths do.
+        for f in findings:
+            if not f.module:
+                f.module = self._module_for(f.file, f.line)
 
         findings.sort(key=lambda f: (f.file, f.line, f.col, f.rule))
         return findings
 
 
 # ── CDC Analyzer ─────────────────────────────────────────────────────
-# Reset-name globs, deliberately reset-*rooted*.  A bare ``*_n`` would match any
-# active-low data signal (``data_n``, ``sel_n``, ``q_n``, ``we_n`` …) and drop it
-# from the timing/clock-domain events, silently masking genuine CDC crossings —
-# so active-low resets must carry an rst/reset/arst/por/clr root.  Names starting
-# with ``rst``/``reset``/``arst`` already cover ``rst_n``, ``resetn``,
-# ``arst_n`` …; extend project-specific names via ``[lint.cdc] reset = [...]``.
-# Each entry is matched case-insensitively (see ``_looks_like_reset``).  The set
+# Built-in reset-name heuristic, deliberately reset-*rooted*.  A bare ``*_n``
+# would match any active-low data signal (``data_n``, ``sel_n``, ``q_n``,
+# ``we_n`` …) and drop it from the timing/clock-domain events, silently masking
+# genuine CDC crossings — so active-low resets must carry an rst/reset/arst/por/
+# clr root.  Names starting with ``rst``/``reset``/``arst`` already cover
+# ``rst_n``, ``resetn``, ``arst_n`` …; CDC runs with zero configuration off this
+# list.  Each entry is matched case-insensitively (see ``_looks_like_reset``).  The set
 # is kept minimal: a glob already covered by a broader one here is omitted (e.g.
 # ``*reset*`` subsumes ``reset*`` / ``*reset_n`` / ``nreset``; ``*rst_n`` subsumes
 # ``*_rst_n`` / ``*_arst_n``; ``*_rst`` subsumes ``n_rst``), so this list and the
@@ -374,25 +373,124 @@ _DEFAULT_RESET_GLOBS = ("rst*", "*_rst", "*_rstn", "*rst_n",
                         "nrst")
 
 
+@dataclass
+class CDCCrossing:
+    """One launch→capture clock-domain crossing found on the flow graph."""
+    launch: str             # launch (source) register node path
+    capture: str            # capture (destination) register node path
+    from_domains: list      # launch clock-domain display names
+    to_domains: list        # capture clock-domain display names
+    file: str = ""
+    line: int = 0
+
+    @property
+    def launch_name(self):
+        return self.launch.rsplit('.', 1)[-1]
+
+    @property
+    def capture_name(self):
+        return self.capture.rsplit('.', 1)[-1]
+
+
+@dataclass
+class CombLoop:
+    """One combinational feedback loop (a cyclic path of non-clocked edges)."""
+    nodes: list             # cycle node paths a->b->c (closes c->a)
+    file: str = ""
+    line: int = 0
+
+
+def _tarjan_scc(nodes, succ):
+    """Iterative Tarjan SCC.  ``succ`` maps a node to its successor list.
+
+    Returns the list of strongly-connected components (each a list of nodes).
+    Iterative (explicit stack) so a long combinational chain — the 200-deep
+    pipeline in the tests — cannot overflow Python's recursion limit.
+    """
+    index, low, on_stack, stack, order, out = {}, {}, set(), [], [0], []
+    for root in nodes:
+        if root in index:
+            continue
+        work = [(root, 0)]      # work stack of (node, iterator-position)
+        while work:
+            node, pi = work[-1]
+            if pi == 0:
+                index[node] = low[node] = order[0]
+                order[0] += 1
+                stack.append(node)
+                on_stack.add(node)
+            succs = succ.get(node, ())
+            if pi < len(succs):
+                work[-1] = (node, pi + 1)
+                nxt = succs[pi]
+                if nxt not in index:
+                    work.append((nxt, 0))
+                elif nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            else:
+                if low[node] == index[node]:
+                    comp = []
+                    while True:
+                        w = stack.pop()
+                        on_stack.discard(w)
+                        comp.append(w)
+                        if w == node:
+                            break
+                    out.append(comp)
+                work.pop()
+                if work:
+                    parent = work[-1][0]
+                    low[parent] = min(low[parent], low[node])
+    return out
+
+
+def _reconstruct_cycle(comp, succ):
+    """A representative cycle within strongly-connected component ``comp``.
+
+    Returns the node path ``[s, …]`` whose last node has an edge back to ``s``
+    (the caller renders the closing ``→ s``).  Deterministic start for stable
+    output; bounded by the SCC size."""
+    compset = set(comp)
+    s = min(comp)
+    stack = [(s, [s])]
+    visited = {s}
+    while stack:
+        node, path = stack.pop()
+        for nxt in succ.get(node, ()):
+            if nxt not in compset:
+                continue
+            # Close the cycle only after a real hop.  A self-edge on the start
+            # node (s -> s) can't close a *multi-node* cycle; returning the
+            # length-1 path [s] here would make the caller drop the entire SCC
+            # and miss the real loop (regression: a multi-node SCC whose min
+            # node also has a structural self-assign).
+            if nxt == s and len(path) >= 2:
+                return path
+            if nxt not in visited:
+                visited.add(nxt)
+                stack.append((nxt, path + [nxt]))
+    return [s]
+
+
 class CDCAnalyzer:
     """Detect clock-domain crossings on the dataflow flow graph.
 
     A *launch* register in one clock domain that feeds, through combinational
     logic only, the data input of a *capture* register in a different domain is
     a CDC crossing that typically needs an explicit synchronizer.  The launch /
-    capture relationship is found on :class:`signal_trace.SignalTracer`'s flow
-    graph, so it is **cross-hierarchy** (a launch and capture in different
-    modules wired through ports are still related); each flop's clock is
-    resolved to its **source net**, so two flops on the same physical clock are
-    one domain even when the local clock ports are named differently or live in
-    different instances (and conversely one net reaching ports named
-    ``clk``/``clock`` is one domain, not two).
+    capture relationship is found on the shared flow graph
+    (:meth:`signal_trace.SignalTracer.flow_edges`), so it is **cross-hierarchy**
+    (a launch and capture in different modules wired through ports are still
+    related); each flop's clock is resolved to its **source net** (via the
+    tracer's :meth:`clock_domain_map` primitive), so two flops on the same
+    physical clock are one domain even when the local clock ports are named
+    differently or live in different instances (and conversely one net reaching
+    ports named ``clk``/``clock`` is one domain, not two).
 
-    Signals that look like resets (matched against ``reset_globs``) are dropped
-    from the clock set so a single-clock design with an asynchronous reset, and
-    the async-reset term of an ``if (!rst_n)`` capture, are not mistaken for a
-    crossing.  This class keeps the reset-name vocabulary; the graph traversal
-    lives in ``SignalTracer.cdc_crossings``.
+    Reset-looking signals (the built-in name heuristic) are dropped from the
+    clock set so a single-clock design with an asynchronous reset, and the
+    async-reset term of an ``if (!rst_n)`` capture, are not mistaken for a
+    crossing.  The detection lives here; the tracer only supplies the engine.
     """
 
     def __init__(self, compilation, reset_globs=None, rel=None, tracer=None):
@@ -405,11 +503,79 @@ class CDCAnalyzer:
         n = (name or "").lower()
         return any(fnmatch.fnmatch(n, g.lower()) for g in self._reset_globs)
 
-    def findings(self) -> list:
+    def crossings(self, is_reset=None, reset_key=None) -> list:
+        """The CDC crossings on the flow graph as :class:`CDCCrossing` records.
+
+        For each capture register, walk *combinationally* backward from its data
+        inputs (clocked edges, minus reset-named sources) and collect the launch
+        registers reached, stopping at each register boundary.  A launch whose
+        domain is disjoint from the capture's domain is an unsynchronized
+        crossing.  ``is_reset`` defaults to the built-in heuristic; ``reset_key``
+        keys the tracer's cached clock-domain map across reset configs.  A caller
+        passing a custom ``is_reset`` without a key recomputes the map every call
+        (so a reused tracer never serves a stale map for a different predicate)."""
+        if is_reset is None:
+            is_reset = self._looks_like_reset
+            if reset_key is None:
+                reset_key = tuple(self._reset_globs)
         tracer = self._tracer or SignalTracer(self._comp)
+        edges = tracer.flow_edges()
+        reg_domain = tracer.clock_domain_map(is_reset, reset_key)
+        if not reg_domain:
+            return []
+
+        clocked_fanin = {}   # capture node -> [clocked FlowEdge feeding it]
+        comb_fanin = {}      # node -> [combinational predecessor node]
+        for e in edges:
+            if e.clocked:
+                clocked_fanin.setdefault(e.target, []).append(e)
+            else:
+                comb_fanin.setdefault(e.target, []).append(e.source)
+
+        out, seen = [], set()
+        for cap in sorted(reg_domain):
+            cap_dom = reg_domain[cap]
+            cap_edges = clocked_fanin.get(cap, [])
+            if not cap_edges:
+                continue
+            cap_edge = cap_edges[0]
+            seeds = [e.source for e in cap_edges
+                     if not is_reset(e.source.rsplit('.', 1)[-1])]
+            if not seeds:
+                continue
+
+            visited, launches = set(), set()
+            stack = list(seeds)
+            while stack:
+                n = stack.pop()
+                if n in visited:
+                    continue
+                visited.add(n)
+                if n != cap and n in reg_domain:
+                    launches.add(n)          # launch flop; stop at the boundary
+                    continue
+                for p in comb_fanin.get(n, ()):
+                    if p not in visited:
+                        stack.append(p)
+
+            for launch in sorted(launches):
+                l_dom = reg_domain[launch]
+                if cap_dom.domains & l_dom.domains:
+                    continue                 # same physical clock => safe
+                key = (launch, cap)
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(CDCCrossing(
+                    launch=launch, capture=cap,
+                    from_domains=sorted(l_dom.names),
+                    to_domains=sorted(cap_dom.names),
+                    file=cap_edge.file, line=cap_edge.line))
+        return out
+
+    def findings(self) -> list:
         out = []
-        for c in tracer.cdc_crossings(self._looks_like_reset,
-                                      reset_key=tuple(self._reset_globs)):
+        for c in self.crossings():
             frm = "/".join(c.from_domains) or "?"
             to = "/".join(c.to_domains) or "?"
             msg = (f"signal '{c.launch_name}' crosses clock domains: launched "
@@ -425,12 +591,12 @@ class CDCAnalyzer:
 class CombLoopAnalyzer:
     """Detect combinational feedback loops on the dataflow flow graph.
 
-    Runs cycle detection over the graph's **non-sequential** (non-clocked)
-    edges — a registered edge breaks feedback, so what is left is pure
-    combinational connectivity, and any strongly-connected component with a real
-    cycle is a combinational loop.  Cross-hierarchy by construction (the loop
-    may close through port connections).  The graph algorithm lives in
-    ``SignalTracer.combinational_loops``.
+    Runs cycle detection (Tarjan SCC) over the graph's **non-sequential**
+    (non-clocked) edges — a registered edge breaks feedback, so what is left is
+    pure combinational connectivity, and any strongly-connected component with a
+    real cycle is a combinational loop.  Cross-hierarchy by construction (the
+    loop may close through port connections).  The detection lives here; the
+    tracer only supplies the shared flow graph.
     """
 
     def __init__(self, compilation, rel=None, tracer=None):
@@ -438,10 +604,51 @@ class CombLoopAnalyzer:
         self._rel = rel or (lambda x: x)
         self._tracer = tracer
 
-    def findings(self) -> list:
+    def loops(self) -> list:
+        """The combinational loops on the flow graph as :class:`CombLoop`
+        records.  Multi-node SCCs are always reported; a single-node SCC is
+        reported only for a structural self-edge (``assign a = a;`` / a self port
+        connection), not a procedural one — the graph's conservative
+        control-condition modeling can otherwise synthesize a spurious
+        ``a → a``."""
         tracer = self._tracer or SignalTracer(self._comp)
+        edges = [e for e in tracer.flow_edges() if not e.clocked]
+        succ = {}
+        nodes = set()
+        first_edge = {}      # (src, tgt) -> FlowEdge (for a location)
+        self_edges = {}      # node -> structural self FlowEdge
+        for e in edges:
+            nodes.add(e.source)
+            nodes.add(e.target)
+            lst = succ.setdefault(e.source, [])
+            if e.target not in lst:
+                lst.append(e.target)
+            first_edge.setdefault((e.source, e.target), e)
+            if e.source == e.target and e.kind in ("continuous_assign",
+                                                    "port_connection"):
+                self_edges.setdefault(e.source, e)
+
+        loops = []
+        for comp in _tarjan_scc(nodes, succ):
+            if len(comp) >= 2:
+                path = _reconstruct_cycle(comp, succ)
+                if len(path) < 2:
+                    continue
+                e = first_edge.get((path[0], path[1]))  # location: first edge
+                loops.append(CombLoop(nodes=path,
+                                      file=e.file if e else "",
+                                      line=e.line if e else 0))
+            else:
+                e = self_edges.get(comp[0])
+                if e is not None:
+                    loops.append(CombLoop(nodes=[comp[0]], file=e.file,
+                                          line=e.line))
+        loops.sort(key=lambda lp: (lp.file, lp.line, lp.nodes))
+        return loops
+
+    def findings(self) -> list:
         out = []
-        for lp in tracer.combinational_loops():
+        for lp in self.loops():
             chain = " -> ".join(lp.nodes + lp.nodes[:1]) if lp.nodes else ""
             out.append(LintFinding(
                 file=self._rel(lp.file) if lp.file else "",
@@ -451,332 +658,50 @@ class CombLoopAnalyzer:
         return out
 
 
-# ── Rule selection model ─────────────────────────────────────────────
-# A `--rules SPEC[,...]` spec can contain:
-#   * family alias:  semantic | unused | shadow | cdc | port-connect
-#   * warning opt:   everything      (passes -Weverything to slang)
-#   * meta:          default (= semantic+unused) | all | none
-#   * rule name:     width-trunc | unused-port | ...
-#   * glob:          width-* | unused-*
-
-FAMILIES = {"semantic", "unused", "shadow", "cdc", "port-connect", "comb-loop"}
-DEFAULT_FAMILIES = ["semantic", "unused"]
-WARNING_OPTIONS = {"everything"}
-META_KEYWORDS = {"default", "all", "none", "bugs"}
-
-# The `bugs` preset: a curated, high-precision view of rules that flag real
-# functional defects (each verified to actually fire), as opposed to style
-# noise.  `apply()` additionally keeps every error/fatal finding under this
-# preset, since hard compile errors carry open-ended code names that can't be
-# enumerated here.  cdc-crossing is deliberately excluded (heuristic, high
-# false-positive rate); compose it back with `--rules bugs,cdc`.
-BUGS_RULES = [
-    "inferred-latch",        # unintended level-sensitive latch
-    "unassigned-variable",   # variable read but never driven -> X
-    "undriven-port",         # output port never driven -> X
-    "port-width-mismatch",   # child instance port width mismatch
-    "port-width-trunc",      # truncation at a port connection
-    "width-trunc",           # implicit truncation in an assignment
-]
-
-# Map rule-name prefix → check family, so a bare rule like "unused-port"
-# implies we need to RUN the unused analysis.
-_RULE_PREFIX_FAMILY = {
-    "unused-": "unused",
-    "shadow-": "shadow",
-    "cdc-":    "cdc",
-    "port-":   "port-connect",
-}
-
-# Analysis-pass rules that lack a family prefix: selecting one by exact name
-# must still RUN the pass that produces it (the CheckUnused analysis pass).
-_RULE_RUN_FAMILY = {
-    "inferred-latch":      "unused",
-    "unassigned-variable": "unused",
-    "undriven-port":       "unused",
-}
-
-# Rule names invented by our own checks (not slang warning options).  Used to
-# validate --rules/--skip tokens: slang's findFromOptionName returns empty for
-# these, so they must be recognized explicitly.
-CUSTOM_RULES = frozenset({
-    "cdc-crossing", "port-unconnected", "port-width-mismatch", "port-connect",
-    "comb-loop",
-})
+# `lint` is a fixed, opinionated scanner: a closed set of five check categories,
+# selected (or narrowed) by the single `--rules` flag — there is no rule-glob /
+# family / meta / waiver / severity-policy sub-language.
+CATEGORIES = ("semantic", "unused", "port", "cdc", "comb-loop")
 
 
-def _expand_meta(specs):
-    """Resolve 'default'/'all'/'none'/'bugs' meta keywords into a spec list."""
-    out = []
+def category_for_rule(rule: str) -> str:
+    """Map a finding's rule name to its check category (one of CATEGORIES).
+
+    `unused-*` / `undriven-port` are *unused*; `port-*` is *port*; the two custom
+    graph rules map to themselves; everything else — width truncation, missing
+    case defaults, undeclared identifiers, inferred latches, never-assigned
+    variables, multiple-driver conflicts — is a *semantic* diagnostic."""
+    if rule.startswith("unused-") or rule == "undriven-port":
+        return "unused"
+    if rule.startswith("port-"):
+        return "port"
+    if rule == "cdc-crossing":
+        return "cdc"
+    if rule == "comb-loop":
+        return "comb-loop"
+    return "semantic"
+
+
+def resolve_categories(specs):
+    """Resolve `--rules` tokens to the set of check categories to run.
+
+    No tokens → all five.  `all` → all five.  Otherwise a whitelist of category
+    names.  Any token outside the closed set raises a ``CliError`` naming the
+    valid categories (exit 2), rather than silently selecting nothing."""
+    if not specs:
+        return set(CATEGORIES)
+    cats = set()
     for s in specs:
-        if s == "default":
-            out.extend(DEFAULT_FAMILIES)
-        elif s == "all":
-            out.extend(DEFAULT_FAMILIES)
-            out.extend(["shadow", "cdc", "port-connect", "comb-loop",
-                        "everything"])
-        elif s == "bugs":
-            out.extend(BUGS_RULES)
-        elif s == "none":
-            return []
+        if s == "all":
+            cats.update(CATEGORIES)
+        elif s in CATEGORIES:
+            cats.add(s)
         else:
-            out.append(s)
-    # de-dup, preserve order
-    seen, deduped = set(), []
-    for s in out:
-        if s not in seen:
-            seen.add(s)
-            deduped.append(s)
-    return deduped
-
-
-def resolve_rules(specs):
-    """Split rule specs into runtime families, keep filters, warning opts.
-
-    - run_families: check families to actually RUN (lint engine input).
-                    Always includes the family any rule glob's prefix implies,
-                    so explicit `--rules unused-port` still runs the unused pass.
-    - keep_families: families whose findings the user wants to KEEP. Empty when
-                    the user only listed rule names (display is rule-glob-only).
-    - rule_globs: explicit rule names/globs to keep.
-    - warning_options: slang warning option groups such as ``everything``.
-    - noop: True iff specs == ['none'] (everything is suppressed).
-    """
-    specs = list(specs) if specs else ["default"]
-    if "none" in specs:
-        return set(), set(), [], set(), True
-    expanded = _expand_meta(specs)
-    keep_families, globs = set(), []
-    warning_options = set()
-    run_families = {"semantic"}  # semantic always runs (pyslang elaboration)
-    for s in expanded:
-        if s in FAMILIES:
-            keep_families.add(s)
-            run_families.add(s)
-        elif s in WARNING_OPTIONS:
-            warning_options.add(s)
-            keep_families.add("semantic")
-            run_families.add("semantic")
-        else:
-            globs.append(s)
-            exact_fam = _RULE_RUN_FAMILY.get(s)
-            if exact_fam:
-                run_families.add(exact_fam)
-            else:
-                for pref, fam in _RULE_PREFIX_FAMILY.items():
-                    if s.startswith(pref):
-                        run_families.add(fam)
-                        break
-    return run_families, keep_families, globs, warning_options, False
-
-
-def rule_matches(finding, keep_families, globs):
-    """A finding is kept iff:
-       (a) a family was explicitly listed and matches this finding's check, OR
-       (b) a rule glob matches this finding's rule name.
-    """
-    if keep_families and finding.check in keep_families:
-        return True
-    return any(fnmatch.fnmatch(finding.rule, g) for g in globs)
-
-
-def skip_matches(finding, skip_globs):
-    return any(fnmatch.fnmatch(finding.rule, g) for g in skip_globs)
-
-
-def validate_rule_tokens(tokens, eng, *, flag):
-    """Notes for --rules/--skip tokens that match no known rule, family, or
-    meta — the typo case (e.g. ``bugz``) that would otherwise select zero
-    findings silently.  A real rule that simply has no findings this run is
-    NOT flagged.
-
-    A literal (wildcard-free) token is recognized iff it is a family, meta,
-    warning option, one of our CUSTOM_RULES, or a real slang warning option
-    (validated via ``DiagnosticEngine.findFromOptionName``).  Glob tokens are
-    not second-guessed — they legitimately span open name sets.
-    """
-    vocab = set(FAMILIES) | set(META_KEYWORDS) | set(WARNING_OPTIONS) | set(CUSTOM_RULES)
-    suggest = sorted(vocab | set(BUGS_RULES))
-    notes = []
-    for tok in tokens:
-        if not tok or any(c in tok for c in "*?["):
-            continue
-        if tok in vocab:
-            continue
-        try:
-            if eng is not None and eng.findFromOptionName(tok):
-                continue
-        except Exception:
-            pass
-        close = difflib.get_close_matches(tok, suggest, n=1, cutoff=0.5)
-        hint = f" — did you mean '{close[0]}'?" if close else ""
-        notes.append(f"{flag}: '{tok}' is not a known rule, family, or meta"
-                     f"{hint} (it selected no findings)")
-    return notes
-
-
-# ── Waive ─────────────────────────────────────────────────────────────
-# A ``--waive`` token may carry an explicit target prefix to remove the
-# module-vs-file ambiguity:
-#   module:GLOB  match the design-unit (module / interface / ...) name only
-#   file:GLOB    match the source-file basename only (also reaches findings
-#                that have no module: $unit-scope / preprocessor / file-level
-#                compile errors, which a module glob can never touch)
-#   scope:GLOB   instance / hierarchy path  (reserved; not implemented yet)
-# A bare GLOB (no recognized prefix) keeps the backward-compatible behavior:
-# it matches the module name OR the source-file basename stem.
-_WAIVE_KINDS = ("module", "file", "scope")
-
-
-def _parse_waive(token):
-    """Split a ``--waive`` token into ``(kind, glob)``.
-
-    ``kind`` is ``module`` / ``file`` / ``scope`` when the token carries that
-    prefix, else ``any`` (a bare glob matched against the module-or-file union).
-    """
-    head, sep, rest = token.partition(":")
-    if sep and head in _WAIVE_KINDS:
-        return head, rest
-    return "any", token
-
-
-def _finding_file_basename(finding):
-    """The finding's source-file basename, with extension."""
-    return Path(finding.file).name if finding.file else ""
-
-
-def _finding_file_stem(finding):
-    """The finding's source-file basename without its extension."""
-    return Path(finding.file).stem if finding.file else ""
-
-
-def _waive_glob_matches(finding, kind, glob):
-    module = safe_str(getattr(finding, "module", ""), "")
-    if kind == "module":
-        return bool(module) and fnmatch.fnmatch(module, glob)
-    if kind == "file":
-        base = _finding_file_basename(finding)
-        stem = _finding_file_stem(finding)
-        return ((bool(base) and fnmatch.fnmatch(base, glob))
-                or (bool(stem) and fnmatch.fnmatch(stem, glob)))
-    if kind == "scope":
-        return False  # reserved; never matches yet (surfaced as a note)
-    # bare: module OR file-basename stem (backward-compatible union)
-    stem = _finding_file_stem(finding)
-    return ((bool(module) and fnmatch.fnmatch(module, glob))
-            or (bool(stem) and fnmatch.fnmatch(stem, glob)))
-
-
-def waive_match(finding, waive_globs):
-    """Return the ``--waive`` token that suppresses *finding*, or ``None``."""
-    if not waive_globs:
-        return None
-    for token in waive_globs:
-        kind, glob = _parse_waive(token)
-        if _waive_glob_matches(finding, kind, glob):
-            return token
-    return None
-
-
-def waive_matches(finding, waive_globs):
-    """Boolean wrapper around :func:`waive_match`."""
-    return waive_match(finding, waive_globs) is not None
-
-
-def waive_hints(waive_globs):
-    """Notes for ``--waive`` tokens that won't behave as a user might expect.
-
-    - ``scope:`` is reserved (planned) and currently waives nothing.
-    - a ``word:`` prefix that is not a known kind is treated as a plain glob;
-      flag it in case the user meant ``module:`` / ``file:`` / ``scope:``.
-    """
-    notes = []
-    for token in (waive_globs or []):
-        head, sep, rest = token.partition(":")
-        if not sep:
-            continue
-        if head == "scope":
-            notes.append(
-                f"--waive: scope-level waivers are not yet supported (planned); "
-                f"'{token}' was ignored.")
-        elif (head and head not in _WAIVE_KINDS and rest
-                and not rest.startswith(":")
-                and not any(c in head for c in "*?[]/.")):
-            notes.append(
-                f"--waive: '{head}:' is not a known target kind in '{token}'; "
-                f"use module:, file:, or scope: (treated as a plain glob).")
-    return notes
-
-
-# ── Severity application ─────────────────────────────────────────────
-SEVERITY_RANK = {"error": 3, "warning": 2, "note": 1}
-
-
-def _normalize_severity(val):
-    v = str(val).strip().lower()
-    if v in ("error", "err", "e"):
-        return "error"
-    if v in ("warning", "warn", "w"):
-        return "warning"
-    if v in ("note", "info", "n"):
-        return "note"
-    return None
-
-
-def apply(findings, *, rules_specs, skip_globs, waive_globs, strict,
-          min_severity, lint_severity_map):
-    """Filter findings through rules → skip → waive → severity overrides.
-
-    Returns (kept, waived) where waived items carry waived_reason.
-    """
-    _run_families, keep_families, rule_globs, _warning_options, noop = resolve_rules(rules_specs)
-    # The `bugs` preset additionally keeps every hard error/fatal finding,
-    # whose code names are open-ended and can't be enumerated as rule globs.
-    bugs_mode = "bugs" in (rules_specs or ["default"])
-    kept, waived = [], []
-    sev_map = {}
-    for k, v in (lint_severity_map or {}).items():
-        sev = _normalize_severity(v)
-        if sev is not None:
-            sev_map[k] = sev
-
-    for f in findings:
-        if noop:
-            f.waived_reason = "rules=none"
-            waived.append(f)
-            continue
-        matched = (rule_matches(f, keep_families, rule_globs)
-                   or (bugs_mode and f.severity == "error"))
-        if not matched:
-            f.waived_reason = "rule not selected"
-            waived.append(f)
-            continue
-        if skip_matches(f, skip_globs):
-            f.waived_reason = "skipped"
-            waived.append(f)
-            continue
-        _wt = waive_match(f, waive_globs)
-        if _wt is not None:
-            f.waived_reason = f"waived ('{_wt}')"
-            waived.append(f)
-            continue
-        # Per-rule severity override (from [lint.severity])
-        for pat, sev in sev_map.items():
-            if fnmatch.fnmatch(f.rule, pat):
-                f.severity = sev
-        # --strict: warning → error
-        if strict and f.severity == "warning":
-            f.severity = "error"
-        # Display floor: below --min-severity is suppressed, but recorded as
-        # waived (never silently dropped) so summary.waived stays honest.
-        if (min_severity
-                and SEVERITY_RANK.get(f.severity, 0)
-                < SEVERITY_RANK.get(min_severity, 0)):
-            f.waived_reason = "below-min-severity"
-            waived.append(f)
-            continue
-        kept.append(f)
-    return kept, waived
+            raise rtl_cli.CliError(
+                agent_json.ERR_BAD_CONFIG,
+                f"--rules: '{s}' is not a check category. Valid categories: "
+                f"{', '.join(CATEGORIES)} (or 'all').", 2)
+    return cats
 
 
 # ── Display ──────────────────────────────────────────────────────────
@@ -796,7 +721,7 @@ def _counts(findings):
     return by_sev, by_rule, by_check
 
 
-def print_summary(findings, waived=0):
+def print_summary(findings):
     by_sev, by_rule, _ = _counts(findings)
     print(f"\n{'─' * 50}\n  {Color.bold('Lint Summary')}\n{'─' * 50}")
     n_err = by_sev.get("error", 0)
@@ -806,26 +731,11 @@ def print_summary(findings, waived=0):
     print(f"  {Color.yellow('warnings')}: {n_warn}")
     if n_note:
         print(f"  {Color.cyan('notes')}:    {n_note}")
-    if waived:
-        print(f"  {Color.dim('waived')}:   {waived}")
     if by_rule:
         print(f"\n  {Color.cyan('By rule:')}")
         for rule, cnt in sorted(by_rule.items(), key=lambda x: -x[1]):
             print(f"    {rule:28s} {cnt:4d}  {Color.dim('█' * min(cnt, 30))}")
     print(f"{'─' * 50}")
-
-
-def print_waived(waived, total=None):
-    total = len(waived) if total is None else total
-    if not total:
-        return
-    print(f"\n{Color.dim('Waived findings (' + str(total) + '):')}")
-    for f in waived:
-        loc = f"{f.line}:{f.col}" if f.col else str(f.line)
-        print(Color.dim(f"  {f.file}:{loc}  {f.rule}  — {f.waived_reason}"))
-    if len(waived) < total:
-        print(Color.dim("  " + agent_json.truncation_note(
-            len(waived), total, "waived")))
 
 
 def print_findings(findings):
@@ -847,50 +757,17 @@ def print_findings(findings):
 def add_arguments(p: argparse.ArgumentParser) -> None:
     rs = p.add_argument_group("rule selection")
     rs.add_argument("--rules", action=agent_json.CommaListAction, default=[],
-                    metavar="SPEC",
-                    help="Rule white list. SPEC = rule name | family "
-                         "(semantic/unused/shadow/cdc/port-connect/comb-loop) | "
-                         "warning option (everything) | glob | "
-                         "default/all/none/bugs. 'bugs' = curated real-bug rules "
-                         "+ all compile errors. Comma-list or repeat. "
-                         "Default: 'default' (semantic + unused).")
-    rs.add_argument("--skip", action=agent_json.CommaListAction, default=[],
-                    metavar="RULE",
-                    help="Subtract rule(s) from the white list (glob ok).")
-
-    sc = p.add_argument_group("scope")
-    sc.add_argument("--waive", action=agent_json.CommaListAction, default=[],
-                    metavar="GLOB",
-                    help="Suppress findings. Bare glob matches the module OR "
-                         "file name (e.g. 'dbg_*'); prefix to disambiguate: "
-                         "'module:fifo', 'file:third_party_*' (a file glob also "
-                         "waives findings with no module). 'scope:' is reserved.")
-
-    sv = p.add_argument_group("severity & exit code")
-    sv.add_argument("--strict", action="store_true",
-                    help="Warnings count as errors AND any finding fails exit.")
-    sv.add_argument("--min-severity", choices=("error", "warning", "note"),
-                    default=None,
-                    help="Hide findings below this severity (display floor).")
-
-    out = p.add_argument_group("waived output")
-    out.add_argument("--waived", action="store_true",
-                     help="Also list findings suppressed by skip/waive/rules.")
+                    metavar="CATEGORY",
+                    help="Check categories to run (whitelist): "
+                         "semantic, unused, port, cdc, comb-loop — or 'all'. "
+                         "Comma-list or repeat. Default: all five.")
 
 
 def run(args, env):
     prepared = rtl_cli.prepare_compilation(args)
-    lint_cfg = lint_config(prepared.config)
     filelist = prepared.filelist
 
-    # CLI > config (field-level)
-    rules_specs = list(args.rules) or list(lint_cfg.get("rules") or [])
-    skip_globs  = list(args.skip)  or list(lint_cfg.get("skip")  or [])
-    waive_globs = list(args.waive) or list(lint_cfg.get("waive") or [])
-    cdc_reset_globs = list((lint_cfg.get("cdc") or {}).get("reset") or [])
-    severity_map = lint_cfg.get("severity") or {}
-
-    run_families, _, _, warning_options, _ = resolve_rules(rules_specs)
+    categories = resolve_categories(list(args.rules))   # may raise CliError
 
     # The graph-based checks (CDC, comb-loop) share the dataflow flow graph with
     # the fanin/fanout/trace commands, so honor the same [flow] precision config
@@ -901,83 +778,42 @@ def run(args, env):
 
     runner = LintRunner(
         prepared.comp,
-        check_unused=("unused" in run_families),
-        check_shadow=("shadow" in run_families),
-        weverything=("everything" in warning_options),
-        check_cdc=("cdc" in run_families),
-        cdc_reset_globs=cdc_reset_globs,
-        check_port_connect=("port-connect" in run_families),
-        check_comb_loop=("comb-loop" in run_families),
+        categories=categories,
         root=prepared.resolved_inputs.root,
         unroll=unroll,
         max_unroll=max_unroll,
     )
 
-    # Flag typo'd rule/skip tokens that would otherwise select 0 findings
-    # silently (e.g. `--rules bugz`); a real rule with no findings is not flagged.
-    for _flag, _toks in (("--rules", rules_specs), ("--skip", skip_globs)):
-        for _note in validate_rule_tokens(_toks, getattr(runner, "_eng", None),
-                                          flag=_flag):
-            if env is not None:
-                env.add_diagnostic("note", message=_note)
-            else:
-                print(f"note: {_note}", file=sys.stderr)
-
-    # Flag reserved/unknown --waive target prefixes (e.g. scope:, typo:).
-    for _note in waive_hints(waive_globs):
-        if env is not None:
-            env.add_diagnostic("note", message=_note)
-        else:
-            print(f"note: {_note}", file=sys.stderr)
-
     findings = runner.run()
-
-    findings, waived = apply(
-        findings,
-        rules_specs=rules_specs,
-        skip_globs=skip_globs,
-        waive_globs=waive_globs,
-        strict=args.strict,
-        min_severity=args.min_severity,
-        lint_severity_map=severity_map,
-    )
-
     has_error = any(f.severity == "error" for f in findings)
-    strict_fail = args.strict and bool(findings)
 
     if env is not None:
         by_sev, by_rule, by_check = _counts(findings)
         lim = agent_json.resolve_limit(args.limit)
         shown, total, truncated = agent_json.clip(findings, lim)
-        waived_shown, waived_total, waived_tr = agent_json.clip(waived, lim)
         data = {
             'findings':    [f.to_dict() for f in shown],
-            'waived':      [f.to_dict() for f in waived_shown],
             'config_path': str(prepared.config_path) if prepared.config_path else None,
         }
         summary = {
             'total':        total,
             'shown':        len(shown),
-            'truncated':    truncated or waived_tr,
+            'truncated':    truncated,
             'limit':        lim,
             'by_severity':  by_sev,
             'by_rule':      by_rule,
             'by_check':     by_check,
-            'waived':       waived_total,
             'files_linted': len(filelist.sources),
             'has_error':    has_error,
         }
         rc = emit(env.ok(data, summary))
-        return 1 if (has_error or strict_fail) else rc
+        return 1 if has_error else rc
 
     lim = agent_json.resolve_limit(args.limit)
     shown, total, truncated = agent_json.clip(findings, lim)
     print_findings(shown)
     if truncated:
         print(Color.dim(agent_json.truncation_note(len(shown), total, "findings")))
-    if args.waived:
-        waived_shown, waived_total, _ = agent_json.clip(waived, lim)
-        print_waived(waived_shown, total=waived_total)
     if findings:
-        print_summary(findings, waived=len(waived))
-    return 1 if (has_error or strict_fail) else 0
+        print_summary(findings)
+    return 1 if has_error else 0

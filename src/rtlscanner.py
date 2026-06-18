@@ -7,7 +7,7 @@ Subcommands:
     scope    — direct contents of one elaborated scope
     fanin    — upstream dataflow BFS
     fanout   — downstream dataflow BFS
-    lint     — semantic + unused + shadow + CDC + port checks
+    lint     — semantic + unused + port + cdc + comb-loop checks
     xref     — signal/module source definitions and references
 """
 
@@ -43,7 +43,7 @@ SUBCOMMANDS = {
                 lambda a, e: signal_trace.run_flow(a, e, mode="fanout"),
                 "Walk downstream dataflow BFS from a signal"),
     "lint":    (rtl_lint.add_arguments,        rtl_lint.run,
-                "Static lint (semantic + unused + shadow + CDC + port checks)"),
+                "Static scan: semantic + unused + port + cdc + comb-loop"),
     "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
                 "Show signal/module definitions and references"),
 }

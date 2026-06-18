@@ -397,20 +397,13 @@ class CommaListTests(unittest.TestCase):
         self.assertEqual(env_a["command"]["dir"], env_b["command"]["dir"])
 
     def test_rules_bracket_syntax(self):
-        env_a, _, _ = run_json("lint", "-d", "examples/lint",
-                               "--rules", "width-trunc,case-default",
-                               cwd=self.tmp, env=self._no_env())
-        env_b, _, _ = run_json("lint", "-d", "examples/lint",
-                               "--rules", "[width-trunc,case-default]",
-                               cwd=self.tmp, env=self._no_env())
-        env_c, _, _ = run_json("lint", "-d", "examples/lint",
-                               "--rules", "{width-trunc,case-default}",
-                               cwd=self.tmp, env=self._no_env())
-        rules_a = sorted(f["rule"] for f in env_a["data"]["findings"])
-        rules_b = sorted(f["rule"] for f in env_b["data"]["findings"])
-        rules_c = sorted(f["rule"] for f in env_c["data"]["findings"])
-        self.assertEqual(rules_a, rules_b)
-        self.assertEqual(rules_a, rules_c)
+        def checks(spec):
+            env, _, _ = run_json("lint", "-d", "examples/lint", "--rules", spec,
+                                 cwd=self.tmp, env=self._no_env())
+            return sorted({f["check"] for f in env["data"]["findings"]})
+        bare = checks("unused,cdc")
+        self.assertEqual(bare, checks("[unused,cdc]"))
+        self.assertEqual(bare, checks("{unused,cdc}"))
 
 
 class LintRuleModelTests(unittest.TestCase):
@@ -431,80 +424,70 @@ class LintRuleModelTests(unittest.TestCase):
             "RTLSCANNER_ROOT", "RTLSCANNER_PREFIX", "RTLSCANNER_CONFIG",
         )}
 
-    def test_rules_none_suppresses_all(self):
-        env, _, _ = run_json("lint", "-d", "examples/lint", "--rules", "none",
-                             cwd=self.tmp, env=self._no_env())
-        self.assertEqual(env["data"]["findings"], [])
-
-    def test_explicit_rule_keeps_only_that_rule(self):
+    def test_no_flag_runs_all_categories(self):
+        # No --rules → all five categories; examples/lint exercises at least
+        # semantic, unused, port, cdc, comb-loop across its files.
         env, _, _ = run_json("lint", "-d", "examples/lint",
-                             "--rules", "width-trunc",
-                             cwd=self.tmp, env=self._no_env())
-        rules = {f["rule"] for f in env["data"]["findings"]}
-        self.assertEqual(rules, {"width-trunc"})
-
-    def test_skip_subtracts(self):
-        env, _, _ = run_json("lint", "-d", "examples/lint",
-                             "--rules", "default",
-                             "--skip", "case-default",
-                             cwd=self.tmp, env=self._no_env())
-        rules = {f["rule"] for f in env["data"]["findings"]}
-        self.assertNotIn("case-default", rules)
-
-    def test_waive_module_glob(self):
-        env, _, _ = run_json("lint", "-d", "examples/lint",
-                             "--rules", "default",
-                             "--waive", "lint_demo",
-                             cwd=self.tmp, env=self._no_env())
-        # Every finding should be in the waived bucket (their file is lint_demo.sv)
-        self.assertEqual(env["data"]["findings"], [])
-        self.assertGreater(len(env["data"]["waived"]), 0)
-
-    def test_strict_promotes_warnings_and_exits_nonzero(self):
-        proc = run("lint", "-d", "examples/lint", "--rules", "default", "--strict",
-                   cwd=self.tmp, env=self._no_env(), check=False)
-        self.assertEqual(proc.returncode, 1)
-
-    def test_rules_everything_keeps_semantic_findings(self):
-        env, _, _ = run_json("lint", "-d", "examples/lint",
-                             "--rules", "everything",
                              cwd=self.tmp, env=self._no_env())
         checks = {f["check"] for f in env["data"]["findings"]}
-        self.assertEqual(checks, {"semantic"})
-        self.assertGreater(len(env["data"]["findings"]), 0)
+        self.assertEqual(checks, {"semantic", "unused", "port", "cdc",
+                                  "comb-loop"})
 
-    def test_rules_all_keeps_every_real_family_without_everything_family(self):
+    def test_rules_all_equals_default(self):
+        base, _, _ = run_json("lint", "-d", "examples/lint",
+                              cwd=self.tmp, env=self._no_env())
+        allr, _, _ = run_json("lint", "-d", "examples/lint", "--rules", "all",
+                              cwd=self.tmp, env=self._no_env())
+        key = lambda env: sorted((f["file"], f["line"], f["rule"])
+                                 for f in env["data"]["findings"])
+        self.assertEqual(key(base), key(allr))
+
+    def test_rules_whitelist_runs_exactly_those(self):
         env, _, _ = run_json("lint", "-d", "examples/lint",
-                             "--rules", "all",
+                             "--rules", "unused,cdc",
                              cwd=self.tmp, env=self._no_env())
         checks = {f["check"] for f in env["data"]["findings"]}
-        self.assertIn("semantic", checks)
-        self.assertIn("unused", checks)
-        self.assertIn("cdc", checks)
-        self.assertNotIn("everything", checks)
+        self.assertEqual(checks, {"unused", "cdc"})
 
-    def test_rules_all_keeps_shadow_findings_under_shadow_check(self):
-        src = self.tmp / "shadow_demo.sv"
+    def test_each_category_is_isolated(self):
+        # `--rules X` must yield only check==X.  Regression: a native slang
+        # diagnostic whose option name starts with `port-`/`unused-` (e.g.
+        # `port-width-trunc`) was reclassified by rule-name prefix and leaked
+        # into `--rules semantic`.  Native diagnostics are always `semantic`.
+        src = self.tmp / "leak.sv"
         src.write_text(
-            "module shadow_demo(input logic a, output logic y);\n"
-            "  logic x;\n"
-            "  always_comb begin\n"
-            "    logic x;\n"
-            "    x = a;\n"
-            "    y = x;\n"
-            "  end\n"
-            "endmodule\n"
-        )
+            "module child(input logic [3:0] a, output logic [3:0] y);\n"
+            "  assign y = a;\nendmodule\n"
+            "module top(input logic [7:0] w, output logic [3:0] z);\n"
+            "  child u(.a(w), .y(z));\n"   # 8->4 width mismatch on a port
+            "endmodule\n")
+        for cat in ("semantic", "unused", "port", "cdc", "comb-loop"):
+            env, _, _ = run_json("lint", str(src), "--rules", cat,
+                                 cwd=self.tmp, env=self._no_env())
+            checks = {f["check"] for f in env["data"]["findings"]}
+            self.assertLessEqual(checks, {cat},
+                                 f"--rules {cat} leaked {checks - {cat}}")
 
-        env, _, _ = run_json("lint", str(src), "--rules", "all",
-                             cwd=self.tmp, env=self._no_env())
-        shadow = [
-            f for f in env["data"]["findings"]
-            if f["rule"].startswith("shadow-")
-        ]
+    def test_unknown_category_errors_and_lists_valid(self):
+        for tok in ("default", "width-*", "width-trunc", "bugs", "none"):
+            env, _, rc = run_json("lint", "-d", "examples/lint", "--rules", tok,
+                                  cwd=self.tmp, env=self._no_env())
+            self.assertEqual(env["status"], "error", tok)
+            msg = env["errors"][0]["message"]
+            for cat in ("semantic", "unused", "port", "cdc", "comb-loop"):
+                self.assertIn(cat, msg)
+        # human mode exits 2 (usage error)
+        proc = run("lint", "-d", "examples/lint", "--rules", "default",
+                   cwd=self.tmp, env=self._no_env(), check=False)
+        self.assertEqual(proc.returncode, 2)
 
-        self.assertTrue(shadow)
-        self.assertEqual({f["check"] for f in shadow}, {"shadow"})
+    def test_removed_flags_are_gone(self):
+        for flag in ("--skip", "--waive", "--strict", "--min-severity",
+                     "--waived"):
+            proc = run("lint", "-d", "examples/lint", flag, "x",
+                       cwd=self.tmp, env=self._no_env(), check=False)
+            self.assertEqual(proc.returncode, 2, flag)
+            self.assertIn("unrecognized arguments", proc.stderr)
 
     def test_semantic_includes_frontend_diagnostics(self):
         bad = self.tmp / "bad_include.v"
@@ -515,7 +498,7 @@ class LintRuleModelTests(unittest.TestCase):
         rules = {f["rule"] for f in env["data"]["findings"]}
         self.assertIn("CouldNotOpenIncludeFile", rules)
 
-    def test_port_connect_rule_reports_connection_issues(self):
+    def test_port_category_reports_connection_issues(self):
         src = self.tmp / "port_connect_demo.sv"
         src.write_text(
             "module child(input logic [3:0] a, output logic [3:0] y);\n"
@@ -526,12 +509,12 @@ class LintRuleModelTests(unittest.TestCase):
             "endmodule\n"
         )
 
-        env, _, _ = run_json("lint", str(src), "--rules", "port-connect",
+        env, _, _ = run_json("lint", str(src), "--rules", "port",
                              cwd=self.tmp, env=self._no_env())
         rules = {f["rule"] for f in env["data"]["findings"]}
         checks = {f["check"] for f in env["data"]["findings"]}
 
-        self.assertEqual(checks, {"port-connect"})
+        self.assertEqual(checks, {"port"})
         self.assertIn("port-width-mismatch", rules)
         self.assertIn("port-unconnected", rules)
 

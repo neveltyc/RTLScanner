@@ -50,10 +50,9 @@ rtlscanner trace  -f rtl.f -s ready --scope top.u_dma --json
 rtlscanner fanin  -f rtl.f -s data_out --scope top.u_pipe --depth 6 --json
 rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
 rtlscanner xref   -f rtl.f --module fifo --json
-rtlscanner lint   -f rtl.f --rules bugs --json
-rtlscanner lint   -f rtl.f --rules default,cdc --json
-rtlscanner lint   -f rtl.f --rules default,comb-loop --json
-rtlscanner lint   -f rtl.f --rules port-connect --json
+rtlscanner lint   -f rtl.f --json                      # all five categories
+rtlscanner lint   -f rtl.f --rules unused,cdc --json   # narrow to a subset
+rtlscanner lint   -f rtl.f --json > lint.json          # full result; read summary for counts
 ```
 
 ## Inputs & syntax
@@ -65,7 +64,7 @@ rtlscanner lint   -f rtl.f --rules port-connect --json
 - **`--config` is a subcommand flag**, e.g. `rtlscanner tree --config proj.toml`. If
   unset, `rtlscanner` tries `./.rtlscanner.toml` in CWD (no walk-up). Priority is
   `CLI > env (RTLSCANNER_*) > config > defaults`, field by field.
-- **Repeatable flags** (`-d`, `-f`, `--exclude`, `--rules`, `--skip`, `--waive`) take a
+- **Repeatable flags** (`-d`, `-f`, `--exclude`, `--rules`) take a
   comma list or repetition: `-d a,b` ≡ `-d a -d b`.
 - **Per-file compilation by default.** Each source file is its own compilation unit
   (slang/VCS/Verilator behavior), so a `` `define `` or `$unit`-scoped `typedef` in one
@@ -101,22 +100,20 @@ the RTL: `xref` for where it's declared and which blocks/ports touch it, then
 `trace`/`fanin` for what actually drives it. The wave tells you *when*; RTLScanner tells
 you *where and why* in source.
 
-**Lint in CI.** `rtlscanner lint -f rtl.f --strict --json` — `--strict` promotes any
-finding to a gate (exit 1). Use `--rules default,cdc,comb-loop,port-connect` for the broad sweep;
-permanent project waivers belong in `.rtlscanner.toml` under `[lint] waive = [...]`
-(module-basename globs), not on the command line.
+**Lint in CI.** `rtlscanner lint -f rtl.f --json` runs all five categories and exits 1
+on any error-level finding. Keep noisy third-party sources out with
+`--exclude '**/third_party/**'`; for finer filtering, filter the JSON by the `module`
+field.
 
-## lint rule model (quick form)
+## lint categories (quick form)
 
-`--rules SPEC[,...]` is a whitelist. SPEC is a rule name (`width-trunc`), a family alias
-(`semantic`, `unused`, `shadow`, `cdc`, `port-connect`, `comb-loop`), a glob (`width-*`),
-or a meta value (`default` = semantic+unused, `all`, `none`, `bugs`). `--skip RULE[,...]` subtracts
-(glob ok). `semantic` is the normalized slang diagnostic stream (parse, type, binding,
-elaboration); for compile/front-end errors only, use `--rules semantic`, and for child
-instance port issues use `--rules port-connect`. **`--rules bugs`** is the curated
-real-bug preset (inferred latches, unassigned/undriven values, port-width problems,
-truncation) plus all compile errors — the fastest answer to "are there real bugs?". A
-typo'd rule/skip token now emits a did-you-mean `note` instead of silently selecting 0.
+`lint` runs a closed set of five categories: `semantic`, `unused`, `port`, `cdc`,
+`comb-loop`. `--rules` is a whitelist that replaces the default — accepts only those five
+names plus `all` (no flag = all five). `--rules unused,cdc` runs exactly those; an
+out-of-set token (`default`, `width-*`, a rule name) errors with the valid list. For
+compile/front-end errors only, use `--rules semantic`; for child-instance port issues,
+`--rules port`. Each finding's `check` is its category and its severity is fixed — there
+are no `--skip` / `--waive` / `--strict` / `--min-severity` knobs.
 
 ## Agent-side gotchas
 
@@ -131,15 +128,13 @@ typo'd rule/skip token now emits a did-you-mean `note` instead of silently selec
   and generate-array elements (`gen_arr[2].u_lane`) report the *same* drivers/loads as
   the canonical instance, with paths remapped to the one you queried — don't expect them
   to differ.
-- **`lint` exits 1 on real findings** (and on `--strict` with any finding). A non-zero
-  exit is not a crash — still read the JSON envelope.
-- **Lint is noisy on mature RTL — don't scan 100+ findings.** For "are there real
-  *bugs*?", run **`--rules bugs`**: a curated high-precision set (inferred latches,
-  unassigned/undriven values, port-width problems, truncation) plus all compile errors,
-  with style noise dropped. Add the cross-hierarchy graph checks with
-  `--rules bugs,cdc,comb-loop` (CDC crossings + combinational loops). Otherwise read the summary
-  (`summary.by_severity` / `summary.has_error`) rather than the full `findings[]`; narrow
-  with `--min-severity error` or `--skip case-default,...`.
+- **`lint` exits 1 on any error-level finding.** A non-zero exit is not a crash — still
+  read the JSON envelope.
+- **Lint can be noisy on mature RTL — don't dump 100+ findings into context.** Narrow with
+  `--rules` (e.g. `--rules cdc,comb-loop` for just the cross-hierarchy graph checks), and
+  read the summary (`summary.by_check` / `summary.by_severity` / `summary.has_error`)
+  rather than the full `findings[]`. For the complete result, redirect `--json` to a file
+  (`--json > lint.json`) — the `summary` still carries the true totals.
 - **Module name → instance path.** `--scope` wants an instance path (`testbench.uut`), not
   a module name (`picorv32`). Map one with `xref --module picorv32` (its instance sites)
   or `tree --flat` (every instance path, one per line).
