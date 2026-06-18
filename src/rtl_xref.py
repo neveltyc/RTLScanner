@@ -19,7 +19,6 @@ except ImportError:
 
 import agent_json
 import rtl_cli
-from agent_json import emit
 from rtl_common import Color, safe_str
 from rtl_config import xref_config
 from rtl_slang import (
@@ -815,6 +814,81 @@ def _print_module_pretty(result: ModuleXref, *, scope: str = "", verbose=False,
     print()
 
 
+@dataclass
+class XrefModuleOutput(agent_json.CommandResult):
+    """Typed result of ``xref --module``: a module's declarations + instances."""
+    result: ModuleXref
+    scope: str
+    verbose: bool = False
+
+    def to_json(self, limit):
+        data = self.result.to_dict()
+        data["scope"] = self.scope
+        shown, _t, tr = agent_json.clip(data.get("references", []), limit)
+        data["references"] = shown
+        summary = dict(data["summary"])
+        summary["mode"] = "xref"
+        summary["target_kind"] = "module"
+        summary["truncated"] = tr
+        summary["limit"] = limit
+        return data, summary
+
+    def render_human(self, limit):
+        _print_module_pretty(self.result, scope=self.scope,
+                             verbose=self.verbose, limit=limit)
+        return 0
+
+
+@dataclass
+class XrefSignalOutput(agent_json.CommandResult):
+    """Typed result of ``xref --signal``: the matching symbols' defs/refs.
+
+    The cross-match aggregate counts are derived once in ``to_json``; the human
+    renderer prints the same ``XrefMatch`` records, so the per-symbol totals
+    cannot drift from the summary.
+    """
+    matches: list
+    scope: str
+    name: str
+    recursive: bool = False
+    verbose: bool = False
+
+    def to_json(self, limit):
+        data_matches = [m.to_dict() for m in self.matches]
+        refs_truncated = False
+        for md in data_matches:
+            shown, _t, tr = agent_json.clip(md.get("references", []), limit)
+            md["references"] = shown
+            refs_truncated = refs_truncated or tr
+        data = {
+            "mode": "xref",
+            "target": {"kind": "signal", "name": self.name, "scope": self.scope},
+            "scope": self.scope,
+            "name": self.name,
+            "recursive": self.recursive,
+            "matches": data_matches,
+        }
+        summary = {
+            "mode": "xref",
+            "target_kind": "signal",
+            "symbols": len(data_matches),
+            "definitions": sum(m["summary"]["definitions"] for m in data_matches),
+            "references": sum(m["summary"]["references"] for m in data_matches),
+            "reads": sum(m["summary"]["reads"] for m in data_matches),
+            "writes": sum(m["summary"]["writes"] for m in data_matches),
+            "port_connections": sum(m["summary"]["port_connections"]
+                                    for m in data_matches),
+            "truncated": refs_truncated,
+            "limit": limit,
+        }
+        return data, summary
+
+    def render_human(self, limit):
+        _print_signal_pretty(self.scope, self.name, self.matches,
+                             verbose=self.verbose, limit=limit)
+        return 0
+
+
 def run(args, env):
     name = args.name_alt or args.name
     if args.module and name:
@@ -829,6 +903,7 @@ def run(args, env):
         )
 
     xa, scope = _prepare(args, env)
+    lim = agent_json.resolve_limit(args.limit, bool(args.verbose))
 
     if args.module:
         result = xa.xref_module(args.module, scope_path=scope or "")
@@ -846,21 +921,8 @@ def run(args, env):
                 agent_json.ERR_SIGNAL_NOT_FOUND,
                 f"module '{args.module}' not found",
             )
-        data = result.to_dict()
-        data["scope"] = scope or ""
-        lim = agent_json.resolve_limit(args.limit, bool(args.verbose))
-        shown, _t, tr = agent_json.clip(data.get("references", []), lim)
-        data["references"] = shown
-        summary = dict(data["summary"])
-        summary["mode"] = "xref"
-        summary["target_kind"] = "module"
-        summary["truncated"] = tr
-        summary["limit"] = lim
-        if env is not None:
-            return emit(env.ok(data, summary))
-        _print_module_pretty(result, scope=scope or "",
-                             verbose=bool(args.verbose), limit=lim)
-        return 0
+        out = XrefModuleOutput(result, scope or "", bool(args.verbose))
+        return agent_json.render(env, out, lim)
 
     scope, name = _normalize_dotted_name(xa, scope, name, env)
     matches = xa.xref(scope, name, recursive=args.recursive)
@@ -871,37 +933,6 @@ def run(args, env):
         raise rtl_cli.signal_not_found_error(
             getattr(base, "body", None), name, scope, noun="symbol")
 
-    data_matches = [m.to_dict() for m in matches]
-    lim = agent_json.resolve_limit(args.limit, bool(args.verbose))
-    refs_truncated = False
-    for md in data_matches:
-        shown, _t, tr = agent_json.clip(md.get("references", []), lim)
-        md["references"] = shown
-        refs_truncated = refs_truncated or tr
-    total_refs = sum(m["summary"]["references"] for m in data_matches)
-    reads = sum(m["summary"]["reads"] for m in data_matches)
-    writes = sum(m["summary"]["writes"] for m in data_matches)
-    data = {
-        "mode": "xref",
-        "target": {"kind": "signal", "name": name, "scope": scope},
-        "scope": scope,
-        "name": name,
-        "recursive": bool(args.recursive),
-        "matches": data_matches,
-    }
-    summary = {
-        "mode": "xref",
-        "target_kind": "signal",
-        "symbols": len(data_matches),
-        "definitions": sum(m["summary"]["definitions"] for m in data_matches),
-        "references": total_refs,
-        "reads": reads,
-        "writes": writes,
-        "port_connections": sum(m["summary"]["port_connections"] for m in data_matches),
-        "truncated": refs_truncated,
-        "limit": lim,
-    }
-    if env is not None:
-        return emit(env.ok(data, summary))
-    _print_signal_pretty(scope, name, matches, verbose=bool(args.verbose), limit=lim)
-    return 0
+    out = XrefSignalOutput(matches, scope, name,
+                           bool(args.recursive), bool(args.verbose))
+    return agent_json.render(env, out, lim)

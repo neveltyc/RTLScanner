@@ -18,7 +18,6 @@ except ImportError:
 
 import agent_json
 import rtl_cli
-from agent_json import emit
 from rtl_common import Color, safe_str
 from rtl_slang import iter_instances, resolve_scope, scope_visit, symbol_key
 
@@ -965,22 +964,45 @@ def _print_pretty(data: dict[str, Any], totals: dict[str, int]) -> None:
     print()
 
 
+@dataclass
+class ScopeResult(agent_json.CommandResult):
+    """Typed result of ``scope``: the elaborated section contents of one scope.
+
+    The per-section totals are derived once; ``_clip`` performs the single
+    ``--limit`` pass both renderers share, so the JSON ``summary`` truncation
+    map and the human per-section ``(N)`` counts always agree.
+    """
+    data: dict[str, Any]
+
+    def __post_init__(self):
+        self.totals = {name: len(self.data[name])
+                       for name in _SECTION_NAMES if name in self.data}
+
+    def _clip(self, limit: int):
+        clipped = dict(self.data)
+        truncated: dict[str, Any] = {}
+        for name in _SECTION_NAMES:
+            if name in clipped:
+                shown, total, tr = agent_json.clip(clipped[name], limit)
+                clipped[name] = shown
+                if tr:
+                    truncated[name] = {"shown": len(shown), "total": total}
+        return clipped, truncated
+
+    def to_json(self, limit):
+        clipped, truncated = self._clip(limit)
+        return clipped, _summary(self.totals, truncated, limit)
+
+    def render_human(self, limit):
+        clipped, _truncated = self._clip(limit)
+        _print_pretty(clipped, self.totals)
+        return 0
+
+
 def run(args, env):
     analyzer, scope = _prepare(args, env)
     data = analyzer.describe(scope, _sections(args))
     if data is None:
         raise rtl_cli.scope_not_found_error(analyzer._root, scope)
-    lim = agent_json.resolve_limit(args.limit)
-    totals = {name: len(data[name])
-              for name in _SECTION_NAMES if name in data}
-    truncated: dict[str, Any] = {}
-    for name in _SECTION_NAMES:
-        if name in data:
-            shown, total, tr = agent_json.clip(data[name], lim)
-            data[name] = shown
-            if tr:
-                truncated[name] = {"shown": len(shown), "total": total}
-    if env is not None:
-        return emit(env.ok(data, _summary(totals, truncated, lim)))
-    _print_pretty(data, totals)
-    return 0
+    return agent_json.render(
+        env, ScopeResult(data), agent_json.resolve_limit(args.limit))

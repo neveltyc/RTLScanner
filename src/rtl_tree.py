@@ -198,16 +198,29 @@ def _collect_stats(node, stats):
 def _depth(node):
     return 0 if not node.children else 1 + max(_depth(c) for c in node.children)
 
-def print_stats(tops):
-    st = {'total': 0, 'modules': set(), 'counts': {}, 'leaf': 0}
-    md = 0
+
+def _hier_stats(tops):
+    """Single derivation of the hierarchy statistics.
+
+    The JSON summary (``_hierarchy_summary``), the ``--stats`` table
+    (``print_stats``), and the human footer all read this one dict, so the three
+    can never disagree on the instance / module / depth counts (the drift this
+    cleanup removes).
+    """
+    st = {'total': 0, 'modules': set(), 'counts': {}, 'leaf': 0, 'max_depth': 0}
     for t in tops:
-        _collect_stats(t, st); md = max(md, _depth(t))
+        _collect_stats(t, st)
+        st['max_depth'] = max(st['max_depth'], _depth(t))
+    return st
+
+
+def print_stats(tops, st=None):
+    st = st if st is not None else _hier_stats(tops)
     print(f"\n{'─'*50}\n  {Color.green('Hierarchy Statistics')}\n{'─'*50}")
     print(f"  Top modules:      {', '.join(t.module_name for t in tops)}")
     print(f"  Total instances:  {st['total']}")
     print(f"  Unique modules:   {len(st['modules'])}")
-    print(f"  Max depth:        {md}")
+    print(f"  Max depth:        {st['max_depth']}")
     print(f"  Leaf instances:   {st['leaf']}")
     print(f"\n  {Color.cyan('Module usage breakdown:')}")
     for mod, cnt in sorted(st['counts'].items(), key=lambda x: -x[1]):
@@ -237,15 +250,12 @@ def _filelist_to_dict(fl: FileList) -> dict:
     }
 
 
-def _hierarchy_summary(tops, files_parsed: int) -> dict:
-    st = {'total': 0, 'modules': set(), 'counts': {}, 'leaf': 0}
-    md = 0
-    for t in tops:
-        _collect_stats(t, st); md = max(md, _depth(t))
+def _hierarchy_summary(tops, files_parsed: int, st=None) -> dict:
+    st = st if st is not None else _hier_stats(tops)
     return {
         'instances':      st['total'],
         'unique_modules': len(st['modules']),
-        'max_depth':      md,
+        'max_depth':      st['max_depth'],
         'files_parsed':   files_parsed,
         'module_counts':  dict(st['counts']),
     }
@@ -280,6 +290,59 @@ def add_arguments(p: argparse.ArgumentParser) -> None:
 
     p.add_argument('--diag', action='store_true',
                    help='Print parser/elaboration diagnostics to stderr')
+
+
+@dataclass
+class TreeResult(agent_json.CommandResult):
+    """Typed result of ``tree``: the elaborated hierarchy plus its filelist.
+
+    The hierarchy statistics are derived once (``_hier_stats`` in
+    ``__post_init__``) and shared by both renderers, so the JSON ``summary`` and
+    the human ``--stats`` table / footer cannot disagree.
+    """
+    tops: list
+    filelist: FileList
+    depth: int = -1
+    show_params: bool = True
+    show_path: bool = False
+    show_stats: bool = False
+    flat: bool = False
+
+    def __post_init__(self):
+        self.stats = _hier_stats(self.tops)
+
+    def to_json(self, limit):
+        hier, _total, truncated = _hierarchy_capped(self.tops, self.depth, limit)
+        summary = _hierarchy_summary(
+            self.tops, len(self.filelist.sources), self.stats)
+        summary['truncated'] = truncated
+        summary['limit'] = limit
+        data = {'hierarchy': hier, 'filelist': _filelist_to_dict(self.filelist)}
+        return data, summary
+
+    def render_human(self, limit):
+        if self.flat:
+            shown, total, truncated = agent_json.clip(_walk(self.tops), limit)
+            for t in shown:
+                print(f"{t.hier_path}  ({t.module_name})")
+            if truncated:
+                print(Color.dim(agent_json.truncation_note(
+                    len(shown), total, "instances")))
+        else:
+            for i, t in enumerate(self.tops):
+                if i:
+                    print()
+                print_tree(t, is_root=True, max_depth=self.depth,
+                           show_params=self.show_params, show_path=self.show_path)
+        if self.show_stats:
+            print_stats(self.tops, self.stats)
+        if not self.flat:
+            total = self.stats['total']
+            mods = len(self.stats['modules'])
+            footer = (f"{total} instances, {mods} unique modules, "
+                      f"{len(self.filelist.sources)} files parsed")
+            print(f"\n{Color.dim(footer)}")
+        return 0
 
 
 def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
@@ -338,33 +401,13 @@ def run(args: argparse.Namespace, env: Optional[Envelope]) -> int:
             msg += f" (--top {args.top})"
         raise rtl_cli.CliError(agent_json.ERR_NO_TOP, msg, 1)
 
-    if env is not None:
-        lim = agent_json.resolve_limit(args.limit)
-        hier, _total, truncated = _hierarchy_capped(tops, args.depth, lim)
-        summary = _hierarchy_summary(tops, len(filelist.sources))
-        summary['truncated'] = truncated
-        summary['limit'] = lim
-        return emit(env.ok(
-            {'hierarchy': hier, 'filelist': _filelist_to_dict(filelist)},
-            summary,
-        ))
-
-    if args.flat:
-        lim = agent_json.resolve_limit(args.limit)
-        shown, total, truncated = agent_json.clip(_walk(tops), lim)
-        for t in shown:
-            print(f"{t.hier_path}  ({t.module_name})")
-        if truncated:
-            print(Color.dim(agent_json.truncation_note(len(shown), total, "instances")))
-    else:
-        for i, t in enumerate(tops):
-            if i: print()
-            print_tree(t, is_root=True, max_depth=args.depth,
-                       show_params=not args.no_params, show_path=args.path)
-    if args.stats:
-        print_stats(tops)
-    if not args.flat:
-        total = sum(1 for _ in _walk(tops))
-        mods = len(set(n.module_name for n in _walk(tops)))
-        print(f"\n{Color.dim(f'{total} instances, {mods} unique modules, {len(filelist.sources)} files parsed')}")
-    return 0
+    result = TreeResult(
+        tops=tops,
+        filelist=filelist,
+        depth=args.depth,
+        show_params=not args.no_params,
+        show_path=args.path,
+        show_stats=args.stats,
+        flat=args.flat,
+    )
+    return agent_json.render(env, result, agent_json.resolve_limit(args.limit))
