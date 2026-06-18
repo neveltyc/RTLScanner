@@ -170,19 +170,19 @@ class FlowLimitGraphConsistency(unittest.TestCase):
                 self.assertIn(e["target"], node_set)
 
 
-class LintWaivedLimit(unittest.TestCase):
-    def test_waived_list_capped_but_count_truthful(self):
+class LintFindingsLimit(unittest.TestCase):
+    def test_findings_list_capped_but_total_truthful(self):
         with tempfile.TemporaryDirectory() as d:
             mods = "\n".join(
                 f"module m{i}(input wire a, output wire y);\n"
                 f"  wire unused_{i};\n  assign y = a;\nendmodule" for i in range(6))
             (Path(d) / "many.sv").write_text(mods + "\n")
             proc = _run(["lint", "many.sv", "--rules", "unused",
-                         "--waive", "many", "--limit", "2", "--json"], d)
+                         "--limit", "2", "--json"], d)
             env = json.loads(proc.stdout)
             self.assertEqual(env["status"], "ok")
-            self.assertEqual(len(env["data"]["waived"]), 2)   # clipped
-            self.assertEqual(env["summary"]["waived"], 6)     # true total
+            self.assertEqual(len(env["data"]["findings"]), 2)   # clipped
+            self.assertEqual(env["summary"]["total"], 6)        # true total
             self.assertTrue(env["summary"]["truncated"])
 
 

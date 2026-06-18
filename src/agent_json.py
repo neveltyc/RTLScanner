@@ -26,7 +26,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.2.0"
+TOOL_VERSION = "0.3.0"
 
 # Default cap on the number of rows/items emitted per list, so a query against a
 # large design stays agent-friendly instead of dumping thousands of entries.
@@ -237,7 +237,9 @@ def add_output_args(p: argparse.ArgumentParser) -> None:
                    help="Disable ANSI colors")
     g.add_argument("--limit", type=int, default=None, metavar="N",
                    help=f"Max rows/items to emit per list; default {DEFAULT_LIMIT}; "
-                        "0 = unlimited")
+                        "0 = unlimited. For the full result, redirect --json to a "
+                        "file (e.g. '--json > out.json'); the 'summary' field "
+                        "carries the totals.")
 
 
 def filter_command(ns, extra_exclude: Optional[set] = None) -> Dict[str, Any]:
@@ -615,21 +617,19 @@ _LINT_FINDING = {
         "col":      {"type": "integer"},
         "severity": {"type": "string", "enum": ["error", "warning", "note", "ignored"]},
         "rule":     {"type": "string",
-                     "description": "Open enum. Known rules include "
-                     "`inferred-latch`, `unassigned-variable`, `undriven-port`, "
-                     "`width-trunc`, `port-width-mismatch`, `port-width-trunc`, "
+                     "description": "Open enum of specific rule names. Known rules "
+                     "include `inferred-latch`, `unassigned-variable`, "
+                     "`undriven-port`, `width-trunc`, `port-width-mismatch`, "
                      "`cdc-crossing`, `comb-loop`, `unused-port`, `case-default`. "
-                     "The `--rules bugs` preset keeps the real-bug subset plus "
-                     "all compile errors."},
+                     "Each rule belongs to one of the `check` categories."},
         "message":  {"type": "string"},
         "check":    {"type": "string",
-                     "enum": ["semantic", "unused", "shadow", "cdc",
-                              "port-connect", "comb-loop"]},
+                     "description": "The check category (closed set).",
+                     "enum": ["semantic", "unused", "port", "cdc", "comb-loop"]},
         "module":   {"type": "string",
                      "description": "Design unit (module / interface / ...) the "
                      "finding sits in, attributed by source range. Absent when "
                      "the finding could not be attributed to a unit."},
-        "waived_reason": {"type": "string"},
     },
     "additionalProperties": True,
 }
@@ -638,17 +638,16 @@ _LINT_SCHEMA = _envelope_schema(
     "lint",
     data_schema={
         "type": "object",
-        "required": ["findings", "waived", "config_path"],
+        "required": ["findings", "config_path"],
         "properties": {
             "findings":    {"type": "array", "items": _LINT_FINDING},
-            "waived":      {"type": "array", "items": _LINT_FINDING},
             "config_path": {"type": ["string", "null"]},
         },
     },
     summary_schema={
         "type": "object",
         "required": ["total", "by_severity", "by_rule", "by_check",
-                     "waived", "files_linted", "has_error"],
+                     "files_linted", "has_error"],
         "properties": {
             "total":        {"type": "integer",
                              "description": "True total finding count, even when "
@@ -661,19 +660,21 @@ _LINT_SCHEMA = _envelope_schema(
             "by_rule":      {"type": "object",
                              "additionalProperties": {"type": "integer"}},
             "by_check":     {"type": "object",
+                             "description": "Finding count per check category.",
                              "additionalProperties": {"type": "integer"}},
-            "waived":       {"type": "integer"},
             "files_linted": {"type": "integer"},
             "has_error":    {"type": "boolean"},
         },
     },
     description=("Stable agent-mode JSON envelope produced by `rtlscanner lint --json`. "
-                 "CDC findings appear as regular entries in `data.findings` with "
-                 "`rule=\"cdc-crossing\"` and `check=\"cdc\"`; combinational-loop "
-                 "findings with `rule=\"comb-loop\"` and `check=\"comb-loop\"`. Both "
-                 "are opt-in (`--rules cdc` / `--rules comb-loop`). Note: SystemVerilog "
-                 "`` `pragma diagnostic ignore `` does NOT suppress these heuristic "
-                 "findings — use `[lint].waive` in `.rtlscanner.toml` instead."),
+                 "`lint` runs a closed set of five check categories — semantic, "
+                 "unused, port, cdc, comb-loop — selected with `--rules` (default: "
+                 "all). Every finding carries `file`, `line`, `col`, `severity`, "
+                 "`rule`, `message`, `check`, and `module`. CDC findings appear with "
+                 "`rule=\"cdc-crossing\"` / `check=\"cdc\"`; combinational loops with "
+                 "`rule=\"comb-loop\"` / `check=\"comb-loop\"`. For the complete "
+                 "result on a large design, redirect `--json` to a file; `summary` "
+                 "carries the by-category / by-severity counts."),
 )
 
 

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-17
+
 ### Added
 
 - **`--single-unit`** — opt back into single-compilation-unit mode (the
@@ -47,6 +49,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **BREAKING: `lint` is now a fixed, opinionated scanner.** The whole
+  rule-selection / configuration sub-language is gone, collapsed to a closed set
+  of **five check categories** — `semantic`, `unused`, `port`, `cdc`,
+  `comb-loop` — chosen with a single flag. `--rules` is now a whitelist that
+  accepts **only** those five names plus `all` (no flag = run all five;
+  `--rules unused,cdc` = run exactly those). It no longer accepts rule families,
+  name globs, or the meta values `default` / `bugs` / `none` / `everything`; an
+  out-of-set token now **errors** (exit 2) listing the valid categories instead
+  of silently selecting nothing. Removed entirely: `--skip`, `--waive`,
+  `--strict`, `--min-severity`, `--waived`, the `shadow` check, and the `[lint]`
+  / `[lint.severity]` / `[lint.cdc]` config blocks. Each finding's severity is
+  fixed by its category; `lint` exits `1` on any error-severity finding, `0`
+  otherwise. Coarse suppression lives at the input layer (`--exclude`); for finer
+  filtering, filter the JSON by the `module` field. For a large scan, redirect
+  `--json` to a file and read `summary` for the by-category / by-severity counts
+  (there is no `--output` flag). The JSON envelope shape is unchanged; the only
+  contract change is the narrowed `check` enum (now exactly the five categories)
+  — `lint --schema` reflects it. CDC runs with **zero configuration** off a
+  built-in reset-name heuristic. The `port-connect` check is renamed `port`.
+  Migration: `--rules default,cdc` → `--rules` (or `--rules all`);
+  `--rules bugs` / globs / `--skip` / `--waive` / `--strict` /
+  `--min-severity` → narrow with the five category names and filter the JSON.
+- **CDC and combinational-loop analyses now live in `rtl_lint`** as consumers of
+  the shared dataflow engine (`SignalTracer.flow_edges` / `clock_domain_map`),
+  rather than as methods on the query-side tracer. No behavior change.
+
 - **Graph-based, cross-hierarchy CDC** — `--rules cdc` now detects clock-domain
   crossings on the dataflow flow graph instead of a single-module `always_ff`
   scan, and resolves each flop's clock to its **source net** before comparing
@@ -65,6 +93,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bit-select `fanin`/`fanout` no longer reports a false-empty cone for
+  generate loops (and multiple bit assigns on one source line).** Every edge
+  carries a bit map, but `FlowEdge.key()` excluded it, so several assigns to the
+  same `(source, target)` pair on the *same* source line — a generate-for bit
+  reversal `for (i) dout[i] = din[7-i]`, or several `assign dout[..]=din[..];`
+  on one line — collapsed to the first at edge dedup. `fanin dout[3]` then
+  returned *no edges* (claiming `dout[3]` undriven) and whole-signal `fanin dout`
+  showed a single misleading bit. The key now includes the bit map, so each is
+  its own edge (matching the already-correct one-assign-per-line behavior); whole
+  -signal edges carry an empty bit key, so the demand-driven / whole-graph parity
+  is unchanged.
+- **`fanin`/`fanout` on a multi-bit select keep the *whole* permutation map.** A
+  permutation edge (a bit reversal / swap) reached from several frontier bits was
+  trimmed to whichever bit-range arrived first, so e.g. `fanin y[1:0]` through a
+  reversal dropped one of the two segments (and the survivor was assign-order
+  dependent). The walk now collects every range that reaches an edge and trims
+  its `segments` to their union.
+- **`--rules comb-*` (any glob targeting the comb-loop rule) now runs the
+  check.** The `comb-` prefix was missing from the run-family map, so a glob like
+  `comb-*` / `comb-loop*` never started the comb-loop pass and silently selected
+  zero findings (while the exact token `comb-loop` and `cdc-*` worked).
+- **`--waive module:NAME` now reaches `comb-loop`, `cdc-crossing`, and
+  port-connect findings.** Those checks built findings without a module, so the
+  module-targeted waiver (and the module half of a bare-glob waiver) could never
+  match them. Findings are now attributed to their enclosing design unit like
+  every other finding.
+- **Non-zero-LSB packed vectors (`[8:1]`, `[15:8]`) no longer emit mixed bit
+  labels.** `_is_simple_vector` accepted any descending vector, but a non-zero
+  low bound means the declared and internal bit numbering differ, so an edge came
+  out with the source bit in declared coordinates and the target bit in internal
+  ones. Such vectors now fall back to whole-signal granularity (conservative),
+  like big-endian `[0:N]` vectors and packed arrays.
 - **`lint --rules comb-loop` (and `cdc`) now run on the *pruned* dataflow graph,
   killing constant-dead-branch false positives.** The graph-based lint checks
   built their shared `SignalTracer` without the constant-condition pruning /
@@ -254,6 +314,7 @@ simulation), each emitting one uniform JSON envelope under `--json`:
   traverse port boundaries; `trace` is now strictly scope-local. The
   `cross_hierarchy` output field is removed accordingly.
 
-[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/neveltyc/RTLScanner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/neveltyc/RTLScanner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/neveltyc/RTLScanner/releases/tag/v0.1.0

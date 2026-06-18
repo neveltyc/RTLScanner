@@ -269,6 +269,53 @@ class P5ExoticAndEdgeCases(unittest.TestCase):
             self.assertNotIn("source_bits", e)
             self.assertNotIn("target_bits", e)
 
+    def test_same_line_bit_assigns_are_distinct_edges(self):
+        # Several bit assigns to the same (din, dout) pair on ONE source line must
+        # stay distinct edges (the edge key includes the bit map), so a bit-select
+        # resolves each one — regression: they collapsed to the first, and
+        # `fanin dout[3]` then reported dout[3] as undriven.
+        sv = self._write("""
+            module m(input logic [3:0] din, output logic [3:0] dout);
+              assign dout[0]=din[3]; assign dout[1]=din[2];
+              assign dout[2]=din[1]; assign dout[3]=din[0];
+            endmodule""")
+        env = run_json("fanin", sv, "-s", "dout", "--scope", "m", "--depth", "1")
+        self.assertEqual(len(env["data"]["edges"]), 4)
+        for q, src_bit in (("dout[0]", "[3]"), ("dout[3]", "[0]")):
+            e = run_json("fanin", sv, "-s", q, "--scope", "m", "--depth", "1")
+            edges = e["data"]["edges"]
+            self.assertEqual(len(edges), 1, f"{q} must resolve to one driver")
+            self.assertEqual(edges[0]["source_bits"], src_bit)
+
+    def test_generate_loop_bits_are_distinct_edges(self):
+        # A generate-for bit reversal puts every iteration on the same source
+        # line; each must still be its own edge so `fanin dout[i]` resolves.
+        sv = self._write("""
+            module g(input logic [7:0] din, output logic [7:0] dout);
+              for (genvar i = 0; i < 8; i++) assign dout[i] = din[7 - i];
+            endmodule""")
+        env = run_json("fanin", sv, "-s", "dout", "--scope", "g", "--depth", "1")
+        self.assertEqual(len(env["data"]["edges"]), 8)
+        e = run_json("fanin", sv, "-s", "dout[3]", "--scope", "g", "--depth", "1")
+        edges = e["data"]["edges"]
+        self.assertEqual(len(edges), 1)
+        self.assertEqual((edges[0]["source"], edges[0]["source_bits"]),
+                         ("g.din", "[4]"))           # dout[3] <- din[4]
+
+    def test_nonzero_lsb_vector_is_conservative(self):
+        # A non-zero-LSB vector ([8:1]) is descending but NOT zero-based, so its
+        # declared and internal bit numbering differ; it must fall back to
+        # whole-signal rather than emit mixed declared/internal bit labels.
+        sv = self._write("""
+            module nz(input logic [8:1] a, output logic [8:1] y);
+              assign y[2] = a[3];
+            endmodule""")
+        edges = run_json("fanin", sv, "-s", "y", "--scope", "nz")["data"]["edges"]
+        self.assertIn("nz.a", {e["source"] for e in edges})
+        for e in edges:
+            self.assertNotIn("source_bits", e)
+            self.assertNotIn("target_bits", e)
+
     def test_flow_bit_select_out_of_range_errors(self):
         # fanin/fanout validate a bit-select against width, like trace.
         sv = self._write("""

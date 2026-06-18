@@ -22,6 +22,7 @@ RTLSCANNER = [sys.executable, "-m", "rtlscanner"]
 try:
     import pyslang.ast as ast  # noqa: F401  (availability guard)
     from rtl_common import build_compilation
+    from rtl_lint import CombLoopAnalyzer
     from signal_trace import SignalTracer
     HAVE_PYSLANG = True
 except Exception:  # pragma: no cover
@@ -31,8 +32,9 @@ except Exception:  # pragma: no cover
 def _loops(text, unroll=False):
     p = Path(tempfile.mkdtemp()) / "loop.sv"
     p.write_text(textwrap.dedent(text))
-    return SignalTracer(build_compilation([str(p)])[0],
-                        unroll=unroll).combinational_loops()
+    comp = build_compilation([str(p)])[0]
+    tracer = SignalTracer(comp, unroll=unroll)
+    return CombLoopAnalyzer(comp, tracer=tracer).loops()
 
 
 def _leaf_sets(loops):
@@ -194,18 +196,24 @@ class LintRuleWiring(unittest.TestCase):
         # the real loops in the demo are still caught
         self.assertIn("comb_loop", msgs)
 
-    def test_default_and_bugs_exclude_comb_loop(self):
-        env = self._run("examples/lint/comb_loop_demo.sv")          # default
-        self.assertNotIn("comb-loop", self._rules(env))
-        env = self._run("examples/lint/comb_loop_demo.sv", "--rules", "bugs")
-        self.assertNotIn("comb-loop", self._rules(env))
+    def test_comb_loop_findings_carry_module(self):
+        # comb-loop findings are attributed to their enclosing module.
+        env = self._run("examples/lint/comb_loop_demo.sv", "--rules", "comb-loop")
+        mods = {f.get("module") for f in env["data"]["findings"]}
+        self.assertIn("comb_loop", mods)
+        self.assertNotIn(None, mods)
 
-    def test_check_family_is_comb_loop(self):
+    def test_default_includes_comb_loop(self):
+        # comb-loop is one of the five categories run by default (no flag).
+        env = self._run("examples/lint/comb_loop_demo.sv")
+        self.assertIn("comb-loop", self._rules(env))
+
+    def test_check_category_is_comb_loop(self):
         env = self._run("examples/lint/comb_loop_demo.sv", "--rules", "comb-loop")
         checks = {f["check"] for f in env["data"]["findings"]}
         self.assertEqual(checks, {"comb-loop"})
 
-    def test_help_lists_comb_loop_family(self):
+    def test_help_lists_comb_loop_category(self):
         text = subprocess.run(RTLSCANNER + ["lint", "--help"], cwd=ROOT,
                               text=True, stdout=subprocess.PIPE).stdout
         self.assertIn("comb-loop", text)

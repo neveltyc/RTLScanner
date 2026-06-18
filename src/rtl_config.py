@@ -250,13 +250,6 @@ def build_filelist(ri: ResolvedInputs) -> FileList:
     return filter_filelist(merged, ri.excludes, ri.root)
 
 
-# ── Lint config helpers (extracted from old rtl_lint.discover/load) ──
-def lint_config(cfg: dict) -> dict:
-    """Return the [lint] section of a config dict, or {} if absent."""
-    if not isinstance(cfg, dict):
-        return {}
-    return cfg.get("lint") or {}
-
 # ── Xref config helpers ─────────────────────────────────────────────
 def xref_config(cfg: dict) -> dict:
     """Return normalized [xref] config options."""

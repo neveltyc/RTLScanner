@@ -1,6 +1,6 @@
 {
   "tool": "lint",
-  "version": "<tool-version>",
+  "version": "0.3.0",
   "status": "ok",
   "command": {
     "cmd": "lint",
@@ -10,14 +10,51 @@
     ],
     "filelist": [],
     "exclude": [],
-    "rules": [],
-    "skip": [],
-    "waive": [],
-    "strict": false,
-    "min_severity": null
+    "single_unit": false,
+    "rules": []
   },
   "data": {
     "findings": [
+      {
+        "file": "./examples/lint/cdc_demo.sv",
+        "line": 24,
+        "col": 0,
+        "severity": "warning",
+        "rule": "cdc-crossing",
+        "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'q' in 'clkb' domain (launch cdc_violation.src_data, capture cdc_violation.q)",
+        "check": "cdc",
+        "module": "cdc_violation"
+      },
+      {
+        "file": "./examples/lint/cdc_demo.sv",
+        "line": 43,
+        "col": 0,
+        "severity": "warning",
+        "rule": "cdc-crossing",
+        "message": "signal 'src_data' crosses clock domains: launched in 'clka' domain, captured by 'meta' in 'clkb' domain (launch cdc_safe_2ff.src_data, capture cdc_safe_2ff.meta)",
+        "check": "cdc",
+        "module": "cdc_safe_2ff"
+      },
+      {
+        "file": "./examples/lint/comb_loop_demo.sv",
+        "line": 20,
+        "col": 0,
+        "severity": "warning",
+        "rule": "comb-loop",
+        "message": "combinational loop: comb_loop.a -> comb_loop.b -> comb_loop.a",
+        "check": "comb-loop",
+        "module": "comb_loop"
+      },
+      {
+        "file": "./examples/lint/comb_loop_demo.sv",
+        "line": 43,
+        "col": 0,
+        "severity": "warning",
+        "rule": "comb-loop",
+        "message": "combinational loop: cross_hier_loop.a -> cross_hier_loop.u1.i -> cross_hier_loop.u1.o -> cross_hier_loop.b -> cross_hier_loop.u2.i -> cross_hier_loop.u2.o -> cross_hier_loop.a",
+        "check": "comb-loop",
+        "module": "cross_hier_loop"
+      },
       {
         "file": "./examples/lint/lint_demo.sv",
         "line": 8,
@@ -55,7 +92,7 @@
         "severity": "warning",
         "rule": "unassigned-variable",
         "message": "variable 'mode' is never assigned a value",
-        "check": "unused",
+        "check": "semantic",
         "module": "lint_demo"
       },
       {
@@ -75,7 +112,7 @@
         "severity": "warning",
         "rule": "inferred-latch",
         "message": "latch inferred for 'result' because it is not assigned on all control paths",
-        "check": "unused",
+        "check": "semantic",
         "module": "lint_demo"
       },
       {
@@ -87,36 +124,51 @@
         "message": "output port 'y' is explicitly connected to nothing",
         "check": "semantic",
         "module": "lint_demo"
+      },
+      {
+        "file": "examples/lint/lint_demo.sv",
+        "line": 40,
+        "col": 0,
+        "severity": "note",
+        "rule": "port-unconnected",
+        "message": "output port 'y' is unconnected",
+        "check": "port",
+        "module": "lint_demo"
       }
     ],
-    "waived": [],
     "config_path": null
   },
   "diagnostics": [],
   "errors": [],
   "summary": {
-    "total": 7,
-    "shown": 7,
+    "total": 12,
+    "shown": 12,
     "truncated": false,
     "limit": 200,
     "by_severity": {
-      "warning": 7
+      "warning": 11,
+      "note": 1
     },
     "by_rule": {
+      "cdc-crossing": 2,
+      "comb-loop": 2,
       "unused-port": 1,
       "unused-but-set-variable": 1,
       "width-trunc": 1,
       "unassigned-variable": 1,
       "case-default": 1,
       "inferred-latch": 1,
-      "empty-output-connection": 1
+      "empty-output-connection": 1,
+      "port-unconnected": 1
     },
     "by_check": {
-      "unused": 4,
-      "semantic": 3
+      "cdc": 2,
+      "comb-loop": 2,
+      "unused": 2,
+      "semantic": 5,
+      "port": 1
     },
-    "waived": 0,
-    "files_linted": 2,
+    "files_linted": 3,
     "has_error": false
   }
 }

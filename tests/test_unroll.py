@@ -180,6 +180,26 @@ class PermutationMapTests(unittest.TestCase):
                            "--depth", "1")
         self.assertEqual(len(segments(env_all, "reverse.din", "reverse.rev")), 8)
 
+    def test_multi_range_traversal_keeps_all_segments(self):
+        # A permutation edge reached from several frontier bits must keep ALL the
+        # segments those bits map to, not just the first — regression: trimming
+        # to the first-arriving range dropped the rest and was order-dependent.
+        def segs(order):
+            sv = write_sv(f"""
+                module dn(input logic [7:0] din, output logic [7:0] y);
+                  logic [7:0] m;
+                  assign m = {{din[0],din[1],din[2],din[3],
+                              din[4],din[5],din[6],din[7]}};
+                  {order}
+                endmodule""")
+            env = run_json("fanin", sv, "-s", "y[1:0]", "--scope", "dn",
+                           "--depth", "3")
+            return segments(env, "dn.din", "dn.m")
+        expect = {("[7]", "[0]"), ("[6]", "[1]")}
+        self.assertEqual(segs("assign y[0]=m[0]; assign y[1]=m[1];"), expect)
+        # order-independent: swapping the two y assigns yields the same map
+        self.assertEqual(segs("assign y[1]=m[1]; assign y[0]=m[0];"), expect)
+
     def test_continuous_concat_swap_keeps_segments(self):
         # A continuous-assign half swap o = {a[3:0], a[7:4]} is the same kind of
         # permutation and is kept on the single (a -> o) edge.
