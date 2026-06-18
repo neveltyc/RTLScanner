@@ -282,6 +282,47 @@ def emit(envelope: Dict[str, Any], *, pretty: bool = True) -> int:
     return 0 if envelope.get("status") == "ok" else 1
 
 
+# ── The shared result → render seam ─────────────────────────────────
+class CommandResult:
+    """Typed result of one subcommand, with two pure renderers.
+
+    A subcommand's ``run()`` does all of its analysis up front and packs it into
+    one of these — the single place every count / summary / total is derived.
+    :func:`render` then dispatches on output mode: ``--json`` calls
+    :meth:`to_json`, human mode calls :meth:`render_human`.  Because both
+    renderers read the *same* typed fields (rather than each re-deriving the
+    summary down its own ``if env:`` branch), the JSON and human views cannot
+    drift — the class of bug the schema-conformance test was added to guard.
+    """
+
+    #: Process exit code applied in BOTH output modes.  Defaults to 0; ``lint``
+    #: overrides it to 1 when the design has an error-severity finding.
+    exit_code: int = 0
+
+    def to_json(self, limit: int):
+        """Return ``(data, summary)`` for the shared ``--json`` envelope."""
+        raise NotImplementedError
+
+    def render_human(self, limit: int) -> int:
+        """Print the human-readable view; return the process exit code."""
+        raise NotImplementedError
+
+
+def render(env: Optional[Envelope], result: CommandResult, limit: int) -> int:
+    """The single result → render seam shared by every subcommand.
+
+    ``env`` is the JSON :class:`Envelope` (``--json``) or ``None`` (human mode).
+    The typed ``result`` carries both renderers; this picks one.  ``result``'s
+    ``exit_code`` is honored in both modes so a successful-but-flagged run (e.g.
+    ``lint`` finding an error) still exits non-zero.
+    """
+    if env is not None:
+        data, summary = result.to_json(limit)
+        rc = emit(env.ok(data, summary))
+        return result.exit_code or rc
+    return result.render_human(limit)
+
+
 # ── JSON Schemas (draft-07, hand-written, stdlib-only) ──────────────
 
 _DIAG_ITEM = {

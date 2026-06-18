@@ -60,7 +60,6 @@ from rtl_slang import (
 
 import agent_json
 import rtl_cli
-from agent_json import emit
 from rtl_config import flow_config
 
 
@@ -2409,29 +2408,47 @@ def add_trace_args(p):
     _add_unroll_args(p)
 
 
-def run_trace(args, env):
-    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
-    r = tracer.trace(signal, scope, bit_range)
-    lim = agent_json.resolve_limit(args.limit)
-    if env is not None:
-        rd = r.to_dict(args.filter)
+@dataclass
+class TraceOutput(agent_json.CommandResult):
+    """Typed result of ``trace``: one signal's driver/loads in a scope.
+
+    ``TraceResult`` already carries the two pure item renderers (``to_dict`` /
+    ``pretty_print``); this wraps the single result in the shared envelope shape
+    (``mode``/``scope``/``results``) and the load-count summary so the seam
+    matches the other five commands.
+    """
+    result: TraceResult
+    scope: str
+    load_filter: Optional[str] = None
+
+    def to_json(self, limit):
+        rd = self.result.to_dict(self.load_filter)
         load_total = int(rd.get('load_count', 0))
         if 'loads' in rd:
-            shown, _t, tr = agent_json.clip(rd['loads'], lim)
+            shown, _t, tr = agent_json.clip(rd['loads'], limit)
             rd['loads'] = shown
         else:
             tr = False
-        data = {'mode': 'signal', 'scope': scope, 'results': [rd]}
+        data = {'mode': 'signal', 'scope': self.scope, 'results': [rd]}
         summary = {
             'mode': 'signal', 'results': 1,
             'drivers': 1 if rd.get('driver') else 0,
             'loads':   load_total,
             'truncated': tr,
-            'limit': lim,
+            'limit': limit,
         }
-        return emit(env.ok(data, summary))
-    r.pretty_print(args.filter, limit=lim)
-    return 0
+        return data, summary
+
+    def render_human(self, limit):
+        self.result.pretty_print(self.load_filter, limit=limit)
+        return 0
+
+
+def run_trace(args, env):
+    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
+    r = tracer.trace(signal, scope, bit_range)
+    out = TraceOutput(r, scope, args.filter)
+    return agent_json.render(env, out, agent_json.resolve_limit(args.limit))
 
 # ── Subcommands: fanin / fanout ──────────────────────────────────────
 def add_flow_args(p):
@@ -2447,60 +2464,21 @@ def add_flow_args(p):
     _add_unroll_args(p)
 
 
-def _emit_flow_summary(env, r, mode, scope, signal):
-    """Counts, an edges-by-depth histogram, and the direct neighbors — instead
-    of the full cone, which can be thousands of edges on a real design."""
-    rd = r.to_dict()
-    edges = rd['edges']
-    by_depth = {}
-    for e in edges:
-        d = int(e.get('depth', 0))
-        by_depth[d] = by_depth.get(d, 0) + 1
-    far = 'source' if mode == 'fanin' else 'target'
-    direct = sorted({e[far] for e in edges if int(e.get('depth', 0)) == 1})
-    node_count = len(rd['nodes'])
-    edge_count = len(edges)
-    max_depth = rd['max_depth']
+@dataclass
+class FlowGraphOutput(agent_json.CommandResult):
+    """Typed result of ``fanin``/``fanout`` (full cone): the node/edge graph."""
+    result: FlowResult
+    mode: str
+    scope: str
+    signal: str
 
-    if env is not None:
-        data = {
-            'mode': mode, 'scope': scope, 'signal': signal,
-            'start': rd['start'], 'summary_only': True,
-            'node_count': node_count, 'edge_count': edge_count,
-            'max_depth': max_depth,
-            'edges_by_depth': {str(k): by_depth[k] for k in sorted(by_depth)},
-            'direct': direct,
-        }
-        summary = {'mode': mode, 'results': 1, 'nodes': node_count,
-                   'edges': edge_count, 'max_depth': max_depth}
-        return emit(env.ok(data, summary))
-
-    C = Color
-    title = "FANIN" if mode == "fanin" else "FANOUT"
-    print(f"Signal: {C.bold(signal)}")
-    print(f"Mode:   {C.green(title + ' summary')}  {C.dim('depth <= ' + str(max_depth))}")
-    print(f"  nodes {C.yellow(str(node_count))}   edges {C.yellow(str(edge_count))}")
-    if by_depth:
-        print("  edges by depth: " +
-              ", ".join(f"{k}:{by_depth[k]}" for k in sorted(by_depth)))
-    label = "direct sources" if mode == "fanin" else "direct sinks"
-    print(f"  {label} ({len(direct)}): " + (", ".join(direct) or "(none)"))
-    return 0
-
-
-def run_flow(args, env, *, mode):
-    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
-    r = tracer.flow(signal, scope, mode, args.depth, bit_range=bit_range)
-    if getattr(args, 'summary', False):
-        return _emit_flow_summary(env, r, mode, scope, signal)
-    lim = agent_json.resolve_limit(args.limit)
-    if env is not None:
-        rd = r.to_dict()
+    def to_json(self, limit):
+        rd = self.result.to_dict()
         # Cap the edges, then keep exactly the nodes those surviving edges
         # reference (plus the depth-0 start).  Clipping `nodes` and `edges`
         # independently could emit an edge whose endpoint was dropped from
         # `nodes`, leaving the JSON graph internally inconsistent.
-        edges_shown, edges_total, e_tr = agent_json.clip(rd['edges'], lim)
+        edges_shown, edges_total, e_tr = agent_json.clip(rd['edges'], limit)
         kept = {rd['start']}
         for e in edges_shown:
             kept.add(e['source'])
@@ -2508,18 +2486,93 @@ def run_flow(args, env, *, mode):
         nodes_shown = [n for n in rd['nodes'] if n in kept]
         nodes_total = len(rd['nodes'])
         data = {
-            'mode': mode, 'scope': scope, 'signal': signal,
+            'mode': self.mode, 'scope': self.scope, 'signal': self.signal,
             'start': rd['start'], 'nodes': nodes_shown, 'edges': edges_shown,
             'max_depth': rd['max_depth'],
         }
         if 'bit_select' in rd:
             data['bit_select'] = rd['bit_select']
         summary = {
-            'mode': mode, 'results': 1,
+            'mode': self.mode, 'results': 1,
             'nodes': nodes_total, 'edges': edges_total,
             'max_depth': rd['max_depth'],
-            'truncated': e_tr or len(nodes_shown) < nodes_total, 'limit': lim,
+            'truncated': e_tr or len(nodes_shown) < nodes_total, 'limit': limit,
         }
-        return emit(env.ok(data, summary))
-    r.pretty_print(limit=lim)
-    return 0
+        return data, summary
+
+    def render_human(self, limit):
+        self.result.pretty_print(limit=limit)
+        return 0
+
+
+@dataclass
+class FlowSummaryOutput(agent_json.CommandResult):
+    """Typed result of ``fanin``/``fanout`` ``--summary``: counts, an
+    edges-by-depth histogram, and the direct neighbors — instead of the full
+    cone, which can be thousands of edges on a real design.
+
+    The histogram and direct-neighbor set are derived once (``__post_init__``)
+    and read by both renderers; this summary view intentionally omits the
+    ``truncated``/``limit`` envelope fields (the full graph is not emitted).
+    """
+    result: FlowResult
+    mode: str
+    scope: str
+    signal: str
+
+    def __post_init__(self):
+        rd = self.result.to_dict()
+        edges = rd['edges']
+        by_depth = {}
+        for e in edges:
+            d = int(e.get('depth', 0))
+            by_depth[d] = by_depth.get(d, 0) + 1
+        far = 'source' if self.mode == 'fanin' else 'target'
+        self.by_depth = by_depth
+        self.direct = sorted({e[far] for e in edges
+                              if int(e.get('depth', 0)) == 1})
+        self.node_count = len(rd['nodes'])
+        self.edge_count = len(edges)
+        self.max_depth = rd['max_depth']
+        self.start = rd['start']
+
+    def to_json(self, limit):
+        data = {
+            'mode': self.mode, 'scope': self.scope, 'signal': self.signal,
+            'start': self.start, 'summary_only': True,
+            'node_count': self.node_count, 'edge_count': self.edge_count,
+            'max_depth': self.max_depth,
+            'edges_by_depth': {str(k): self.by_depth[k]
+                               for k in sorted(self.by_depth)},
+            'direct': self.direct,
+        }
+        summary = {'mode': self.mode, 'results': 1, 'nodes': self.node_count,
+                   'edges': self.edge_count, 'max_depth': self.max_depth}
+        return data, summary
+
+    def render_human(self, limit):
+        C = Color
+        title = "FANIN" if self.mode == "fanin" else "FANOUT"
+        print(f"Signal: {C.bold(self.signal)}")
+        print(f"Mode:   {C.green(title + ' summary')}  "
+              f"{C.dim('depth <= ' + str(self.max_depth))}")
+        print(f"  nodes {C.yellow(str(self.node_count))}   "
+              f"edges {C.yellow(str(self.edge_count))}")
+        if self.by_depth:
+            print("  edges by depth: " +
+                  ", ".join(f"{k}:{self.by_depth[k]}"
+                            for k in sorted(self.by_depth)))
+        label = "direct sources" if self.mode == "fanin" else "direct sinks"
+        print(f"  {label} ({len(self.direct)}): "
+              + (", ".join(self.direct) or "(none)"))
+        return 0
+
+
+def run_flow(args, env, *, mode):
+    tracer, scope, signal, bit_range = _prepare(args, env, need_signal=True)
+    r = tracer.flow(signal, scope, mode, args.depth, bit_range=bit_range)
+    if getattr(args, 'summary', False):
+        out = FlowSummaryOutput(r, mode, scope, signal)
+    else:
+        out = FlowGraphOutput(r, mode, scope, signal)
+    return agent_json.render(env, out, agent_json.resolve_limit(args.limit))

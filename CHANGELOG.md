@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Unified the result → render seam across all six commands (internal).** Every
+  subcommand's `run()` used to fork on output mode — `if env: <emit JSON> else:
+  <print human>` — with each branch re-deriving the same totals down its own
+  path (the hierarchy `summary` was computed once for `tree --json` and again for
+  the human `--stats` table and footer; the lint severity/rule/check counts were
+  computed once for the JSON summary and again inside `print_summary`). Those
+  parallel derivations are exactly what drifts, which is why the
+  schema-conformance test exists. Each command now builds **one typed result**
+  (`TreeResult`, `TraceOutput`, `ScopeResult`, `FlowGraphOutput` /
+  `FlowSummaryOutput`, `LintResult`, `XrefModuleOutput` / `XrefSignalOutput`)
+  that derives every count/total **once**, paired with two pure renderers
+  (`to_json` / `render_human`) reading the same fields; `run()` ends with the
+  single shared seam `agent_json.render(env, result, limit)`. Pulls the weaker
+  `tree` / `scope` paths up to the `to_dict()` shape `signal_trace` / `lint`
+  already had. Purely structural — the human and `--json` output is unchanged
+  (verified byte-for-byte across all six commands).
+
 ## [0.3.0] - 2026-06-17
 
 ### Added
