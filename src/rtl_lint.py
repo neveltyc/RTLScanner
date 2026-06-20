@@ -326,7 +326,7 @@ class LintRunner:
                         "width_mismatch": "port-width-mismatch",
                     }.get(issue.kind, "port-connect")
                     findings.append(LintFinding(
-                        file=issue.file,
+                        file=self._rel(issue.file),
                         line=issue.line,
                         col=0,
                         severity=issue.severity,

@@ -126,7 +126,7 @@
         "module": "lint_demo"
       },
       {
-        "file": "examples/lint/lint_demo.sv",
+        "file": "./examples/lint/lint_demo.sv",
         "line": 40,
         "col": 0,
         "severity": "note",
