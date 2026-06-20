@@ -61,7 +61,7 @@ Examples:
   rtlscanner scope   -d ./rtl --scope top.u_dp
   rtlscanner fanin   -d ./rtl -s result --scope top.u_dp --depth 3
   rtlscanner fanout  -d ./rtl -s q --scope top.u_dp
-  rtlscanner lint    -d ./rtl --rules default,cdc
+  rtlscanner lint    -d ./rtl --rules cdc
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
 
 Configuration:
