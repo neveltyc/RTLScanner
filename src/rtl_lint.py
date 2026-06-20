@@ -109,6 +109,11 @@ class LintRunner:
         except Exception:
             pass
         self._root = (Path(root) if root else Path.cwd()).resolve()
+        # Sub-analysis failures (CDC / comb-loop / port / analysis pass)
+        # are collected here instead of only printed to stderr, so the
+        # CLI can surface them in the JSON envelope -- otherwise an agent
+        # reading `status` sees "ok" with silently-incomplete findings.
+        self.warnings = []
 
     # ── helpers ───────────────────────────────────────────────────────
 
@@ -293,7 +298,7 @@ class LintRunner:
                     if f is not None and f.check in cats:
                         findings.append(f)
             except Exception as e:
-                print(f"Warning: analysis pass failed: {e}", file=sys.stderr)
+                self.warnings.append(f"analysis pass failed: {e}")
 
         # 3. CDC — graph-based, cross-hierarchy clock-domain crossings.
         if "cdc" in cats:
@@ -302,7 +307,7 @@ class LintRunner:
                                   tracer=self._shared_tracer())
                 findings.extend(cdc.findings())
             except Exception as e:
-                print(f"Warning: CDC analysis failed: {e}", file=sys.stderr)
+                self.warnings.append(f"CDC analysis failed: {e}")
 
         # 4. Combinational loops — cycle detection on the non-sequential edges
         # of the same flow graph.
@@ -312,8 +317,7 @@ class LintRunner:
                                       tracer=self._shared_tracer())
                 findings.extend(cl.findings())
             except Exception as e:
-                print(f"Warning: combinational-loop analysis failed: {e}",
-                      file=sys.stderr)
+                self.warnings.append(f"combinational-loop analysis failed: {e}")
 
         # 5. Port connectivity — unconnected ports, port/connection width
         # mismatches on child instances.
@@ -335,7 +339,7 @@ class LintRunner:
                         check="port",
                     ))
             except Exception as e:
-                print(f"Warning: port connection analysis failed: {e}", file=sys.stderr)
+                self.warnings.append(f"port connection analysis failed: {e}")
 
         # Attribute every finding to its enclosing design unit.  The graph-based
         # analyzers (CDC, comb-loop) and the port-connect check build findings
@@ -829,8 +833,15 @@ def run(args, env):
         max_unroll=max_unroll,
     )
 
+    findings = runner.run()
+    for warning in runner.warnings:
+        if env is not None:
+            env.add_diagnostic("warning", message=warning)
+        else:
+            print(f"Warning: {warning}", file=sys.stderr)
+
     result = LintResult(
-        findings=runner.run(),
+        findings=findings,
         config_path=prepared.config_path,
         files_linted=len(filelist.sources),
     )
