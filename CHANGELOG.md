@@ -33,7 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the `SignalTracer` engine) — and *framed* it into each command's shape (the
   `trace` driver/load view, the `fanin`/`fanout` node/edge graph), with the
   rendering baked onto the result dataclasses. The mechanism now lives in a
-  standalone `rtl_dataflow` engine that emits a pure typed model (`TraceResult` /
+  standalone `rtl_dataflow` engine that emits a typed model (`TraceResult` /
   `FlowResult` / `FlowEdge` / `DriverInfo` / `LoadInfo`); the per-command
   rendering moves into thin command modules (`signal_trace` for `trace`,
   `signal_flow` for `fanin`/`fanout`) that only shape the model, over a shared

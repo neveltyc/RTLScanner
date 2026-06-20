@@ -19,5 +19,14 @@ dependencies = [
 rtlscanner = "rtlscanner:main"
 
 [tool.setuptools]
-py-modules = ["rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang", "signal_trace", "rtl_lint", "rtl_scope", "rtl_xref", "agent_json"]
+# Every top-level module under src/ must be listed here, or a non-editable
+# install (`pip install .` / wheel / PyPI) ships an incomplete package and the
+# `rtlscanner` entry point dies on first import.  Kept honest by
+# tests/test_packaging_modules.py.  Editable installs (`pip install -e .`) put
+# all of src/ on sys.path and would otherwise mask a missing entry.
+py-modules = [
+  "rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang",
+  "rtl_dataflow", "signal_cli", "signal_trace", "signal_flow",
+  "rtl_lint", "rtl_scope", "rtl_xref", "agent_json",
+]
 package-dir = {"" = "src"}
