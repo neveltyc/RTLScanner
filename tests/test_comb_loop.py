@@ -23,7 +23,7 @@ try:
     import pyslang.ast as ast  # noqa: F401  (availability guard)
     from rtl_common import build_compilation
     from rtl_lint import CombLoopAnalyzer
-    from signal_trace import SignalTracer
+    from rtl_dataflow import SignalTracer
     HAVE_PYSLANG = True
 except Exception:  # pragma: no cover
     HAVE_PYSLANG = False

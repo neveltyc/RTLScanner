@@ -24,6 +24,7 @@ from rtl_common import Color
 
 import rtl_tree
 import signal_trace
+import signal_flow
 import rtl_lint
 import rtl_xref
 import rtl_scope
@@ -36,11 +37,11 @@ SUBCOMMANDS = {
                 "Trace a signal's driver and loads"),
     "scope":   (rtl_scope.add_arguments,        rtl_scope.run,
                 "Show direct contents of an elaborated scope"),
-    "fanin":   (signal_trace.add_flow_args,
-                lambda a, e: signal_trace.run_flow(a, e, mode="fanin"),
+    "fanin":   (signal_flow.add_flow_args,
+                lambda a, e: signal_flow.run_flow(a, e, mode="fanin"),
                 "Walk upstream dataflow BFS from a signal"),
-    "fanout":  (signal_trace.add_flow_args,
-                lambda a, e: signal_trace.run_flow(a, e, mode="fanout"),
+    "fanout":  (signal_flow.add_flow_args,
+                lambda a, e: signal_flow.run_flow(a, e, mode="fanout"),
                 "Walk downstream dataflow BFS from a signal"),
     "lint":    (rtl_lint.add_arguments,        rtl_lint.run,
                 "Static scan: semantic + unused + port + cdc + comb-loop"),
