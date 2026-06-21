@@ -228,7 +228,13 @@ own combinational D-cone (with the `clocked` D→Q edge as the boundary). Becaus
 registers bound the cone, `--comb` defaults to **unbounded** depth (`max_depth`
 then reports the deepest hop reached); pass an explicit `--depth N` to cap it.
 A `clocked: true` edge marks the registered boundary; `--comb` reports a
-`comb: true` flag in JSON.
+`comb: true` flag in JSON. (`--depth` reports as `null` in the `command` echo
+when left at its default — the effective bound is always `data.max_depth`.)
+
+The boundary is at signal granularity: a node with **any** registered driver is
+a boundary, so a signal that is part-`assign`ed and part-latched is excluded
+whole rather than split — a conservative simplification that never crosses a
+flop (slang-netlist, with bit-split state, would keep the combinational bits).
 
 **Bit-level dataflow.** Edges carry the bit sub-range each read/drive touches
 (`source_bits` / `target_bits` in JSON, e.g. `top.a[2] → top.dout[5]`), so the

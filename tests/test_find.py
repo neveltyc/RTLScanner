@@ -103,6 +103,22 @@ class FindAnalyzerMatching(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
+class FindGenerateArray(unittest.TestCase):
+    """Matching is over *elaborated* paths, so every generate-array element is
+    its own node — the design-wide reach a scope-local or source query lacks."""
+
+    def test_recursive_glob_finds_each_genblock_instance(self):
+        fa = FindAnalyzer(_compile("examples", "generate"))
+        got = [n.hierarchical_path
+               for n in fa.find("**.u_gen_leaf", regex=False, kind="instance")]
+        self.assertEqual(got, [
+            "gen_top.u_mid.gen_arr[0].u_gen_leaf",
+            "gen_top.u_mid.gen_arr[1].u_gen_leaf",
+            "gen_top.u_mid.gen_arr[2].u_gen_leaf",
+        ])
+
+
+@unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
 class FindEnvelope(unittest.TestCase):
     def test_json_envelope_and_summary(self):
         rc, env = _run_json("find", "-d", "examples/basic", "-p", "**.q",

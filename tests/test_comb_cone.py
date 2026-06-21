@@ -14,6 +14,8 @@ means "target of a clocked edge":
   * ``--comb`` changes nothing about the default (full) traversal.
 """
 
+import json
+import subprocess
 import sys
 import tempfile
 import textwrap
@@ -22,6 +24,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
+
+RTLSCANNER = [sys.executable, "-m", "rtlscanner"]
 
 try:
     import pyslang.ast as ast  # noqa: F401  (availability guard)
@@ -142,6 +146,69 @@ class CombDepthAndTermination(unittest.TestCase):
         comb = tr.flow("a", "loop", "fanout", None, comb=True)
         self.assertIn(("a", "b"), _pairs(comb))
         self.assertIn(("b", "a"), _pairs(comb))
+
+
+@unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
+class CombWithBitSelect(unittest.TestCase):
+    """``--comb`` preserves bit-level dataflow: the cone of one bit still maps
+    across each hop, narrowed to the edges touching those bits."""
+
+    BSEL = textwrap.dedent("""
+        module bsel(input logic clk, input logic [7:0] x, y,
+                    output logic [7:0] s);
+          logic [7:0] r;
+          assign s[7:4] = x[7:4];            // upper nibble from x (comb)
+          assign s[3:0] = r[3:0];            // lower nibble from a flop
+          always_ff @(posedge clk) r <= y;   // y -> r  (clocked boundary)
+        endmodule
+        """)
+
+    def test_bit_select_narrows_the_comb_cone(self):
+        tr = _tracer(self.BSEL)
+        # s[7] is fed combinationally by x; the comb cone reaches x, not r/y.
+        hi = tr.flow("s", "bsel", "fanin", None, bit_range=(7, 7), comb=True)
+        self.assertIn("x", _nodes(hi))
+        self.assertNotIn("r", _nodes(hi))
+        self.assertNotIn("y", _nodes(hi))
+        # s[3] is fed by the register r: r is a boundary, so the comb cone of
+        # s[3] stops at it (r excluded, x absent) and carries no clocked edge.
+        lo = tr.flow("s", "bsel", "fanin", None, bit_range=(3, 3), comb=True)
+        self.assertNotIn("r", _nodes(lo))
+        self.assertNotIn("x", _nodes(lo))
+        self.assertFalse(any(e.clocked for e, _ in lo.edges))
+
+
+@unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")
+class CombCliOutput(unittest.TestCase):
+    """End-to-end output paths advertise the combinational cone (JSON + human,
+    full graph + --summary)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = Path(tempfile.mkdtemp()) / "comb.sv"
+        cls.src.write_text(PIPE)
+
+    def _run(self, subcmd, *args):
+        return subprocess.run(RTLSCANNER + [subcmd, str(self.src), *args],
+                              cwd=ROOT, text=True, stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE)
+
+    def test_summary_carries_comb_flag(self):
+        p = self._run("fanin", "-s", "q", "--scope", "dut", "--comb",
+                      "--summary", "--json")
+        d = json.loads(p.stdout)["data"]
+        self.assertTrue(d["summary_only"])
+        self.assertTrue(d["comb"])
+        self.assertGreater(d["edge_count"], 0)
+
+    def test_full_graph_carries_comb_flag(self):
+        p = self._run("fanin", "-s", "q", "--scope", "dut", "--comb", "--json")
+        self.assertTrue(json.loads(p.stdout)["data"]["comb"])
+
+    def test_human_output_marks_the_cone(self):
+        p = self._run("fanin", "-s", "q", "--scope", "dut", "--comb",
+                      "--no-color")
+        self.assertIn("combinational cone", p.stdout)
 
 
 @unittest.skipUnless(HAVE_PYSLANG, "pyslang not installed")

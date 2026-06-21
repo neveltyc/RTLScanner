@@ -1835,7 +1835,15 @@ class SignalTracer:
         ``State`` node: the boundary a combinational cone stops at.  Resolved
         lazily from the node's own incident edges (the same ``clocked`` flag the
         whole engine keys off) and memoized, so combinational queries stay
-        demand-driven instead of materializing the whole flow graph."""
+        demand-driven instead of materializing the whole flow graph.
+
+        The test is at *signal* granularity: a node with **any** clocked driver
+        is a boundary, even if some of its bits are driven combinationally (a
+        signal that is part-latched, part-`assign`ed).  Such a node is then
+        excluded from a combinational cone whole, dropping the genuinely
+        combinational sub-range — rare in practice, and the conservative call
+        keeps the boundary simple and never *crosses* a sequential element.
+        (slang-netlist, whose State nodes are bit-split, keeps those bits.)"""
         cached = self._registered_cache.get(node)
         if cached is not None:
             return cached
