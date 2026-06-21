@@ -16,6 +16,7 @@ Use `rtlscanner <subcommand>`:
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
 | `lint`     | Static linter (semantic + analysis + port checks) | Code review / CI |
 | `xref`     | Symbol definitions and references         | Simulation / debug / code review |
+| `batch`    | Run many of the above against one loaded design | Agent / scripted workflows |
 
 ## Install
 
@@ -376,6 +377,58 @@ that exists only through a constant-false `if`/`case` dead branch is not reporte
 - `0` — no error-level findings
 - `1` — one or more error-level findings
 - `2` — usage / source error (e.g. an unknown `--rules` category)
+
+## `rtlscanner batch` — many queries, one load
+
+Every other subcommand parses **and elaborates** the whole design before
+answering one question. When you have several questions about the *same*
+design, that parse/elaborate cost — which dominates on a large design — is paid
+once per process. `batch` pays it once for all of them:
+
+```bash
+rtlscanner batch [input-opts] [--json] [--limit N] [--commands FILE] < queries.txt
+rtlscanner batch -d ./rtl --json < queries.txt
+```
+
+The design is loaded **once** from the input options on the `batch` line
+(`-d` / `-f` / files / `--exclude` / `--config` / `--single-unit`); each line on
+stdin is then one query — a subcommand and its own flags — run against that one
+loaded design:
+
+```
+tree
+scope --scope top.u_dp0
+trace -s q --scope top.u_dp0   # the q register
+fanin -s result --scope top.u_dp --depth 3
+lint --rules cdc
+# a full-line comment is skipped; so is a blank line
+```
+
+Lines are shell-tokenized; a trailing `#` (at a word boundary) starts a
+**label** that becomes the result `id` (otherwise a 1-based sequence number is
+used). Per line you give only the subcommand's own flags plus an optional
+`--limit` override — the input options and `--json` are fixed by the `batch`
+line.
+
+With `--json`, each query emits one compact JSON object per line (JSONL),
+flushed as it finishes:
+
+```json
+{"id":"1","ok":true,"result":{ /* the command's normal --json envelope */ }}
+{"id":"the q register","ok":true,"result":{ /* ... */ }}
+{"id":"4","ok":false,"error":"signal 'nope' not found in scope 'top.u_dp0'; ..."}
+```
+
+A batch `result` is **identical** to what the equivalent single command would
+produce — `batch` only saves the repeated load, it never changes a command's
+output. Without `--json`, each query prints a `# <id>` header followed by the
+command's normal text.
+
+**A failing query never stops the batch**, and the run still exits `0` — read
+each frame's `ok` field. A non-zero exit means the design itself could not be
+loaded (bad inputs / no sources), surfaced as a single error envelope **before**
+any line is read. `--commands FILE` reads the query lines from a file instead of
+stdin (`-` means stdin).
 
 ## Agent / JSON Mode
 

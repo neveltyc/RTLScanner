@@ -36,9 +36,13 @@ rtlscanner fanin   --schema > schemas/fanin.schema.json
 rtlscanner fanout  --schema > schemas/fanout.schema.json
 rtlscanner lint    --schema > schemas/lint.schema.json
 rtlscanner xref    --schema > schemas/xref.schema.json
+rtlscanner batch   --schema > schemas/batch.schema.json   # streaming-frame shape, not an envelope
 ```
 
-Pre-generated schemas live in `examples/agent/schemas/`.
+Pre-generated schemas live in `examples/agent/schemas/`. Note `batch` streams one
+JSONL frame per query (`{id, ok, result}`) rather than a single envelope, so its
+schema describes that frame; each frame's `result` is one of the per-tool
+envelopes above.
 
 ## Error envelopes
 

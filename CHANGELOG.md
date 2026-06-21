@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`batch` subcommand — many queries against one loaded design.** Every other
+  subcommand parses + elaborates the whole design before answering one question,
+  so an agent asking ten questions pays that cost ten times across ten
+  processes. `rtlscanner batch [input-opts] --json < queries.txt` loads the
+  design **once** (from the input options on the `batch` line) and then runs one
+  query per stdin line — `<subcmd> [flags]  # optional-label`, shell-tokenized —
+  against it, streaming one compact JSONL frame per query
+  (`{"id":…,"ok":…,"result":…}`, flushed as each finishes; a `# label` sets the
+  `id`, else a 1-based sequence number). A batch `result` is byte-identical to
+  the equivalent single command's `--json` envelope — `batch` only amortizes the
+  load. A failing query is isolated (`{"ok":false,"error":…}`) and the run still
+  exits `0`; a non-zero exit means the design itself could not be loaded
+  (surfaced before any line is read). Ports RWaveAnalyzer's `--batch` mode. Both
+  reuse seams are shared and non-invasive: `rtl_cli.prepare_compilation`
+  short-circuits on an injected `_prepared` compilation (load once) and
+  `agent_json.emit` grows an opt-in capture sink (`capture_emit`) so each
+  command's envelope can be re-framed — no per-command changes. Text mode prints
+  a `# <id>` header before each command's normal output. New module
+  `src/rtl_batch.py`; schema via `rtlscanner batch --schema`.
+
 ### Changed
 
 - **Unified the result → render seam across all six commands (internal).** Every
