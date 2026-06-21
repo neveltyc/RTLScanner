@@ -610,6 +610,12 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
                               "bit-select (e.g. '[5]', '[7:4]'): the traversal "
                               "follows only edges touching those bits and maps "
                               "the range across each hop (bit-level dataflow)."},
+                "comb":      {"type": "boolean",
+                              "description": "Present and true when --comb was "
+                              "used: the BFS stopped at sequential (clocked) "
+                              "edges, so the cone is the pure combinational "
+                              "fan-in/out bounded by flip-flops. max_depth then "
+                              "reports the deepest hop the cone reached."},
                 "start":     {"type": "string",
                               "description": "Elaborated hierarchical path of the starting signal."},
                 "max_depth": {"type": "integer"},
@@ -1013,6 +1019,83 @@ _XREF_SCHEMA = _envelope_schema(
     },
 )
 
+# ── rtl-find ──
+_FIND_NODE = {
+    "type": "object",
+    "required": ["category", "name", "kind", "hierarchical_path"],
+    "properties": {
+        "category":          {"type": "string", "enum": ["signal", "instance"],
+                              "description": "Coarse node category (the --kind "
+                              "vocabulary)."},
+        "name":              {"type": "string", "description": "Leaf name."},
+        "kind":              {"type": "string",
+                              "description": "Elaborated SymbolKind name "
+                              "(Net / Variable / Instance / ...)."},
+        "hierarchical_path": {"type": "string",
+                              "description": "Full path that matched the pattern."},
+        "type":              {"type": "string",
+                              "description": "Signal data type; present for "
+                              "signal nodes."},
+        "module":            {"type": "string",
+                              "description": "Elaborated module name; present for "
+                              "instance nodes."},
+        "file":              {"type": "string"},
+        "line":              {"type": "integer"},
+        "column":            {"type": "integer"},
+        "location": {
+            "type": "object",
+            "required": ["file", "line", "column"],
+            "properties": {
+                "file":   {"type": "string"},
+                "line":   {"type": "integer"},
+                "column": {"type": "integer"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "additionalProperties": True,
+}
+
+_FIND_SCHEMA = _envelope_schema(
+    "find",
+    data_schema={
+        "type": "object",
+        "required": ["mode", "pattern", "matches"],
+        "properties": {
+            "mode":        {"type": "string", "const": "find"},
+            "pattern":     {"type": "string", "description": "The query pattern."},
+            "regex":       {"type": "boolean",
+                            "description": "True when PATTERN was a regex "
+                            "(whole-path match); false for the segment-aware glob."},
+            "kind":        {"type": "string", "enum": ["all", "signal", "instance"]},
+            "scope":       {"type": "string",
+                            "description": "Scope the search was restricted to "
+                            "(empty = whole design)."},
+            "matches":     {"type": "array", "items": _FIND_NODE},
+            "match_count": {"type": "integer",
+                            "description": "True total match count, even when "
+                            "`matches` was capped by --limit."},
+        },
+        "additionalProperties": True,
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["mode", "matches"],
+        "properties": {
+            "mode":      {"type": "string"},
+            "matches":   {"type": "integer"},
+            "signals":   {"type": "integer"},
+            "instances": {"type": "integer"},
+        },
+    },
+    description=("Stable agent-mode JSON envelope produced by `rtlscanner find "
+                 "--json`. `find` walks the whole elaborated design and reports "
+                 "every signal/instance node whose hierarchical path matches the "
+                 "glob (default) or regex (`--regex`) PATTERN, each with its "
+                 "source location — the slang-netlist `--find` analogue. Narrow "
+                 "with `--kind signal|instance` and `--scope`."),
+)
+
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "tree":    _TREE_SCHEMA,
     "trace":   _TRACE_SCHEMA,
@@ -1021,6 +1104,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "fanout":  _FANOUT_SCHEMA,
     "lint":    _LINT_SCHEMA,
     "xref":    _XREF_SCHEMA,
+    "find":    _FIND_SCHEMA,
 }
 
 

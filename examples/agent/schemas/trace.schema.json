@@ -74,7 +74,7 @@
                   },
                   "bit_select": {
                     "type": "string",
-                    "description": "Present when the query used a bit-select (e.g. '[3]', '[7:4]'): drivers are narrowed to that range and loads are omitted (a driver-origin query)."
+                    "description": "Present when the query used a bit-select (e.g. '[3]', '[7:4]'): both drivers and loads are narrowed to the readers/writers that actually touch those bits."
                   },
                   "driver": {
                     "oneOf": [
@@ -180,6 +180,10 @@
                         },
                         "direction": {
                           "type": "string"
+                        },
+                        "bits": {
+                          "type": "string",
+                          "description": "Bit sub-range of the signal this load reads ('[3]' / '[7:4]'); absent when it reads the whole signal."
                         },
                         "file": {
                           "type": "string"

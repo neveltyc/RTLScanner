@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`find` — design-wide node lookup by glob/regex.** A new subcommand that scans
+  the **whole elaborated design** and reports every signal / instance node whose
+  hierarchical path matches a pattern, with its source location — the
+  slang-netlist `--find` / `--find-regex` analogue. It complements `xref` (which
+  looks up *one exact name*) and `tree --filter` (which narrows a single view):
+  `find` is how you *discover* the nodes — by a naming pattern you know rather
+  than a path you don't — to then feed into `trace`/`fanin`/`fanout`/`xref`. The
+  default pattern is a segment-aware glob (`*` within a `.`-segment, `**`/`...`
+  recursive across segments, `?` one char) ported faithfully from slang-netlist's
+  `wildcardMatch`; `--regex` switches to a whole-path Python regex. `--kind
+  signal|instance` and `--scope` narrow the search. Because matching is over
+  elaborated paths, identical sibling/generate instances each match with their own
+  path. Ships a JSON schema (`find --schema`) and the shared agent envelope.
+
+- **Combinational-cone mode for `fanin`/`fanout` (`--comb`).** Stops the dataflow
+  BFS at sequential (registered) edges, yielding the *pure combinational*
+  fan-in/out bounded by flip-flops — the cone slang-netlist's `--fan-in` /
+  `--fan-out` report (its `getCombFanIn`/`getCombFanOut`, whose DFS refuses to
+  enter a register/`State` node). This is the cone for timing-path reasoning. A
+  register *node* is the boundary, so boundary flops are excluded — except the
+  starting signal, which is always expanded, so a `--comb fanin` from a register
+  output still reports that flop's own combinational D-cone (the `clocked` D→Q
+  edge marks the boundary). Reuses the `clocked` edge information already on the
+  flow graph (no new analysis). Because registers bound the cone, `--comb`
+  defaults to **unbounded** depth (`max_depth` then reports the deepest hop
+  reached); an explicit `--depth N` still caps it. JSON output carries a
+  `comb: true` flag.
+
 ### Changed
 
 - **Unified the result → render seam across all six commands (internal).** Every

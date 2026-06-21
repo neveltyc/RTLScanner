@@ -5,7 +5,7 @@ description: Static SystemVerilog/Verilog RTL inspection, lint, and dataflow ana
 
 # RTLScanner — agent skill
 
-`rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into seven
+`rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into eight
 query subcommands over RTL *source* (no simulation). **Always pass `--json` from an
 agent.** The README documents the full CLI surface, the per-command output schema, the
 config file, and the lint rule catalog; this file covers only what you need to drive
@@ -38,6 +38,7 @@ rtlscanner --help
 | Upstream dataflow (where does this value come from) | `fanin -s N --scope S` | `data.nodes[]`, `data.edges[]` (source→target, kind, depth, file, line) |
 | Downstream dataflow (what does this value reach) | `fanout -s N --scope S` | same shape as `fanin` |
 | Where a signal/module is declared and referenced | `xref` | `data.matches[].{definitions,references}`; `summary.{definitions,references,reads,writes,port_connections}` |
+| Find every node matching a name *pattern* across the design | `find -p PAT` | `data.matches[]` (name, kind, hierarchical_path, file/line/column); `summary.{matches,signals,instances}` |
 | Compile / lint findings (widths, unused, latches, CDC, ports) | `lint` | `data.findings[]` (file, line, col, severity, rule, message); `summary.by_rule`, `summary.has_error` |
 
 ## Common calls
@@ -50,6 +51,8 @@ rtlscanner trace  -f rtl.f -s ready --scope top.u_dma --json
 rtlscanner fanin  -f rtl.f -s data_out --scope top.u_pipe --depth 6 --json
 rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
 rtlscanner xref   -f rtl.f --module fifo --json
+rtlscanner find   -f rtl.f -p 'top.**.u_fifo*' --json  # nodes matching a pattern
+rtlscanner fanin  -f rtl.f -s data_q --scope top.u_pipe --comb --json  # pure comb cone
 rtlscanner lint   -f rtl.f --json                      # all five categories
 rtlscanner lint   -f rtl.f --rules unused,cdc --json   # narrow to a subset
 rtlscanner lint   -f rtl.f --json > lint.json          # full result; read summary for counts
@@ -143,5 +146,14 @@ are no `--skip` / `--waive` / `--strict` / `--min-severity` knobs.
   `--depth 1` gives just the immediate drivers/loads. Procedural edges are per-statement (an
   assignment's RHS feeds only its own LHS), so `--depth 1` is the true direct fan-in, not
   every co-sensitive signal. `--depth` defaults to 4; raise it for deeper cones.
+- **Combinational cone with `--comb`.** `fanin`/`fanout --comb` stops at sequential
+  (clocked) edges — the pure combinational cone bounded by flip-flops (slang-netlist
+  `getCombFan` parity), for timing-path reasoning. Register *boundaries* are excluded, but a
+  `--comb fanin` from a register output still walks that flop's own D-cone. It defaults to
+  unbounded depth (registers bound it); pass `--depth N` to cap. JSON carries `comb: true`.
+- **`find` discovers nodes by pattern.** When you know a naming pattern but not exact paths,
+  `find -p '<glob>'` (or `--regex`) scans the whole design and returns matching signal/instance
+  paths + locations — then feed those into `trace`/`fanin`/`xref`. `*` stays within one `.`
+  segment; `**`/`...` cross segments. `--kind signal|instance` and `--scope` narrow it.
 - **Dump a contract** with `rtlscanner <subcmd> --schema` (draft-07 JSON Schema) when
   you need the exact field list for a command.

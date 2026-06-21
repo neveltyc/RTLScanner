@@ -236,6 +236,9 @@ class FlowResult:
     edges: list = field(default_factory=list)
     max_depth: int = 0
     bit_range: Optional[tuple] = None   # (lo, hi) when a bit-select was queried
+    # Combinational-cone mode: the BFS stopped at sequential (clocked) edges, so
+    # the cone is the pure combinational cloud bounded by register edges.
+    comb: bool = False
 
     @property
     def nodes(self):
@@ -295,6 +298,7 @@ class SignalTracer:
         self._owner_cache = {}         # node path -> owning InstanceSymbol
         self._flow_index_cache = {}    # inst path -> (by_source, by_target)
         self._proc_index_cache = {}    # inst path -> proc-only (by_src, by_tgt)
+        self._registered_cache = {}    # node path -> bool (driven by a flop)
         # Upward / lateral hierarchical procedural references anchor at the
         # *referencing* instance, so they are invisible from the referenced
         # side's owner/ancestor lookup.  Recovered via a one-time index that is
@@ -1825,7 +1829,23 @@ class SignalTracer:
         # Non-copy (arithmetic / reduction): fall to the far-side bits.
         return edge.source_bits if mode == "fanin" else edge.target_bits
 
-    def flow(self, signal_name, scope_path, mode, max_depth=4, bit_range=None):
+    def _is_registered(self, node):
+        """True when ``node`` is a register — driven by a sequential (clocked)
+        procedure, i.e. the target of a clocked edge.  This is slang-netlist's
+        ``State`` node: the boundary a combinational cone stops at.  Resolved
+        lazily from the node's own incident edges (the same ``clocked`` flag the
+        whole engine keys off) and memoized, so combinational queries stay
+        demand-driven instead of materializing the whole flow graph."""
+        cached = self._registered_cache.get(node)
+        if cached is not None:
+            return cached
+        val = any(e.clocked and e.target == node
+                  for e in self._incident_edges(node, "fanin"))
+        self._registered_cache[node] = val
+        return val
+
+    def flow(self, signal_name, scope_path, mode, max_depth=4, bit_range=None,
+             comb=False):
         inst, sym = self._lookup(signal_name, scope_path)
         self._check_bit_range(sym, signal_name, bit_range)
 
@@ -1833,6 +1853,15 @@ class SignalTracer:
         # Match the query to slang's internal bit numbering (identity for
         # little-endian); the declared bit_range is kept on FlowResult for display.
         sel = self._to_internal(sym, bit_range)
+
+        # ``max_depth is None`` means *unbounded*: walk until the frontier dries
+        # up.  A combinational cone (``comb``) defaults to this — the cone is
+        # bounded by registers, not by a hop count — and still terminates because
+        # the design is finite and ``seen_nodes`` caps any feedback through
+        # combinational loops.
+        unbounded = max_depth is None
+        if not unbounded:
+            max_depth = max(0, int(max_depth))
 
         # Demand-driven, bit-aware BFS: the frontier carries (node, range) where
         # range is the bits still of interest (None = whole signal).  An edge is
@@ -1846,12 +1875,22 @@ class SignalTracer:
         seen_nodes = {(start, sel)}
         frontier = [(start, sel)]
         depth = 0
-        max_depth = max(0, int(max_depth))
-        while frontier and depth < max_depth:
+        while frontier and (unbounded or depth < max_depth):
             depth += 1
             next_frontier = []
             for node, rng in frontier:
                 for edge in self._incident_edges(node, mode):
+                    far = edge.source if mode == "fanin" else edge.target
+                    # Combinational cone: a register node is a sequential
+                    # boundary, so don't cross into it — exactly slang-netlist's
+                    # getCombFan{In,Out}, whose DFS predicate refuses to enter a
+                    # State node (source != State for fan-in, target != State for
+                    # fan-out).  The start is the BFS seed (always expanded), so a
+                    # register *start* still yields its own combinational D-cone /
+                    # fan-out; only register nodes reached as neighbors terminate
+                    # the cone (and are themselves excluded).
+                    if comb and self._is_registered(far):
+                        continue
                     nxt_rng = self._map_range(edge, rng, mode)
                     if nxt_rng is self._NO_OVERLAP:
                         continue
@@ -1876,11 +1915,17 @@ class SignalTracer:
         traversed = [(edge.trimmed_to(edge_rngs[edge.key()], mode), depth)
                      for (edge, depth) in traversed]
 
+        # Report the depth bound that was in force: the requested cap, or — when
+        # unbounded — the deepest hop the cone actually reached.
+        result_max_depth = (max((d for _e, d in traversed), default=0)
+                            if unbounded else max_depth)
+
         return FlowResult(
             mode=mode, signal_name=signal_name, signal_type=str(sym.type),
             signal_kind=sym.kind.name, scope_path=scope_path,
             scope_module=inst.body.name, start=start,
-            edges=traversed, max_depth=max_depth, bit_range=bit_range,
+            edges=traversed, max_depth=result_max_depth, bit_range=bit_range,
+            comb=comb,
         )
 
     # ── clock / sequential classification ─────────────────────────────

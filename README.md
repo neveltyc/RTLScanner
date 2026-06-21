@@ -16,6 +16,7 @@ Use `rtlscanner <subcommand>`:
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
 | `lint`     | Static linter (semantic + analysis + port checks) | Code review / CI |
 | `xref`     | Symbol definitions and references         | Simulation / debug / code review |
+| `find`     | Design-wide node lookup by glob/regex pattern | Architecture / debug |
 
 ## Install
 
@@ -208,6 +209,27 @@ A cone can be large on a real design. `--summary` replaces the full
 `nodes`/`edges` with counts, an `edges_by_depth` histogram, and the `direct`
 (depth-1) neighbors — the agent-friendly view.
 
+**Combinational cone (`--comb`).** Stops the BFS at sequential (registered)
+edges, so the result is the *pure combinational* fan-in/out bounded by
+flip-flops — the same cone slang-netlist's `--fan-in`/`--fan-out` report (its
+`getCombFanIn`/`getCombFanOut`, which refuse to enter a register/`State` node).
+This is the cone for timing-path reasoning: "what combinational logic feeds this
+register's D", "where does this signal go before the next flop".
+
+```bash
+rtlscanner fanin  -d ./rtl -s data_q --scope top.u_pipe --comb   # comb logic into the flop's D
+rtlscanner fanout -d ./rtl -s sel    --scope top.u_dp   --comb   # where sel goes before a register
+```
+
+A register *node* is the boundary: the cone never crosses **into** one, so the
+boundary flops are excluded — except the starting signal, which is always
+expanded, so a `--comb fanin` from a register output still reports that flop's
+own combinational D-cone (with the `clocked` D→Q edge as the boundary). Because
+registers bound the cone, `--comb` defaults to **unbounded** depth (`max_depth`
+then reports the deepest hop reached); pass an explicit `--depth N` to cap it.
+A `clocked: true` edge marks the registered boundary; `--comb` reports a
+`comb: true` flag in JSON.
+
 **Bit-level dataflow.** Edges carry the bit sub-range each read/drive touches
 (`source_bits` / `target_bits` in JSON, e.g. `top.a[2] → top.dout[5]`), so the
 graph answers *which bit comes from which*. A `-s` bit-select then traverses
@@ -377,6 +399,47 @@ that exists only through a constant-false `if`/`case` dead branch is not reporte
 - `1` — one or more error-level findings
 - `2` — usage / source error (e.g. an unknown `--rules` category)
 
+## `rtlscanner find` — design-wide node lookup
+
+```bash
+rtlscanner find -d ./rtl -p 'top.**.u_fifo*'          # every u_fifo* anywhere
+rtlscanner find -d ./rtl -p '*_valid' --kind signal    # signals named *_valid
+rtlscanner find -d ./rtl -p 'top.u_*' --kind instance  # direct children of top
+rtlscanner find -d ./rtl --regex -p '.*\.state'        # regex over the whole path
+rtlscanner find -d ./rtl -p '**' --scope top.u_ctrl    # everything under one scope
+```
+
+`xref` looks up *one exact name*; `find` is the complement — it scans the
+**whole elaborated design** and reports every node whose hierarchical path
+matches a pattern, with its source location. It is the slang-netlist `--find` /
+`--find-regex` analogue: the way to discover the nodes to then feed into
+`trace`/`fanin`/`fanout`/`xref` when you only know a naming pattern, not the
+exact path.
+
+Each match reports the leaf `name`, the elaborated `kind` (`Net` / `Variable` /
+`Instance`), the matched `hierarchical_path`, the `type` (signal) or `module`
+(instance), and the `file`/`line`/`column`. Because matching is over elaborated
+paths, identical sibling and generate-array instances each match with their own
+path (`top.u_dp0.q` **and** `top.u_dp1.q`).
+
+`--kind` narrows to `signal` (nets/variables, including ports and registers) or
+`instance`; the default `all` returns both. `--scope` restricts the search to
+one subtree.
+
+**Pattern syntax.** The default is a segment-aware **glob** (paths are
+dot-separated segments):
+
+| Pattern | Matches |
+|---------|---------|
+| `*`     | zero or more characters **within** one segment (never crosses `.`) |
+| `**` or `...` | zero or more characters **across** segments (recursive) |
+| `?`     | exactly one character within a segment (never `.`) |
+
+A recursive wildcard next to a literal `.` makes that `.` an optional boundary,
+so `a.**.b` matches `a.b`, `a.x.b`, and `a.x.y.b` alike — identical to
+slang-netlist's `wildcardMatch`. `--regex` switches to a Python regex matched
+against the whole path (`re.fullmatch`).
+
 ## Agent / JSON Mode
 
 All subcommands accept `--json`, producing a single uniform envelope:
@@ -450,6 +513,6 @@ appended to human-mode error messages.
 | Area | Files |
 |------|-------|
 | CLI and JSON envelope | `src/rtlscanner.py`, `src/rtl_cli.py`, `src/agent_json.py` |
-| Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py` |
-| RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_xref.py` |
+| Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py`, `src/rtl_glob.py` |
+| RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_xref.py`, `src/rtl_find.py` |
 | Agent examples and contracts | `examples/agent/` |

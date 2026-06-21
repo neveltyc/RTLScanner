@@ -1,0 +1,166 @@
+{
+  "tool": "fanin",
+  "version": "0.3.0",
+  "status": "ok",
+  "command": {
+    "cmd": "fanin",
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "single_unit": false,
+    "signal": "y0",
+    "scope": "top",
+    "depth": null,
+    "comb": true,
+    "summary": false,
+    "unroll": null,
+    "max_unroll": null
+  },
+  "data": {
+    "mode": "fanin",
+    "scope": "top",
+    "signal": "y0",
+    "start": "top.y0",
+    "nodes": [
+      "top.y0",
+      "top.u_dp0.y",
+      "top.u_dp0.u_alu.y",
+      "top.u_dp0.u_alu.u_add.y",
+      "top.u_dp0.u_alu.u_add.a",
+      "top.u_dp0.u_alu.u_add.b",
+      "top.u_dp0.u_alu.a",
+      "top.u_dp0.u_alu.b",
+      "top.u_dp0.q",
+      "top.u_dp0.b",
+      "top.b"
+    ],
+    "edges": [
+      {
+        "source": "top.u_dp0.y",
+        "target": "top.y0",
+        "kind": "port_connection",
+        "description": "u_dp0.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 60,
+        "depth": 1
+      },
+      {
+        "source": "top.u_dp0.u_alu.y",
+        "target": "top.u_dp0.y",
+        "kind": "port_connection",
+        "description": "u_alu.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45,
+        "depth": 2
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.y",
+        "target": "top.u_dp0.u_alu.y",
+        "kind": "port_connection",
+        "description": "u_add.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24,
+        "depth": 3
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.a",
+        "target": "top.u_dp0.u_alu.u_add.y",
+        "kind": "continuous_assign",
+        "description": "assign",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 16,
+        "depth": 4
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.b",
+        "target": "top.u_dp0.u_alu.u_add.y",
+        "kind": "continuous_assign",
+        "description": "assign",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 16,
+        "depth": 4
+      },
+      {
+        "source": "top.u_dp0.u_alu.a",
+        "target": "top.u_dp0.u_alu.u_add.a",
+        "kind": "port_connection",
+        "description": "u_add.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24,
+        "depth": 5
+      },
+      {
+        "source": "top.u_dp0.u_alu.b",
+        "target": "top.u_dp0.u_alu.u_add.b",
+        "kind": "port_connection",
+        "description": "u_add.b input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24,
+        "depth": 5
+      },
+      {
+        "source": "top.u_dp0.q",
+        "target": "top.u_dp0.u_alu.a",
+        "kind": "port_connection",
+        "description": "u_alu.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45,
+        "depth": 6
+      },
+      {
+        "source": "top.u_dp0.b",
+        "target": "top.u_dp0.u_alu.b",
+        "kind": "port_connection",
+        "description": "u_alu.b input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45,
+        "depth": 6
+      },
+      {
+        "source": "top.b",
+        "target": "top.u_dp0.b",
+        "kind": "port_connection",
+        "description": "u_dp0.b input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 60,
+        "depth": 7
+      }
+    ],
+    "max_depth": 7,
+    "comb": true
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "fanin",
+    "results": 1,
+    "nodes": 11,
+    "edges": 10,
+    "max_depth": 7,
+    "truncated": false,
+    "limit": 200
+  }
+}

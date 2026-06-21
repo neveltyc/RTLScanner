@@ -65,7 +65,16 @@ def _flow_to_dict(r):
     )
     if r.bit_range is not None:
         d['bit_select'] = bit_label(r.bit_range)
+    if r.comb:
+        d['comb'] = True
     return d
+
+
+def _mode_line(title, max_depth, comb):
+    C = Color
+    tag = C.dim(' · combinational cone') if comb else ''
+    return (f"Mode:   {C.green(title)}  "
+            f"{C.dim('depth <= ' + str(max_depth))}{tag}")
 
 
 def _flow_pretty(r, limit=0):
@@ -74,7 +83,7 @@ def _flow_pretty(r, limit=0):
     name = r.signal_name + (bit_label(r.bit_range) if r.bit_range else "")
     print(f"Signal: {C.bold(name)}  {C.dim(r.signal_type)}")
     print(f"Scope:  {C.cyan(r.scope_path)}  [{C.yellow(r.scope_module)}]")
-    print(f"Mode:   {C.green(title)}  {C.dim('depth <= ' + str(r.max_depth))}")
+    print(_mode_line(title, r.max_depth, r.comb))
     print("─" * 60)
     if not r.edges:
         print(f"\n  {C.dim('(no dataflow edges found)')}\n")
@@ -101,8 +110,13 @@ def add_flow_args(p):
                    help='Starting signal (required)')
     g.add_argument('--scope', default=None, metavar='SCOPE',
                    help='Hierarchical scope; auto-detect when single top')
-    g.add_argument('--depth', type=int, default=4, metavar='N',
-                   help='Maximum BFS traversal depth (default: 4)')
+    g.add_argument('--depth', type=int, default=None, metavar='N',
+                   help='Maximum BFS traversal depth (default: 4; with --comb, '
+                        'unbounded — the cone is bounded by registers instead)')
+    g.add_argument('--comb', action='store_true',
+                   help='Combinational cone: stop at sequential (clocked) edges, '
+                        'so the result is the pure combinational fan-in/out '
+                        'bounded by flip-flops (slang-netlist getCombFan parity)')
     g.add_argument('--summary', action='store_true',
                    help='Counts + direct neighbors only; omit the full node/edge graph')
     add_unroll_args(p)
@@ -136,6 +150,8 @@ class FlowGraphOutput(agent_json.CommandResult):
         }
         if 'bit_select' in rd:
             data['bit_select'] = rd['bit_select']
+        if rd.get('comb'):
+            data['comb'] = True
         summary = {
             'mode': self.mode, 'results': 1,
             'nodes': nodes_total, 'edges': edges_total,
@@ -179,6 +195,7 @@ class FlowSummaryOutput(agent_json.CommandResult):
         self.edge_count = len(edges)
         self.max_depth = rd['max_depth']
         self.start = rd['start']
+        self.comb = bool(self.result.comb)
 
     def to_json(self, limit):
         data = {
@@ -190,6 +207,8 @@ class FlowSummaryOutput(agent_json.CommandResult):
                                for k in sorted(self.by_depth)},
             'direct': self.direct,
         }
+        if self.comb:
+            data['comb'] = True
         summary = {'mode': self.mode, 'results': 1, 'nodes': self.node_count,
                    'edges': self.edge_count, 'max_depth': self.max_depth}
         return data, summary
@@ -198,8 +217,7 @@ class FlowSummaryOutput(agent_json.CommandResult):
         C = Color
         title = "FANIN" if self.mode == "fanin" else "FANOUT"
         print(f"Signal: {C.bold(self.signal)}")
-        print(f"Mode:   {C.green(title + ' summary')}  "
-              f"{C.dim('depth <= ' + str(self.max_depth))}")
+        print(_mode_line(title + ' summary', self.max_depth, self.comb))
         print(f"  nodes {C.yellow(str(self.node_count))}   "
               f"edges {C.yellow(str(self.edge_count))}")
         if self.by_depth:
@@ -214,7 +232,14 @@ class FlowSummaryOutput(agent_json.CommandResult):
 
 def run_flow(args, env, *, mode):
     tracer, scope, signal, bit_range = prepare(args, env, need_signal=True)
-    r = tracer.flow(signal, scope, mode, args.depth, bit_range=bit_range)
+    comb = bool(getattr(args, 'comb', False))
+    # --depth defaults to 4, except a combinational cone defaults to unbounded
+    # (None) since registers, not a hop count, bound it.  An explicit --depth
+    # always wins for either mode.
+    depth = args.depth
+    if depth is None:
+        depth = None if comb else 4
+    r = tracer.flow(signal, scope, mode, depth, bit_range=bit_range, comb=comb)
     if getattr(args, 'summary', False):
         out = FlowSummaryOutput(r, mode, scope, signal)
     else:
