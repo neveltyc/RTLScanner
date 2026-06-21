@@ -42,7 +42,10 @@ rtlscanner batch   --schema > schemas/batch.schema.json   # streaming-frame shap
 Pre-generated schemas live in `examples/agent/schemas/`. Note `batch` streams one
 JSONL frame per query (`{id, ok, result}`) rather than a single envelope, so its
 schema describes that frame; each frame's `result` is one of the per-tool
-envelopes above.
+envelopes above. A failed query is reported as a plain `error` **string** (the
+structured `code` / `details` below are dropped — re-run that one query standalone
+to get them), and a `lint` frame stays `ok:true` even with error findings (its
+single-command exit-1 is not propagated; read `result.summary.has_error`).
 
 ## Error envelopes
 

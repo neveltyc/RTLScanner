@@ -26,8 +26,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   short-circuits on an injected `_prepared` compilation (load once) and
   `agent_json.emit` grows an opt-in capture sink (`capture_emit`) so each
   command's envelope can be re-framed — no per-command changes. Text mode prints
-  a `# <id>` header before each command's normal output. New module
-  `src/rtl_batch.py`; schema via `rtlscanner batch --schema`.
+  a `# <id>` header before each command's normal output. Per-query guardrails:
+  `lint` findings stay inside the frame (read `result.summary.has_error` — the
+  single-command exit-1 is not propagated, the frame is `ok:true`), failures are
+  reported as a plain `error` string, and `tree --export` is rejected on a batch
+  line (run it standalone) so a query never corrupts the JSONL stream or writes a
+  file. New module `src/rtl_batch.py`; schema via `rtlscanner batch --schema`.
 
 ### Changed
 

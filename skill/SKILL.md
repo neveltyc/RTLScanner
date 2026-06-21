@@ -159,3 +159,8 @@ are no `--skip` / `--waive` / `--strict` / `--min-severity` knobs.
   the `batch` line, only the per-query flags per line. A failing query is isolated
   (`{id, ok:false, error}`) and the batch still **exits 0** — a non-zero exit means the
   design itself could not be loaded. Blank lines and `#`-comment lines are skipped.
+  Two batch-specific gotchas: `ok` means *the query ran*, so a `lint` frame is `ok:true`
+  even with error-severity findings (its single-command exit-1 signal is **not**
+  propagated — read `result.summary.has_error` of the `lint` frame); and a failed query's
+  `error` is a plain string, without the `errors[].details` recovery hints a single
+  command emits.

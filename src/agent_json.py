@@ -1073,12 +1073,17 @@ _BATCH_SCHEMA = {
                    "1-based sequence number (blank/comment lines are skipped and "
                    "do not consume a number)."},
         "ok":     {"type": "boolean",
-                   "description": "True when the query ran and produced a result."},
+                   "description": "True when the query ran and produced a result "
+                   "— not 'found nothing'. A `lint` frame stays ok=true even with "
+                   "error-severity findings (its single-command exit-1 is not "
+                   "propagated); read result.summary.has_error instead."},
         "result": {"type": "object",
                    "description": "Present when ok=true: the standard per-tool "
                    "`--json` envelope (see the per-tool schemas)."},
         "error":  {"type": "string",
-                   "description": "Present when ok=false: the failure message."},
+                   "description": "Present when ok=false: the failure message. A "
+                   "plain string — the single command's structured errors[].code "
+                   "/ details are not carried in batch."},
     },
     "additionalProperties": False,
 }

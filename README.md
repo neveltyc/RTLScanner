@@ -430,6 +430,19 @@ loaded (bad inputs / no sources), surfaced as a single error envelope **before**
 any line is read. `--commands FILE` reads the query lines from a file instead of
 stdin (`-` means stdin).
 
+`ok` means *the query ran*, not *the query found nothing*. Two consequences
+worth noting:
+
+- **`lint` findings don't surface in `ok` or the exit code.** As a single
+  command, `lint` exits `1` when it finds an error-severity issue; in a batch
+  that signal is **not** propagated — the frame is `ok:true` and the batch still
+  exits `0`. Read `result.summary.has_error` (or `result.data.findings`) of the
+  `lint` frame instead.
+- **A failed query's `error` is a plain string.** The structured
+  `errors[].code` / `errors[].details` recovery hints a single command emits
+  (e.g. `close_matches` for `SIGNAL_NOT_FOUND`) are dropped in batch; re-run that
+  one query on its own if you need them.
+
 ## Agent / JSON Mode
 
 All subcommands accept `--json`, producing a single uniform envelope:

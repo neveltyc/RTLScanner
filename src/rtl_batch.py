@@ -88,9 +88,11 @@ def split_line(line: str) -> Tuple[List[str], Optional[str]]:
     quote), which the caller isolates as one error frame.
     """
     code, label = _split_comment(line)
-    code = code.strip()
-    if not code:
-        return [], label
+    # Tokenize the raw remainder — do NOT strip it first.  Stripping would orphan
+    # a backslash that escapes a trailing space/tab (`-s a\ `), turning a valid
+    # token into a spurious "No escaped character" parse error.  shlex treats the
+    # trailing newline as whitespace, and a blank / comment-only line tokenizes
+    # to [] (the caller skips it).
     return shlex.split(code), label
 
 
@@ -184,7 +186,11 @@ def _open_commands(args):
     path = getattr(args, "_commands", None)
     if path and path != "-":
         try:
-            return open(path, "r", encoding="utf-8")
+            # errors="replace" so a stray non-UTF-8 byte degrades to U+FFFD in
+            # one query instead of aborting the whole batch with a misleading
+            # "design could not be loaded" non-zero exit — and, unlike
+            # surrogateescape, keeps the emitted JSONL stream valid UTF-8.
+            return open(path, "r", encoding="utf-8", errors="replace")
         except OSError as e:
             raise rtl_cli.CliError(
                 agent_json.ERR_INPUT_NOT_FOUND,
@@ -247,6 +253,17 @@ def run_batch(args, env) -> int:
                     tokens[1:], namespace=copy.copy(args))
             except _LineParseError as e:
                 _emit_failure(json_mode, ident, f"{subcmd}: {e}")
+                continue
+
+            # A query line must stay read-only and route its output through the
+            # frame stream.  `tree --export` does neither — it writes a filelist
+            # to disk, or with `-` raw text straight to stdout (corrupting the
+            # JSONL stream, since it bypasses the capture sink) — so reject it as
+            # an isolated per-query error.
+            if getattr(qargs, "export", None):
+                _emit_failure(json_mode, ident,
+                              f"{subcmd}: --export is not supported inside batch; "
+                              "run it as a standalone command")
                 continue
 
             qargs.cmd = subcmd
