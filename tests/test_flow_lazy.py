@@ -22,12 +22,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 try:
     # `import pyslang.ast` doubles as the availability guard: when pyslang is
-    # absent it raises ImportError here, before the signal_trace import (whose
+    # absent it raises ImportError here, before the rtl_dataflow import (whose
     # module-level dependency check would otherwise abort the interpreter).
     import pyslang.ast as ast
     from rtl_common import build_compilation, safe_str
     from rtl_slang import iter_instances, symbol_key
-    from signal_trace import SignalTracer
+    from rtl_dataflow import SignalTracer
     HAVE_PYSLANG = True
 except Exception:  # pragma: no cover - exercised only without pyslang
     HAVE_PYSLANG = False
