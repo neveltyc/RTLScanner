@@ -30,6 +30,7 @@ import rtl_lint
 import rtl_xref
 import rtl_scope
 import rtl_find
+import rtl_batch
 
 
 SUBCOMMANDS = {
@@ -51,6 +52,8 @@ SUBCOMMANDS = {
                 "Show signal/module definitions and references"),
     "find":    (rtl_find.add_arguments,         rtl_find.run,
                 "Find design nodes by glob/regex pattern"),
+    "batch":   (rtl_batch.add_batch_args,       rtl_batch.run_batch,
+                "Run many queries against one loaded design (stdin)"),
 }
 
 
@@ -69,6 +72,7 @@ Examples:
   rtlscanner lint    -d ./rtl --rules cdc
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
   rtlscanner find    -d ./rtl -p 'top.**.u_fifo*'
+  rtlscanner batch   -d ./rtl --json < queries.txt   # many queries, one load
 
 Configuration:
   Use rtlscanner <cmd> --config FILE to select a project config .toml file.
