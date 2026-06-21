@@ -28,6 +28,7 @@ import signal_flow
 import rtl_lint
 import rtl_xref
 import rtl_scope
+import rtl_batch
 
 
 SUBCOMMANDS = {
@@ -47,6 +48,8 @@ SUBCOMMANDS = {
                 "Static scan: semantic + unused + port + cdc + comb-loop"),
     "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
                 "Show signal/module definitions and references"),
+    "batch":   (rtl_batch.add_batch_args,       rtl_batch.run_batch,
+                "Run many queries against one loaded design (stdin)"),
 }
 
 
@@ -64,6 +67,7 @@ Examples:
   rtlscanner fanout  -d ./rtl -s q --scope top.u_dp
   rtlscanner lint    -d ./rtl --rules cdc
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
+  rtlscanner batch   -d ./rtl --json < queries.txt   # many queries, one load
 
 Configuration:
   Use rtlscanner <cmd> --config FILE to select a project config .toml file.

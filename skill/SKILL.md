@@ -6,7 +6,8 @@ description: Static SystemVerilog/Verilog RTL inspection, lint, and dataflow ana
 # RTLScanner — agent skill
 
 `rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into seven
-query subcommands over RTL *source* (no simulation). **Always pass `--json` from an
+query subcommands over RTL *source* (no simulation), plus a `batch` runner that
+answers many queries against one loaded design. **Always pass `--json` from an
 agent.** The README documents the full CLI surface, the per-command output schema, the
 config file, and the lint rule catalog; this file covers only what you need to drive
 the tool from an agent.
@@ -39,6 +40,7 @@ rtlscanner --help
 | Downstream dataflow (what does this value reach) | `fanout -s N --scope S` | same shape as `fanin` |
 | Where a signal/module is declared and referenced | `xref` | `data.matches[].{definitions,references}`; `summary.{definitions,references,reads,writes,port_connections}` |
 | Compile / lint findings (widths, unused, latches, CDC, ports) | `lint` | `data.findings[]` (file, line, col, severity, rule, message); `summary.by_rule`, `summary.has_error` |
+| Several of the above against one design, cheaply | `batch` (stdin) | One JSONL frame per query line: `{id, ok, result}` where `result` is that command's normal envelope |
 
 ## Common calls
 
@@ -53,6 +55,10 @@ rtlscanner xref   -f rtl.f --module fifo --json
 rtlscanner lint   -f rtl.f --json                      # all five categories
 rtlscanner lint   -f rtl.f --rules unused,cdc --json   # narrow to a subset
 rtlscanner lint   -f rtl.f --json > lint.json          # full result; read summary for counts
+
+# batch: many queries, one parse+elaborate; one JSONL frame per stdin line
+printf 'trace -s ready --scope top.u_dma\nfanin -s data_out --scope top.u_pipe\nlint --rules cdc\n' \
+  | rtlscanner batch -f rtl.f --json
 ```
 
 ## Inputs & syntax
@@ -145,3 +151,16 @@ are no `--skip` / `--waive` / `--strict` / `--min-severity` knobs.
   every co-sensitive signal. `--depth` defaults to 4; raise it for deeper cones.
 - **Dump a contract** with `rtlscanner <subcmd> --schema` (draft-07 JSON Schema) when
   you need the exact field list for a command.
+- **`batch` amortizes the load — use it for 3+ queries on one design.** Pipe one
+  `<subcmd> [flags]  # label` per line into `rtlscanner batch -f rtl.f --json`; the design
+  is parsed + elaborated **once** and each line streams back a JSONL frame
+  `{id, ok, result}` (`result` is that command's normal envelope; a `# label` becomes the
+  `id`, else a 1-based sequence number). Put the input flags (`-f`/`-d`/…) and `--json` on
+  the `batch` line, only the per-query flags per line. A failing query is isolated
+  (`{id, ok:false, error}`) and the batch still **exits 0** — a non-zero exit means the
+  design itself could not be loaded. Blank lines and `#`-comment lines are skipped.
+  Two batch-specific gotchas: `ok` means *the query ran*, so a `lint` frame is `ok:true`
+  even with error-severity findings (its single-command exit-1 signal is **not**
+  propagated — read `result.summary.has_error` of the `lint` frame); and a failed query's
+  `error` is a plain string, without the `errors[].details` recovery hints a single
+  command emits.

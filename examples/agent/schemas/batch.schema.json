@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "batch streaming JSONL frame",
+  "description": "`rtlscanner batch --json` streams one of these compact JSON objects per query line (JSONL / NDJSON), flushed as each query finishes. On success `result` carries the exact envelope the equivalent single command would emit; on failure `error` carries the message. The batch process exits 0 even when individual queries fail — a non-zero exit means the design could not be loaded at all.",
+  "type": "object",
+  "required": [
+    "id",
+    "ok"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "The query's trailing `# label`, else its 1-based sequence number (blank/comment lines are skipped and do not consume a number)."
+    },
+    "ok": {
+      "type": "boolean",
+      "description": "True when the query ran and produced a result — not 'found nothing'. A `lint` frame stays ok=true even with error-severity findings (its single-command exit-1 is not propagated); read result.summary.has_error instead."
+    },
+    "result": {
+      "type": "object",
+      "description": "Present when ok=true: the standard per-tool `--json` envelope (see the per-tool schemas)."
+    },
+    "error": {
+      "type": "string",
+      "description": "Present when ok=false: the failure message. A plain string — the single command's structured errors[].code / details are not carried in batch."
+    }
+  },
+  "additionalProperties": false
+}

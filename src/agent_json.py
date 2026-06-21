@@ -20,6 +20,7 @@ code), so agents get structured failure info instead of a stderr stack trace.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import sys
@@ -254,7 +255,10 @@ def filter_command(ns, extra_exclude: Optional[set] = None) -> Dict[str, Any]:
         exclude |= set(extra_exclude)
     out: Dict[str, Any] = {}
     for k, v in vars(ns).items():
-        if k in exclude:
+        # Drop output flags and private plumbing attributes (e.g. the batch
+        # runner's injected ``_prepared`` compilation); argparse dests are never
+        # underscore-prefixed, so this only ever hides internal state.
+        if k in exclude or k.startswith("_"):
             continue
         out[k] = _jsonify(v)
     return out
@@ -276,9 +280,44 @@ def dump(envelope: Dict[str, Any], *, pretty: bool = True) -> str:
     return json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
 
 
+# When a capture sink is active, ``emit`` appends the finalized envelope to it
+# instead of printing — see :func:`capture_emit`.  Process-global because the
+# print site (``emit``) is reached through ``render`` deep inside every
+# subcommand and has no handle to the caller; the single-threaded ``batch``
+# runner scopes it tightly with the context manager below.
+_capture_sink: Optional[List[Dict[str, Any]]] = None
+
+
+@contextlib.contextmanager
+def capture_emit():
+    """Capture the envelope(s) a subcommand would print instead of emitting them.
+
+    Used by ``rtlscanner batch`` to wrap each query's standard envelope in its
+    own streaming frame.  Yields the list the envelopes are appended to::
+
+        with capture_emit() as sink:
+            run_fn(args, env)
+        envelope = sink[-1]
+    """
+    global _capture_sink
+    sink: List[Dict[str, Any]] = []
+    prev, _capture_sink = _capture_sink, sink
+    try:
+        yield sink
+    finally:
+        _capture_sink = prev
+
+
 def emit(envelope: Dict[str, Any], *, pretty: bool = True) -> int:
-    """Print envelope to stdout and return the appropriate exit code (0/1)."""
-    print(dump(envelope, pretty=pretty))
+    """Print envelope to stdout and return the appropriate exit code (0/1).
+
+    With a capture sink active (:func:`capture_emit`), the envelope is appended
+    to the sink instead of printed, so a batch runner can re-frame it.
+    """
+    if _capture_sink is not None:
+        _capture_sink.append(envelope)
+    else:
+        print(dump(envelope, pretty=pretty))
     return 0 if envelope.get("status") == "ok" else 1
 
 
@@ -1013,6 +1052,43 @@ _XREF_SCHEMA = _envelope_schema(
     },
 )
 
+# ── batch ──
+# Batch streams one frame per query (JSONL / NDJSON) rather than a single
+# envelope, so its schema describes the per-line frame, not the shared envelope.
+_BATCH_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "batch streaming JSONL frame",
+    "description": (
+        "`rtlscanner batch --json` streams one of these compact JSON objects per "
+        "query line (JSONL / NDJSON), flushed as each query finishes. On success "
+        "`result` carries the exact envelope the equivalent single command would "
+        "emit; on failure `error` carries the message. The batch process exits 0 "
+        "even when individual queries fail — a non-zero exit means the design "
+        "could not be loaded at all."),
+    "type": "object",
+    "required": ["id", "ok"],
+    "properties": {
+        "id":     {"type": "string",
+                   "description": "The query's trailing `# label`, else its "
+                   "1-based sequence number (blank/comment lines are skipped and "
+                   "do not consume a number)."},
+        "ok":     {"type": "boolean",
+                   "description": "True when the query ran and produced a result "
+                   "— not 'found nothing'. A `lint` frame stays ok=true even with "
+                   "error-severity findings (its single-command exit-1 is not "
+                   "propagated); read result.summary.has_error instead."},
+        "result": {"type": "object",
+                   "description": "Present when ok=true: the standard per-tool "
+                   "`--json` envelope (see the per-tool schemas)."},
+        "error":  {"type": "string",
+                   "description": "Present when ok=false: the failure message. A "
+                   "plain string — the single command's structured errors[].code "
+                   "/ details are not carried in batch."},
+    },
+    "additionalProperties": False,
+}
+
+
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "tree":    _TREE_SCHEMA,
     "trace":   _TRACE_SCHEMA,
@@ -1021,6 +1097,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "fanout":  _FANOUT_SCHEMA,
     "lint":    _LINT_SCHEMA,
     "xref":    _XREF_SCHEMA,
+    "batch":   _BATCH_SCHEMA,
 }
 
 
