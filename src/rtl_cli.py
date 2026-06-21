@@ -103,7 +103,17 @@ def prepare_compilation(
     ``PreparedCompilation.diagnostics`` and only need a walkable (elaborated)
     design, so they skip stringifying every diagnostic.  ``tree`` (the one
     command that surfaces them) passes ``collect_diagnostics=True``.
+
+    ``rtlscanner batch`` builds the compilation once and stamps it on each
+    per-query namespace as ``args._prepared``; when present it short-circuits
+    the (expensive) parse+elaborate so every query reuses the one loaded design.
+    The injected object was built with ``collect_diagnostics=True``, so the
+    diagnostic-surfacing callers still find what they need.
     """
+    injected = getattr(args, "_prepared", None)
+    if injected is not None:
+        return injected
+
     prepared = prepare_inputs(
         args,
         require_sources=require_sources,
