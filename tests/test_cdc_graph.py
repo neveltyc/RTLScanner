@@ -27,7 +27,8 @@ try:
     import pyslang.ast as ast  # noqa: F401  (availability guard)
     from rtl_common import build_compilation
     from rtl_lint import _DEFAULT_RESET_GLOBS, CDCAnalyzer
-    from signal_trace import SignalTracer
+    from rtl_dataflow import SignalTracer
+    from signal_flow import _edge_to_dict
     HAVE_PYSLANG = True
 except Exception:  # pragma: no cover
     HAVE_PYSLANG = False
@@ -212,8 +213,8 @@ class EdgeClassification(unittest.TestCase):
         self.assertTrue(by_pair[("d", "q")].clocked)
         self.assertFalse(by_pair[("q", "o")].clocked)
         # the registered edge is exposed in the dataflow JSON, too
-        self.assertTrue(by_pair[("d", "q")].to_dict().get("clocked"))
-        self.assertNotIn("clocked", by_pair[("q", "o")].to_dict())
+        self.assertTrue(_edge_to_dict(by_pair[("d", "q")]).get("clocked"))
+        self.assertNotIn("clocked", _edge_to_dict(by_pair[("q", "o")]))
 
 
 if __name__ == "__main__":

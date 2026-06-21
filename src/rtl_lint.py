@@ -40,7 +40,7 @@ import agent_json
 import rtl_cli
 from rtl_config import flow_config
 from rtl_scope import ScopeAnalyzer
-from signal_trace import SignalTracer
+from rtl_dataflow import SignalTracer
 
 
 # ── Data Structures ──────────────────────────────────────────────────
@@ -482,7 +482,7 @@ class CDCAnalyzer:
     logic only, the data input of a *capture* register in a different domain is
     a CDC crossing that typically needs an explicit synchronizer.  The launch /
     capture relationship is found on the shared flow graph
-    (:meth:`signal_trace.SignalTracer.flow_edges`), so it is **cross-hierarchy**
+    (:meth:`rtl_dataflow.SignalTracer.flow_edges`), so it is **cross-hierarchy**
     (a launch and capture in different modules wired through ports are still
     related); each flop's clock is resolved to its **source net** (via the
     tracer's :meth:`clock_domain_map` primitive), so two flops on the same

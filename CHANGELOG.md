@@ -26,6 +26,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already had. Purely structural — the human and `--json` output is unchanged
   (verified byte-for-byte across all six commands).
 
+- **Split `signal_trace` into a dataflow engine and thin presentation layers
+  (internal).** The ~2,500-line `signal_trace` module both *built* the model —
+  driver/load analysis, the whole-design dataflow graph, the demand-driven
+  bit-aware `fanin`/`fanout` BFS, bit-range mapping, and clock-domain resolution
+  (the `SignalTracer` engine) — and *framed* it into each command's shape (the
+  `trace` driver/load view, the `fanin`/`fanout` node/edge graph), with the
+  rendering baked onto the result dataclasses. The mechanism now lives in a
+  standalone `rtl_dataflow` engine that emits a typed model (`TraceResult` /
+  `FlowResult` / `FlowEdge` / `DriverInfo` / `LoadInfo`); the per-command
+  rendering moves into thin command modules (`signal_trace` for `trace`,
+  `signal_flow` for `fanin`/`fanout`) that only shape the model, over a shared
+  `signal_cli` argv front-end. `lint`'s CDC / combinational-loop checks consume
+  the same engine (now imported from `rtl_dataflow`). Purely structural — the
+  human and `--json` output is unchanged (verified byte-for-byte across `trace` /
+  `fanin` / `fanout`, including bit-selects, segment permutations, `--summary`,
+  `--filter`, and error paths).
+
+### Fixed
+
+- **Lint sub-analysis failures are surfaced in the result envelope.** The CDC,
+  combinational-loop, port-connectivity, and analysis-manager passes each caught
+  their own exceptions and only printed to stderr, leaving the result with
+  status `ok`, an empty `errors`, and silently incomplete findings — an agent
+  following the documented "read status first" contract could not tell a clean
+  design from a crashed check. Those failures are now collected on the runner and
+  surfaced as warning-level diagnostics in the JSON envelope (still stderr in
+  human mode), so a failed pass is visible to the caller.
+
+- **Port-connectivity findings use the same path base as every other finding.**
+  Port findings were emitted with `ScopeAnalyzer`'s CWD-relative path (no `./`
+  prefix), while every other lint finding — and `xref` — uses the
+  `[inputs].root`-relative path (with the `./` prefix) via `LintRunner._rel`; the
+  same source file could appear under two different strings in one run. Port
+  findings now route through `LintRunner._rel` so their paths match the rest.
+
+- **Config loading on Python 3.8–3.10.** `requirements.txt` listed only
+  `pyslang`, so installing from it on Python < 3.11 left `tomllib` unavailable
+  and `.rtlscanner.toml` loading failed with `BAD_CONFIG` ("needs tomli"). It now
+  pulls the same conditional `tomli` backport that `pyproject.toml` already
+  declares.
+
 ## [0.3.0] - 2026-06-17
 
 ### Added
