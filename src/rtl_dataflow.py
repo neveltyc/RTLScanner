@@ -2,18 +2,21 @@
 """
 rtl_dataflow — Verilog/SystemVerilog dataflow engine.
 
-The mechanism layer behind ``trace`` / ``fanin`` / ``fanout`` (and the lint
-CDC / combinational-loop checks).  It builds the design's driver/load and
-dataflow-graph model and answers structural queries over it; it owns no output
-framing.  The thin command modules (``signal_trace``, ``signal_flow``) render
-the typed model (``TraceResult`` / ``FlowResult`` / ``FlowEdge`` …) into their
-own shapes, and ``signal_cli`` adapts argv into an engine query.
+The mechanism layer behind ``trace`` / ``fanin`` / ``fanout`` / ``path`` (and
+the lint CDC / combinational-loop checks).  It builds the design's driver/load
+and dataflow-graph model and answers structural queries over it; it owns no
+output framing.  The thin command modules (``signal_trace``, ``signal_flow``,
+``signal_path``) render the typed model (``TraceResult`` / ``FlowResult`` /
+``PathResult`` / ``FlowEdge`` …) into their own shapes, and ``signal_cli``
+adapts argv into an engine query.
 
 ``SignalTracer`` is the entry point:
-    trace(signal, scope)       -> TraceResult        (single driver + all loads)
-    flow(signal, scope, mode)  -> FlowResult         (bit-aware fanin/fanout BFS)
-    flow_edges()               -> [FlowEdge]          (whole-design dataflow graph)
-    clock_domain_map()         -> {node: ClockDomain}
+    trace(signal, scope)              -> TraceResult  (single driver + all loads)
+    flow(signal, scope, mode)         -> FlowResult   (bit-aware fanin/fanout BFS)
+    find_path(from_, from_scope,
+              to, to_scope, comb=...) -> PathResult   (point-to-point DFS path)
+    flow_edges()                      -> [FlowEdge]   (whole-design dataflow graph)
+    clock_domain_map()                -> {node: ClockDomain}
 
 Install dependency:
     pip install pyslang

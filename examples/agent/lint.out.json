@@ -1,6 +1,6 @@
 {
   "tool": "lint",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "status": "ok",
   "command": {
     "cmd": "lint",
@@ -117,22 +117,22 @@
       },
       {
         "file": "./examples/lint/lint_demo.sv",
-        "line": 45,
-        "col": 10,
-        "severity": "warning",
-        "rule": "empty-output-connection",
-        "message": "output port 'y' is explicitly connected to nothing",
-        "check": "semantic",
-        "module": "lint_demo"
-      },
-      {
-        "file": "./examples/lint/lint_demo.sv",
         "line": 40,
         "col": 0,
         "severity": "note",
         "rule": "port-unconnected",
         "message": "output port 'y' is unconnected",
         "check": "port",
+        "module": "lint_demo"
+      },
+      {
+        "file": "./examples/lint/lint_demo.sv",
+        "line": 45,
+        "col": 10,
+        "severity": "warning",
+        "rule": "empty-output-connection",
+        "message": "output port 'y' is explicitly connected to nothing",
+        "check": "semantic",
         "module": "lint_demo"
       }
     ],
@@ -158,8 +158,8 @@
       "unassigned-variable": 1,
       "case-default": 1,
       "inferred-latch": 1,
-      "empty-output-connection": 1,
-      "port-unconnected": 1
+      "port-unconnected": 1,
+      "empty-output-connection": 1
     },
     "by_check": {
       "cdc": 2,

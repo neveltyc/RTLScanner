@@ -11,6 +11,7 @@ Subcommands:
     lint     — semantic + unused + port + cdc + comb-loop checks
     xref     — signal/module source definitions and references
     find     — design-wide node lookup by glob/regex pattern
+    batch    — run many queries against one loaded design (stdin)
 """
 
 from __future__ import annotations
