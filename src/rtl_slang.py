@@ -76,12 +76,12 @@ def expr_symbols(expr) -> list:
 
 # ── Bit-range (longest-static-prefix) extraction ─────────────────────
 #
-# slang-netlist resolves dataflow to the bit level: every dependency carries
-# the bit range it touches.  pyslang exposes the building blocks (selection
-# expressions + foldable constants) but no LSPUtilities binding, so we compute
-# the "longest static prefix" symbol and its constant bit range here.  These
-# live alongside expr_symbols (which stays symbol-only); callers that want bits
-# opt in, everything else is unaffected.
+# To resolve dataflow at the bit level, every dependency must carry the bit
+# range it touches.  pyslang exposes the building blocks (selection expressions
+# + foldable constants) but no LSPUtilities binding, so we compute the "longest
+# static prefix" symbol and its constant bit range here.  These live alongside
+# expr_symbols (which stays symbol-only); callers that want bits opt in,
+# everything else is unaffected.
 
 # ── Constant evaluation (with optional loop-variable binding) ────────
 #

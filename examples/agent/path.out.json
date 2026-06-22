@@ -1,0 +1,163 @@
+{
+  "tool": "path",
+  "version": "0.3.0",
+  "status": "ok",
+  "command": {
+    "cmd": "path",
+    "files": [],
+    "dir": [
+      "examples/basic"
+    ],
+    "filelist": [],
+    "exclude": [],
+    "single_unit": false,
+    "from_sig": "a",
+    "to_sig": "y0",
+    "scope": "top",
+    "comb": false,
+    "unroll": null,
+    "max_unroll": null
+  },
+  "data": {
+    "mode": "path",
+    "comb": false,
+    "from": "a",
+    "to": "y0",
+    "from_scope": "top",
+    "to_scope": "top",
+    "from_type": "logic[7:0]",
+    "to_type": "logic[7:0]",
+    "start": "top.a",
+    "end": "top.y0",
+    "found": true,
+    "length": 10,
+    "nodes": [
+      "top.a",
+      "top.u_dp0.a",
+      "top.u_dp0.u_reg.d",
+      "top.u_dp0.u_reg.q",
+      "top.u_dp0.q",
+      "top.u_dp0.u_alu.a",
+      "top.u_dp0.u_alu.u_add.a",
+      "top.u_dp0.u_alu.u_add.y",
+      "top.u_dp0.u_alu.y",
+      "top.u_dp0.y",
+      "top.y0"
+    ],
+    "edges": [
+      {
+        "source": "top.a",
+        "target": "top.u_dp0.a",
+        "kind": "port_connection",
+        "description": "u_dp0.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 60
+      },
+      {
+        "source": "top.u_dp0.a",
+        "target": "top.u_dp0.u_reg.d",
+        "kind": "port_connection",
+        "description": "u_reg.d input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 39
+      },
+      {
+        "source": "top.u_dp0.u_reg.d",
+        "target": "top.u_dp0.u_reg.q",
+        "kind": "procedural",
+        "description": "always_ff",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 6,
+        "clocked": true
+      },
+      {
+        "source": "top.u_dp0.u_reg.q",
+        "target": "top.u_dp0.q",
+        "kind": "port_connection",
+        "description": "u_reg.q output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 39
+      },
+      {
+        "source": "top.u_dp0.q",
+        "target": "top.u_dp0.u_alu.a",
+        "kind": "port_connection",
+        "description": "u_alu.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45
+      },
+      {
+        "source": "top.u_dp0.u_alu.a",
+        "target": "top.u_dp0.u_alu.u_add.a",
+        "kind": "port_connection",
+        "description": "u_add.a input",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.a",
+        "target": "top.u_dp0.u_alu.u_add.y",
+        "kind": "continuous_assign",
+        "description": "assign",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 16
+      },
+      {
+        "source": "top.u_dp0.u_alu.u_add.y",
+        "target": "top.u_dp0.u_alu.y",
+        "kind": "port_connection",
+        "description": "u_add.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 24
+      },
+      {
+        "source": "top.u_dp0.u_alu.y",
+        "target": "top.u_dp0.y",
+        "kind": "port_connection",
+        "description": "u_alu.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 45
+      },
+      {
+        "source": "top.u_dp0.y",
+        "target": "top.y0",
+        "kind": "port_connection",
+        "description": "u_dp0.y output",
+        "source_type": "logic[7:0]",
+        "target_type": "logic[7:0]",
+        "file": "examples/basic/top.sv",
+        "line": 60
+      }
+    ]
+  },
+  "diagnostics": [],
+  "errors": [],
+  "summary": {
+    "mode": "path",
+    "found": true,
+    "length": 10,
+    "nodes": 11,
+    "edges": 10,
+    "comb": false,
+    "truncated": false,
+    "limit": 200
+  }
+}

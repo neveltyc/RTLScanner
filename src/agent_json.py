@@ -578,8 +578,7 @@ _TRACE_FLOW_EDGE = {
         "source_bits": {"type": "string",
                         "description": "Bit sub-range of the source that this "
                         "edge reads ('[5]' / '[7:4]'); absent when the whole "
-                        "signal is read. Bit-level dataflow (slang-netlist "
-                        "parity)."},
+                        "signal is read. Bit-level dataflow."},
         "target_bits": {"type": "string",
                         "description": "Bit sub-range of the target that this "
                         "edge drives; absent when the whole signal is driven. "
@@ -691,6 +690,80 @@ def _flow_schema(tool_name: str) -> Dict[str, Any]:
 
 _FANIN_SCHEMA = _flow_schema("fanin")
 _FANOUT_SCHEMA = _flow_schema("fanout")
+
+
+# ── signal-path ──
+_PATH_SCHEMA = _envelope_schema(
+    "path",
+    data_schema={
+        "type": "object",
+        "required": ["mode", "from", "to", "start", "end", "found",
+                     "nodes", "edges"],
+        "properties": {
+            "mode":       {"type": "string", "const": "path"},
+            "from":       {"type": "string",
+                           "description": "Resolved start signal name (the driver "
+                           "end of the path)."},
+            "to":         {"type": "string",
+                           "description": "Resolved end signal name (the loaded "
+                           "end)."},
+            "from_scope": {"type": "string",
+                           "description": "Scope the start node was resolved in."},
+            "to_scope":   {"type": "string",
+                           "description": "Scope the end node was resolved in."},
+            "from_type":  {"type": "string", "description": "Start node data type."},
+            "to_type":    {"type": "string", "description": "End node data type."},
+            "start":      {"type": "string",
+                           "description": "Elaborated hierarchical path of the "
+                           "start node (== nodes[0] when found)."},
+            "end":        {"type": "string",
+                           "description": "Elaborated hierarchical path of the end "
+                           "node (== nodes[-1] when found)."},
+            "found":      {"type": "boolean",
+                           "description": "True when a path exists. False (an "
+                           "empty nodes/edges) is a normal result — the nodes are "
+                           "not connected in the from->to direction (or, with "
+                           "comb, only through a register) — not an error."},
+            "length":     {"type": "integer",
+                           "description": "Hop count (number of edges); 0 for a "
+                           "not-found or single-node (from == to) path."},
+            "comb":       {"type": "boolean",
+                           "description": "Present and true when --comb was used: "
+                           "the path is purely combinational and never traverses "
+                           "into a register node."},
+            "nodes":      {"type": "array", "items": {"type": "string"},
+                           "description": "Ordered node path start..end; "
+                           "nodes[i] --edges[i]--> nodes[i+1]."},
+            "edges":      {"type": "array", "items": _TRACE_FLOW_EDGE,
+                           "description": "Ordered dataflow edges between the "
+                           "nodes; len == len(nodes)-1. Same edge shape as "
+                           "fanin/fanout (source/target/kind/description/bits/"
+                           "location, plus clocked on a registered edge)."},
+        },
+        "additionalProperties": True,
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["mode", "found"],
+        "properties": {
+            "mode":   {"type": "string"},
+            "found":  {"type": "boolean"},
+            "length": {"type": "integer"},
+            "nodes":  {"type": "integer"},
+            "edges":  {"type": "integer"},
+            "comb":   {"type": "boolean"},
+        },
+    },
+    description=("Stable agent-mode JSON envelope produced by `rtlscanner path "
+                 "--json`. `path` finds a directional dataflow path from `--from` "
+                 "to `--to` by depth-first search over the same graph "
+                 "fanin/fanout traverse. "
+                 "`data.nodes` is the ordered node walk and `data.edges` the edges "
+                 "between them (nodes[i] --edges[i]--> nodes[i+1]). `--comb` "
+                 "restricts to a purely combinational path (never through a "
+                 "register). `found:false` with empty nodes/edges is a normal "
+                 "result (no such path), not an error."),
+)
 
 
 # ── rtl-lint ──
@@ -1131,8 +1204,8 @@ _FIND_SCHEMA = _envelope_schema(
                  "--json`. `find` walks the whole elaborated design and reports "
                  "every signal/instance node whose hierarchical path matches the "
                  "glob (default) or regex (`--regex`) PATTERN, each with its "
-                 "source location — the slang-netlist `--find` analogue. Narrow "
-                 "with `--kind signal|instance` and `--scope`."),
+                 "source location. Narrow with `--kind signal|instance` and "
+                 "`--scope`."),
 )
 
 # ── batch ──
@@ -1178,6 +1251,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "scope":   _SCOPE_SCHEMA,
     "fanin":   _FANIN_SCHEMA,
     "fanout":  _FANOUT_SCHEMA,
+    "path":    _PATH_SCHEMA,
     "lint":    _LINT_SCHEMA,
     "xref":    _XREF_SCHEMA,
     "find":    _FIND_SCHEMA,

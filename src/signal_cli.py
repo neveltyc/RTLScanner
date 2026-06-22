@@ -18,7 +18,7 @@ import sys
 import agent_json
 import rtl_cli
 from rtl_config import flow_config
-from rtl_dataflow import SignalTracer
+from rtl_dataflow import SignalTracer, bit_label
 
 
 # ── Bit-select on a queried signal (e.g. `status[3]`, `status[7:4]`) ──
@@ -60,13 +60,19 @@ def add_unroll_args(p):
                         '2048); a loop exceeding it stays conservative')
 
 
-# ── Shared input/dispatch helper ─────────────────────────────────────
-def prepare(args, env, *, need_signal=False):
-    """Common setup for trace/fanin/fanout: resolve inputs, build
-    compilation, auto-detect scope, normalize dotted -s forms, and split off
-    a trailing bit-select.  Returns (tracer, scope, signal, bit_range);
-    raises CliError on any input/compile/scope failure."""
-    prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
+# ── Shared input/dispatch helpers ────────────────────────────────────
+def _emit_note(env, message):
+    """Surface a reinterpretation note: a JSON diagnostic, else a stderr line."""
+    if env is not None:
+        env.add_diagnostic("note", message=message)
+    else:
+        print(f"note: {message}", file=sys.stderr)
+
+
+def _build_tracer(args, prepared):
+    """Construct a ``SignalTracer`` honoring the ``[flow]`` precision config and
+    the ``--unroll`` / ``--max-unroll`` flags (CLI overrides config overrides the
+    built-in defaults), shared by every dataflow command's setup."""
     fcfg = flow_config(prepared.config)
     unroll = getattr(args, 'unroll', None)
     if unroll is None:
@@ -74,7 +80,16 @@ def prepare(args, env, *, need_signal=False):
     max_unroll = getattr(args, 'max_unroll', None)
     if max_unroll is None:
         max_unroll = fcfg["max_unroll"] if fcfg["max_unroll"] is not None else 2048
-    tracer = SignalTracer(prepared.comp, unroll=unroll, max_unroll=max_unroll)
+    return SignalTracer(prepared.comp, unroll=unroll, max_unroll=max_unroll)
+
+
+def prepare(args, env, *, need_signal=False):
+    """Common setup for trace/fanin/fanout: resolve inputs, build
+    compilation, auto-detect scope, normalize dotted -s forms, and split off
+    a trailing bit-select.  Returns (tracer, scope, signal, bit_range);
+    raises CliError on any input/compile/scope failure."""
+    prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
+    tracer = _build_tracer(args, prepared)
     scope = rtl_cli.resolve_scope(
         args.scope,
         tracer.get_top_paths(),
@@ -94,9 +109,46 @@ def prepare(args, env, *, need_signal=False):
         signal, bit_range = split_bit_select(signal)
         scope, signal, note = tracer.normalize_signal(scope, signal)
         if note:
-            if env is not None:
-                env.add_diagnostic("note", message=note)
-            else:
-                print(f"note: {note}", file=sys.stderr)
+            _emit_note(env, note)
 
     return tracer, scope, signal, bit_range
+
+
+def prepare_path(args, env):
+    """Setup for the ``path`` command: build the compilation + tracer, resolve
+    the anchor scope, and normalize the ``--from`` / ``--to`` endpoints.
+
+    Each endpoint may be a bare signal in ``--scope``, a dotted relative path, or
+    an absolute hierarchical path (resolved by ``normalize_signal``, the same way
+    a dotted ``-s`` is).  A trailing bit-select is stripped — path-finding is at
+    node (signal) granularity — with a note.  Returns ``(tracer, from_scope,
+    from_signal, to_scope, to_signal)``; raises CliError on any
+    input/compile/scope failure or a missing endpoint.
+    """
+    prepared = rtl_cli.prepare_compilation_checked(args, env, human_error_rc=1)
+    tracer = _build_tracer(args, prepared)
+    base_scope = rtl_cli.resolve_scope(
+        args.scope, tracer.get_top_paths(), human_error_rc=1)
+
+    raw_from = getattr(args, 'from_sig', None)
+    raw_to = getattr(args, 'to_sig', None)
+    if not raw_from or not raw_to:
+        raise rtl_cli.CliError(
+            agent_json.ERR_INPUT_NOT_FOUND,
+            'specify both --from NAME and --to NAME',
+            1,
+        )
+
+    def resolve_endpoint(raw, flag):
+        name, bit_range = split_bit_select(raw)
+        if bit_range is not None:
+            _emit_note(env, f"--{flag} bit-select {bit_label(bit_range)} ignored; "
+                            "path-finding is node-level (signal granularity)")
+        scope, signal, note = tracer.normalize_signal(base_scope, name)
+        if note:
+            _emit_note(env, note)
+        return scope, signal
+
+    from_scope, from_signal = resolve_endpoint(raw_from, 'from')
+    to_scope, to_signal = resolve_endpoint(raw_to, 'to')
+    return tracer, from_scope, from_signal, to_scope, to_signal

@@ -3,11 +3,10 @@
 
 ``xref`` answers "where is *this exact name* declared and used" and ``tree
 --filter`` narrows a single hierarchy view; neither answers "give me every node
-in the whole design whose path matches a pattern".  ``find`` does — the
-slang-netlist ``--find`` / ``--find-regex`` analogue.  It walks the elaborated
-design, matches each signal and instance's hierarchical path against a glob
-(default) or a regex (``--regex``), and reports the matches with their source
-locations, so an agent can discover the nodes to feed into
+in the whole design whose path matches a pattern".  ``find`` does.  It walks the
+elaborated design, matches each signal and instance's hierarchical path against
+a glob (default) or a regex (``--regex``), and reports the matches with their
+source locations, so an agent can discover the nodes to feed into
 ``trace``/``fanin``/``fanout``/``xref`` without already knowing their names.
 
     rtlscanner find -d ./rtl -p 'top.**.u_fifo*'

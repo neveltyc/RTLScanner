@@ -2,9 +2,7 @@
 
 A small, pyslang-free helper used by ``find`` to match elaborated hierarchical
 paths (``top.sub.signal``) against a wildcard pattern.  Path segments are
-separated by ``.`` and the wildcards respect that boundary, mirroring
-slang-netlist's ``wildcardMatch`` (``include/common/Wildcard.hpp``) so a pattern
-written for one tool means the same in the other:
+separated by ``.`` and the wildcards respect that boundary:
 
     ``*``          zero or more characters *within* one segment (never ``.``)
     ``**`` / ``...``  zero or more characters *across* segments (recursive)
@@ -34,8 +32,7 @@ def _at(s: str, i: int) -> str:
 def wildcard_match(text: str, pattern: str) -> bool:
     """Return True when ``text`` matches the glob ``pattern`` (segment-aware).
 
-    A faithful port of slang-netlist's recursive ``wildcardMatch``; see the
-    module docstring for the wildcard semantics.
+    A recursive matcher; see the module docstring for the wildcard semantics.
     """
 
     def m(t: int, p: int) -> bool:
@@ -146,8 +143,7 @@ def compile_regex(pattern: str):
     """Compile a regex pattern, raising ``re.error`` on a bad pattern.
 
     Kept here so ``find`` can share one definition of "full match" semantics —
-    callers use :func:`regex_match`, which anchors the whole string the way
-    slang-netlist's ``std::regex_match`` does.
+    callers use :func:`regex_match`, which anchors the whole string.
     """
     return re.compile(pattern)
 

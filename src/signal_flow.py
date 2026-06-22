@@ -116,7 +116,7 @@ def add_flow_args(p):
     g.add_argument('--comb', action='store_true',
                    help='Combinational cone: stop at sequential (clocked) edges, '
                         'so the result is the pure combinational fan-in/out '
-                        'bounded by flip-flops (slang-netlist getCombFan parity)')
+                        'bounded by flip-flops')
     g.add_argument('--summary', action='store_true',
                    help='Counts + direct neighbors only; omit the full node/edge graph')
     add_unroll_args(p)

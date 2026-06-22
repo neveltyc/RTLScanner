@@ -7,6 +7,7 @@ Subcommands:
     scope    — direct contents of one elaborated scope
     fanin    — upstream dataflow BFS
     fanout   — downstream dataflow BFS
+    path     — point-to-point dataflow path between two nodes
     lint     — semantic + unused + port + cdc + comb-loop checks
     xref     — signal/module source definitions and references
     find     — design-wide node lookup by glob/regex pattern
@@ -26,6 +27,7 @@ from rtl_common import Color
 import rtl_tree
 import signal_trace
 import signal_flow
+import signal_path
 import rtl_lint
 import rtl_xref
 import rtl_scope
@@ -46,6 +48,8 @@ SUBCOMMANDS = {
     "fanout":  (signal_flow.add_flow_args,
                 lambda a, e: signal_flow.run_flow(a, e, mode="fanout"),
                 "Walk downstream dataflow BFS from a signal"),
+    "path":    (signal_path.add_path_args,      signal_path.run_path,
+                "Find a dataflow path between two nodes (--from / --to)"),
     "lint":    (rtl_lint.add_arguments,        rtl_lint.run,
                 "Static scan: semantic + unused + port + cdc + comb-loop"),
     "xref":    (rtl_xref.add_arguments,         rtl_xref.run,
@@ -69,6 +73,7 @@ Examples:
   rtlscanner scope   -d ./rtl --scope top.u_dp
   rtlscanner fanin   -d ./rtl -s result --scope top.u_dp --depth 3
   rtlscanner fanout  -d ./rtl -s q --scope top.u_dp
+  rtlscanner path    -d ./rtl --from a --to y0 --scope top
   rtlscanner lint    -d ./rtl --rules cdc
   rtlscanner xref    -d ./rtl -s q --scope top.u_dp
   rtlscanner find    -d ./rtl -p 'top.**.u_fifo*'

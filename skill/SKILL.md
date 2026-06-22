@@ -5,7 +5,7 @@ description: Static SystemVerilog/Verilog RTL inspection, lint, and dataflow ana
 
 # RTLScanner — agent skill
 
-`rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into eight
+`rtlscanner` wraps pyslang's SystemVerilog parse + elaborate + analysis into nine
 query subcommands over RTL *source* (no simulation), plus a `batch` runner that
 answers many queries against one loaded design. **Always pass `--json` from an
 agent.** The README documents the full CLI surface, the per-command output schema, the
@@ -38,6 +38,7 @@ rtlscanner --help
 | What drives a signal and what loads it | `trace -s N --scope S` | `data.results[].driver` (one object) + `.loads[]` + `.load_count`; multi-driver note below |
 | Upstream dataflow (where does this value come from) | `fanin -s N --scope S` | `data.nodes[]`, `data.edges[]` (source→target, kind, depth, file, line) |
 | Downstream dataflow (what does this value reach) | `fanout -s N --scope S` | same shape as `fanin` |
+| Is there a dataflow path between two specific nodes, and what is it | `path --from A --to B` | `data.found` + the ordered `data.nodes[]` / `data.edges[]` walk; `--comb` for a path with no flop in it |
 | Where a signal/module is declared and referenced | `xref` | `data.matches[].{definitions,references}`; `summary.{definitions,references,reads,writes,port_connections}` |
 | Find every node matching a name *pattern* across the design | `find -p PAT` | `data.matches[]` (name, kind, hierarchical_path, file/line/column); `summary.{matches,signals,instances}` |
 | Compile / lint findings (widths, unused, latches, CDC, ports) | `lint` | `data.findings[]` (file, line, col, severity, rule, message); `summary.by_rule`, `summary.has_error` |
@@ -55,6 +56,7 @@ rtlscanner xref   -f rtl.f -s state --scope top.u_ctrl --json
 rtlscanner xref   -f rtl.f --module fifo --json
 rtlscanner find   -f rtl.f -p 'top.**.u_fifo*' --json  # nodes matching a pattern
 rtlscanner fanin  -f rtl.f -s data_q --scope top.u_pipe --comb --json  # pure comb cone
+rtlscanner path   -f rtl.f --from launch_q --to capture_d --scope top --json  # path between two nodes
 rtlscanner lint   -f rtl.f --json                      # all five categories
 rtlscanner lint   -f rtl.f --rules unused,cdc --json   # narrow to a subset
 rtlscanner lint   -f rtl.f --json > lint.json          # full result; read summary for counts
@@ -153,14 +155,21 @@ are no `--skip` / `--waive` / `--strict` / `--min-severity` knobs.
   assignment's RHS feeds only its own LHS), so `--depth 1` is the true direct fan-in, not
   every co-sensitive signal. `--depth` defaults to 4; raise it for deeper cones.
 - **Combinational cone with `--comb`.** `fanin`/`fanout --comb` stops at sequential
-  (clocked) edges — the pure combinational cone bounded by flip-flops (slang-netlist
-  `getCombFan` parity), for timing-path reasoning. Register *boundaries* are excluded, but a
+  (clocked) edges — the pure combinational cone bounded by flip-flops, for
+  timing-path reasoning. Register *boundaries* are excluded, but a
   `--comb fanin` from a register output still walks that flop's own D-cone. It defaults to
   unbounded depth (registers bound it); pass `--depth N` to cap. JSON carries `comb: true`.
 - **`find` discovers nodes by pattern.** When you know a naming pattern but not exact paths,
   `find -p '<glob>'` (or `--regex`) scans the whole design and returns matching signal/instance
   paths + locations — then feed those into `trace`/`fanin`/`xref`. `*` stays within one `.`
   segment; `**`/`...` cross segments. `--kind signal|instance` and `--scope` narrow it.
+- **`path` connects two specific nodes.** `path --from A --to B` finds *one* directional dataflow
+  path (`A` must drive `B`) and returns the ordered `data.nodes[]` / `data.edges[]` walk — use it
+  instead of eyeballing a big `fanin`/`fanout` cone when the question is "how does A reach B". A
+  missing path is `found:false` with empty arrays (still `status:"ok"`, not an error); `--comb`
+  restricts to a path with no register in it (same flop boundary as `--comb` fan-in/out), the
+  check for "are these two points in one timing path". Endpoints take a bare name in `--scope`, a
+  dotted relative path, or an absolute path — same as a dotted `-s`.
 - **Dump a contract** with `rtlscanner <subcmd> --schema` (draft-07 JSON Schema) when
   you need the exact field list for a command.
 - **`batch` amortizes the load — use it for 3+ queries on one design.** Pipe one

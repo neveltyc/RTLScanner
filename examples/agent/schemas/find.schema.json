@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "find agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `rtlscanner find --json`. `find` walks the whole elaborated design and reports every signal/instance node whose hierarchical path matches the glob (default) or regex (`--regex`) PATTERN, each with its source location — the slang-netlist `--find` analogue. Narrow with `--kind signal|instance` and `--scope`.",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner find --json`. `find` walks the whole elaborated design and reports every signal/instance node whose hierarchical path matches the glob (default) or regex (`--regex`) PATTERN, each with its source location. Narrow with `--kind signal|instance` and `--scope`.",
   "type": "object",
   "required": [
     "tool",

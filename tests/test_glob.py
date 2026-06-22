@@ -1,11 +1,9 @@
 """Segment-aware glob matching (``rtl_glob.wildcard_match``).
 
-``find`` matches hierarchical paths with the same wildcard semantics as
-slang-netlist's ``wildcardMatch`` so a pattern means the same in either tool.
-These cases mirror slang-netlist's ``WildcardTests.cpp`` one-for-one (plus the
-README examples), pinning the segment boundary (``.``) handling that makes
-``*`` single-segment and ``**`` / ``...`` recursive.  Pure string logic — no
-pyslang needed.
+``find`` matches hierarchical paths with segment-aware wildcard semantics.
+These cases pin the segment boundary (``.``) handling that makes ``*``
+single-segment and ``**`` / ``...`` recursive — plus the README examples.
+Pure string logic — no pyslang needed.
 """
 
 import sys
