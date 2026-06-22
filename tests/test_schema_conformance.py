@@ -21,7 +21,7 @@ except ImportError:
     _HAVE_JSONSCHEMA = False
 
 RTLSCANNER = [sys.executable, "-m", "rtlscanner"]
-ALL_TOOLS = ("tree", "trace", "scope", "fanin", "fanout", "xref", "lint")
+ALL_TOOLS = ("tree", "trace", "scope", "fanin", "fanout", "xref", "lint", "find")
 
 DESIGN = (
     "module leaf(input wire a, output wire y);\n  assign y = a;\nendmodule\n"
@@ -39,6 +39,7 @@ CMDS = {
     "fanout": ["fanout", "top.sv", "-s", "a", "--scope", "top"],
     "xref":   ["xref", "top.sv", "--module", "leaf"],
     "lint":   ["lint", "top.sv", "--rules", "semantic"],
+    "find":   ["find", "top.sv", "-p", "top.**"],
 }
 
 

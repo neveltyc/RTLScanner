@@ -1,0 +1,263 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "find agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner find --json`. `find` walks the whole elaborated design and reports every signal/instance node whose hierarchical path matches the glob (default) or regex (`--regex`) PATTERN, each with its source location — the slang-netlist `--find` analogue. Narrow with `--kind signal|instance` and `--scope`.",
+  "type": "object",
+  "required": [
+    "tool",
+    "version",
+    "status",
+    "command",
+    "data",
+    "diagnostics",
+    "errors",
+    "summary"
+  ],
+  "properties": {
+    "tool": {
+      "type": "string",
+      "const": "find"
+    },
+    "version": {
+      "type": "string"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "error"
+      ]
+    },
+    "command": {
+      "type": "object",
+      "description": "Echo of the parsed argparse Namespace minus output flags."
+    },
+    "data": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "pattern",
+            "matches"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "find"
+            },
+            "pattern": {
+              "type": "string",
+              "description": "The query pattern."
+            },
+            "regex": {
+              "type": "boolean",
+              "description": "True when PATTERN was a regex (whole-path match); false for the segment-aware glob."
+            },
+            "kind": {
+              "type": "string",
+              "enum": [
+                "all",
+                "signal",
+                "instance"
+              ]
+            },
+            "scope": {
+              "type": "string",
+              "description": "Scope the search was restricted to (empty = whole design)."
+            },
+            "matches": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "category",
+                  "name",
+                  "kind",
+                  "hierarchical_path"
+                ],
+                "properties": {
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "signal",
+                      "instance"
+                    ],
+                    "description": "Coarse node category (the --kind vocabulary)."
+                  },
+                  "name": {
+                    "type": "string",
+                    "description": "Leaf name."
+                  },
+                  "kind": {
+                    "type": "string",
+                    "description": "Elaborated SymbolKind name (Net / Variable / Instance / ...)."
+                  },
+                  "hierarchical_path": {
+                    "type": "string",
+                    "description": "Full path that matched the pattern."
+                  },
+                  "type": {
+                    "type": "string",
+                    "description": "Signal data type; present for signal nodes."
+                  },
+                  "module": {
+                    "type": "string",
+                    "description": "Elaborated module name; present for instance nodes."
+                  },
+                  "file": {
+                    "type": "string"
+                  },
+                  "line": {
+                    "type": "integer"
+                  },
+                  "column": {
+                    "type": "integer"
+                  },
+                  "location": {
+                    "type": "object",
+                    "required": [
+                      "file",
+                      "line",
+                      "column"
+                    ],
+                    "properties": {
+                      "file": {
+                        "type": "string"
+                      },
+                      "line": {
+                        "type": "integer"
+                      },
+                      "column": {
+                        "type": "integer"
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "match_count": {
+              "type": "integer",
+              "description": "True total match count, even when `matches` was capped by --limit."
+            }
+          },
+          "additionalProperties": true
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "col",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warning",
+              "note",
+              "info"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "col": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "enum": [
+              "INPUT_NOT_FOUND",
+              "BAD_FILELIST",
+              "COMPILE_FAILED",
+              "SCOPE_NOT_FOUND",
+              "SIGNAL_NOT_FOUND",
+              "BAD_CONFIG",
+              "NO_TOP",
+              "INTERNAL_ERROR"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": "object",
+            "description": "Machine-readable recovery hints. For SCOPE_NOT_FOUND: valid_prefix, failing_component, close_matches, children. For SIGNAL_NOT_FOUND: close_matches, available."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "mode",
+            "matches"
+          ],
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "matches": {
+              "type": "integer"
+            },
+            "signals": {
+              "type": "integer"
+            },
+            "instances": {
+              "type": "integer"
+            },
+            "truncated": {
+              "type": "boolean",
+              "description": "True when an emitted list was capped by --limit; the count fields still report the true totals."
+            },
+            "limit": {
+              "type": "integer",
+              "description": "Effective per-list item cap that was applied (0 means unlimited)."
+            }
+          }
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "additionalProperties": false
+}

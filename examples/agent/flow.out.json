@@ -1,6 +1,6 @@
 {
   "tool": "fanout",
-  "version": "<tool-version>",
+  "version": "0.3.0",
   "status": "ok",
   "command": {
     "cmd": "fanout",
@@ -10,10 +10,14 @@
     ],
     "filelist": [],
     "exclude": [],
+    "single_unit": false,
     "signal": "q",
     "scope": "top.u_dp0",
-    "depth": 4,
-    "summary": false
+    "depth": null,
+    "comb": false,
+    "summary": false,
+    "unroll": null,
+    "max_unroll": null
   },
   "data": {
     "mode": "fanout",

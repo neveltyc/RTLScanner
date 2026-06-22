@@ -58,6 +58,10 @@
               "type": "string",
               "description": "Present when the query used a bit-select (e.g. '[5]', '[7:4]'): the traversal follows only edges touching those bits and maps the range across each hop (bit-level dataflow)."
             },
+            "comb": {
+              "type": "boolean",
+              "description": "Present and true when --comb was used: the BFS stopped at sequential (clocked) edges, so the cone is the pure combinational fan-in/out bounded by flip-flops. max_depth then reports the deepest hop the cone reached."
+            },
             "start": {
               "type": "string",
               "description": "Elaborated hierarchical path of the starting signal."

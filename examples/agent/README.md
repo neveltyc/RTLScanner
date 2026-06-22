@@ -36,6 +36,7 @@ rtlscanner fanin   --schema > schemas/fanin.schema.json
 rtlscanner fanout  --schema > schemas/fanout.schema.json
 rtlscanner lint    --schema > schemas/lint.schema.json
 rtlscanner xref    --schema > schemas/xref.schema.json
+rtlscanner find    --schema > schemas/find.schema.json
 rtlscanner batch   --schema > schemas/batch.schema.json   # streaming-frame shape, not an envelope
 ```
 
@@ -83,9 +84,11 @@ Closed enum of error codes:
 | `trace.out.json`      | `rtlscanner trace -d examples/basic --signal q --scope top.u_dp0 --json` |
 | `scope.out.json`      | `rtlscanner scope -d examples/basic --scope top.u_dp0 --connections --json` |
 | `flow.out.json`       | `rtlscanner fanout -d examples/basic --signal q --scope top.u_dp0 --json` |
+| `comb.out.json`       | `rtlscanner fanin -d examples/trace --signal q --scope trace_top.u_dp.u_pipe --comb --json` |
 | `lint.out.json`       | `rtlscanner lint -d examples/lint --json`                        |
 | `lint-cdc.out.json`   | `rtlscanner lint examples/lint/cdc_demo.sv --rules cdc --json`   |
 | `xref.out.json`       | `rtlscanner xref -d examples/trace --scope trace_top.u_dp --signal mux_out --json` |
+| `find.out.json`       | `rtlscanner find -d examples/basic -p 'top.u_dp0.**' --json`     |
 
 ## CDC / combinational-loop notes for agents
 
