@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "fanin agent-mode output envelope",
-  "description": "Stable agent-mode JSON envelope produced by `fanin --json`. All RTLScanner subcommands share the same top-level shape.",
+  "title": "path agent-mode output envelope",
+  "description": "Stable agent-mode JSON envelope produced by `rtlscanner path --json`. `path` finds a directional dataflow path from `--from` to `--to` by depth-first search over the same graph fanin/fanout traverse. `data.nodes` is the ordered node walk and `data.edges` the edges between them (nodes[i] --edges[i]--> nodes[i+1]). `--comb` restricts to a purely combinational path (never through a register). `found:false` with empty nodes/edges is a normal result (no such path), not an error.",
   "type": "object",
   "required": [
     "tool",
@@ -16,7 +16,7 @@
   "properties": {
     "tool": {
       "type": "string",
-      "const": "fanin"
+      "const": "path"
     },
     "version": {
       "type": "string"
@@ -38,43 +38,69 @@
           "type": "object",
           "required": [
             "mode",
-            "scope",
-            "signal",
-            "start"
+            "from",
+            "to",
+            "start",
+            "end",
+            "found",
+            "nodes",
+            "edges"
           ],
           "properties": {
             "mode": {
               "type": "string",
-              "const": "fanin"
+              "const": "path"
             },
-            "scope": {
-              "type": "string"
-            },
-            "signal": {
+            "from": {
               "type": "string",
-              "description": "Starting signal name."
+              "description": "Resolved start signal name (the driver end of the path)."
             },
-            "bit_select": {
+            "to": {
               "type": "string",
-              "description": "Present when the query used a bit-select (e.g. '[5]', '[7:4]'): the traversal follows only edges touching those bits and maps the range across each hop (bit-level dataflow)."
+              "description": "Resolved end signal name (the loaded end)."
             },
-            "comb": {
-              "type": "boolean",
-              "description": "Present and true when --comb was used: the BFS stopped at sequential (clocked) edges, so the cone is the pure combinational fan-in/out bounded by flip-flops. max_depth then reports the deepest hop the cone reached."
+            "from_scope": {
+              "type": "string",
+              "description": "Scope the start node was resolved in."
+            },
+            "to_scope": {
+              "type": "string",
+              "description": "Scope the end node was resolved in."
+            },
+            "from_type": {
+              "type": "string",
+              "description": "Start node data type."
+            },
+            "to_type": {
+              "type": "string",
+              "description": "End node data type."
             },
             "start": {
               "type": "string",
-              "description": "Elaborated hierarchical path of the starting signal."
+              "description": "Elaborated hierarchical path of the start node (== nodes[0] when found)."
             },
-            "max_depth": {
-              "type": "integer"
+            "end": {
+              "type": "string",
+              "description": "Elaborated hierarchical path of the end node (== nodes[-1] when found)."
+            },
+            "found": {
+              "type": "boolean",
+              "description": "True when a path exists. False (an empty nodes/edges) is a normal result — the nodes are not connected in the from->to direction (or, with comb, only through a register) — not an error."
+            },
+            "length": {
+              "type": "integer",
+              "description": "Hop count (number of edges); 0 for a not-found or single-node (from == to) path."
+            },
+            "comb": {
+              "type": "boolean",
+              "description": "Present and true when --comb was used: the path is purely combinational and never traverses into a register node."
             },
             "nodes": {
               "type": "array",
               "items": {
                 "type": "string"
               },
-              "description": "Full graph; absent with --summary."
+              "description": "Ordered node path start..end; nodes[i] --edges[i]--> nodes[i+1]."
             },
             "edges": {
               "type": "array",
@@ -148,35 +174,10 @@
                 },
                 "additionalProperties": true
               },
-              "description": "Full graph; absent with --summary."
-            },
-            "summary_only": {
-              "type": "boolean",
-              "description": "True when --summary was used: the full nodes/edges arrays are omitted in favor of counts."
-            },
-            "node_count": {
-              "type": "integer",
-              "description": "--summary only."
-            },
-            "edge_count": {
-              "type": "integer",
-              "description": "--summary only."
-            },
-            "edges_by_depth": {
-              "type": "object",
-              "additionalProperties": {
-                "type": "integer"
-              },
-              "description": "--summary only: edge count per BFS depth."
-            },
-            "direct": {
-              "type": "array",
-              "items": {
-                "type": "string"
-              },
-              "description": "--summary only: depth-1 neighbors (direct sources for fanin, direct sinks for fanout)."
+              "description": "Ordered dataflow edges between the nodes; len == len(nodes)-1. Same edge shape as fanin/fanout (source/target/kind/description/bits/location, plus clocked on a registered edge)."
             }
-          }
+          },
+          "additionalProperties": true
         },
         {
           "type": "null"
@@ -261,13 +262,16 @@
           "type": "object",
           "required": [
             "mode",
-            "results"
+            "found"
           ],
           "properties": {
             "mode": {
               "type": "string"
             },
-            "results": {
+            "found": {
+              "type": "boolean"
+            },
+            "length": {
               "type": "integer"
             },
             "nodes": {
@@ -276,8 +280,8 @@
             "edges": {
               "type": "integer"
             },
-            "max_depth": {
-              "type": "integer"
+            "comb": {
+              "type": "boolean"
             },
             "truncated": {
               "type": "boolean",

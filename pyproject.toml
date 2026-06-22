@@ -26,7 +26,7 @@ rtlscanner = "rtlscanner:main"
 # all of src/ on sys.path and would otherwise mask a missing entry.
 py-modules = [
   "rtlscanner", "rtl_tree", "rtl_common", "rtl_config", "rtl_cli", "rtl_slang",
-  "rtl_dataflow", "signal_cli", "signal_trace", "signal_flow",
+  "rtl_dataflow", "signal_cli", "signal_trace", "signal_flow", "signal_path",
   "rtl_lint", "rtl_scope", "rtl_xref", "rtl_find", "rtl_glob", "rtl_batch",
   "agent_json",
 ]

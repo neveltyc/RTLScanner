@@ -1,10 +1,10 @@
 """Design-wide node lookup (``rtlscanner find``).
 
 ``find`` walks the whole elaborated design and reports every signal / instance
-node whose hierarchical path matches a glob (default) or regex (``--regex``) —
-the slang-netlist ``--find`` analogue.  These tests pin the matching surface
-(glob vs regex, ``--kind`` / ``--scope`` filters, sibling-instance coverage)
-and the agent envelope (shape, counts, structured errors).
+node whose hierarchical path matches a glob (default) or regex (``--regex``).
+These tests pin the matching surface (glob vs regex, ``--kind`` / ``--scope``
+filters, sibling-instance coverage) and the agent envelope (shape, counts,
+structured errors).
 """
 
 import json
