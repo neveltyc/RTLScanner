@@ -44,7 +44,6 @@ from rtl_slang import (
     expr_symbols,
     expr_refs_symbol,
     find_signal,
-    full_bounds,
     is_data_symbol,
     iter_instances,
     lsp_bounds,

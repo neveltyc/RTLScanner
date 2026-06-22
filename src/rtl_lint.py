@@ -25,7 +25,6 @@ from pathlib import Path
 
 try:
     import pyslang
-    import pyslang.ast as ast
     import pyslang.analysis as analysis
 except ImportError:
     print("Error: pyslang is required.  pip install pyslang", file=sys.stderr)
