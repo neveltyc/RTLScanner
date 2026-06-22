@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-22
+
 ### Added
 
 - **`path` — point-to-point dataflow path between two nodes.** A new subcommand
@@ -27,10 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`--from` must drive `--to`); a nonexistent path is a normal `found:false` empty
   result (`status:"ok"`), never an error, and `--from == --to` is a zero-hop
   single-node path. Each endpoint accepts a bare name in `--scope`, a dotted
-  relative path, or an absolute
-  hierarchical path (same normalization as a dotted `-s`). New module
-  `src/signal_path.py` over the shared `PathFinder` in `rtl_dataflow`; ships a
-  JSON schema (`path --schema`) and the shared agent envelope.
+  relative path, or an absolute hierarchical path (same normalization as a
+  dotted `-s`). New module `src/signal_path.py` over the shared `PathFinder` in
+  `rtl_dataflow`; ships a JSON schema (`path --schema`) and the shared agent
+  envelope.
 
 - **`find` — design-wide node lookup by glob/regex.** A new subcommand that scans
   the **whole elaborated design** and reports every signal / instance node whose
@@ -48,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Combinational-cone mode for `fanin`/`fanout` (`--comb`).** Stops the dataflow
   BFS at sequential (registered) edges, yielding the *pure combinational*
   fan-in/out bounded by flip-flops — the BFS refuses to enter a register node.
-  This is the cone for timing-path reasoning. A
-  register *node* is the boundary, so boundary flops are excluded — except the
+  This is the cone for timing-path reasoning. A register *node* is the
+  boundary, so boundary flops are excluded — except the
   starting signal, which is always expanded, so a `--comb fanin` from a register
   output still reports that flop's own combinational D-cone (the `clocked` D→Q
   edge marks the boundary). Reuses the `clocked` edge information already on the
@@ -449,7 +451,8 @@ simulation), each emitting one uniform JSON envelope under `--json`:
   traverse port boundaries; `trace` is now strictly scope-local. The
   `cross_hierarchy` output field is removed accordingly.
 
-[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/neveltyc/RTLScanner/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/neveltyc/RTLScanner/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/neveltyc/RTLScanner/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/neveltyc/RTLScanner/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/neveltyc/RTLScanner/releases/tag/v0.1.0

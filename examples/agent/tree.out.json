@@ -1,6 +1,6 @@
 {
   "tool": "tree",
-  "version": "<tool-version>",
+  "version": "0.4.0",
   "status": "ok",
   "command": {
     "cmd": "tree",
@@ -10,6 +10,7 @@
     ],
     "filelist": [],
     "exclude": [],
+    "single_unit": false,
     "top": null,
     "depth": -1,
     "no_params": false,
@@ -99,7 +100,7 @@
     ],
     "filelist": {
       "sources": [
-        "./examples/basic/top.sv"
+        "/Users/tyc/Documents/Projects/RTLScanner/.claude/worktrees/nice-murdock-a9822b/examples/basic/top.sv"
       ],
       "include_dirs": [],
       "defines": {}

@@ -1,6 +1,6 @@
 {
   "tool": "trace",
-  "version": "<tool-version>",
+  "version": "0.4.0",
   "status": "ok",
   "command": {
     "cmd": "trace",
@@ -10,9 +10,12 @@
     ],
     "filelist": [],
     "exclude": [],
+    "single_unit": false,
     "signal": "q",
     "scope": "top.u_dp0",
-    "filter": null
+    "filter": null,
+    "unroll": null,
+    "max_unroll": null
   },
   "data": {
     "mode": "signal",

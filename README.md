@@ -638,4 +638,5 @@ appended to human-mode error messages.
 | Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py`, `src/rtl_glob.py` |
 | RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/signal_flow.py`, `src/signal_path.py`, `src/rtl_lint.py`, `src/rtl_xref.py`, `src/rtl_find.py` |
 | Dataflow engine + shared front-end | `src/rtl_dataflow.py`, `src/signal_cli.py` |
+| Batch runner | `src/rtl_batch.py` |
 | Agent examples and contracts | `examples/agent/` |
