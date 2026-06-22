@@ -85,8 +85,6 @@ class P1BitEdges(unittest.TestCase):
 
     def test_whole_signal_edge_is_bare(self):
         # A full-width copy keeps the old shape: no bit keys emitted (additive).
-        env = run_json("fanout", FIX, "-s", "din", "--scope", "bits_top",
-                       "--depth", "1")
         # din -> narrow is a truncation, so din side IS sliced; assert the
         # arithmetic-free, full-width case via sum's whole-signal fanin instead.
         sums = run_json("fanin", FIX, "-s", "sum", "--scope", "bits_top",

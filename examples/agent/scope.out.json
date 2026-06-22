@@ -1,6 +1,6 @@
 {
   "tool": "scope",
-  "version": "<tool-version>",
+  "version": "0.4.0",
   "status": "ok",
   "command": {
     "cmd": "scope",
@@ -10,6 +10,7 @@
     ],
     "filelist": [],
     "exclude": [],
+    "single_unit": false,
     "scope": "top.u_dp0",
     "ports": false,
     "signals": false,
