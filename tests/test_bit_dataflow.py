@@ -1,4 +1,4 @@
-"""Bit-level dataflow (slang-netlist parity).
+"""Bit-level dataflow.
 
 P1 pins that fanin/fanout edges carry the precise bit sub-range each read /
 drive touches — answering "dout[5] comes from a[2]" — while staying additive:

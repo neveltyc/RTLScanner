@@ -160,9 +160,9 @@ class FlowEdge:
     # connections are never clocked.  Deliberately NOT part of ``key()`` so the
     # demand-driven / whole-graph parity (test_flow_lazy) is unaffected.
     clocked: bool = False
-    # Bit-level dataflow (slang-netlist parity).  source_bits / target_bits are
-    # the (lo, hi) sub-ranges this edge reads / drives, or None for the whole
-    # signal — so whole-signal edges serialize exactly as before (additive).
+    # Bit-level dataflow.  source_bits / target_bits are the (lo, hi) sub-ranges
+    # this edge reads / drives, or None for the whole signal — so whole-signal
+    # edges serialize exactly as before (additive).
     # bit_offset is the affine map of a copy-like edge (target_bit = source_bit
     # + bit_offset), which lets fanin/fanout answer "dout[5] ← which bit"; it is
     # None when the relationship is many-to-many (arithmetic / reduction).
@@ -250,6 +250,53 @@ class FlowResult:
                     seen.add(node)
                     out.append(node)
         return out
+
+
+@dataclass
+class PathResult:
+    """A point-to-point path between two nodes.
+
+    ``nodes`` is the ordered node sequence from start to end, and ``edges`` the
+    dataflow edges between them — ``edges[i]`` links ``nodes[i]`` -> ``nodes[i+1]``,
+    so the pair reads as the alternating node/edge walk the path *is*.  An empty
+    ``nodes`` means no path exists for the requested direction/predicate — a
+    normal result, not an error.
+
+    The path is *directional* (``from`` drives ``to`` — a forward / fan-out walk)
+    and, with ``comb=True``, *combinational* (it never enters a register node, so
+    it is bounded by flip-flops, the same boundary the ``--comb`` cone uses).
+    """
+    from_signal: str
+    to_signal: str
+    from_scope: str
+    to_scope: str
+    start: str               # resolved elaborated path of the start node
+    end: str                 # resolved elaborated path of the end node
+    start_type: str = ""
+    end_type: str = ""
+    nodes: list = field(default_factory=list)   # [node_path] ordered start..end
+    edges: list = field(default_factory=list)   # [FlowEdge], len == len(nodes)-1
+    comb: bool = False
+
+    @property
+    def found(self) -> bool:
+        return bool(self.nodes)
+
+    @property
+    def length(self) -> int:
+        """Hop count (number of edges); 0 for a not-found or single-node path."""
+        return max(0, len(self.nodes) - 1)
+
+    def node_types(self) -> list:
+        """The data type of each node in ``nodes``, in order.  The start type is
+        carried directly; every later node's type is the ``target_type`` of the
+        edge that reaches it, so the list lines up one-for-one with ``nodes``."""
+        if not self.nodes:
+            return []
+        types = [self.start_type]
+        for e in self.edges:
+            types.append(e.target_type or "")
+        return types
 
 
 # ── Graph-analysis result records (CDC / combinational loops) ────────
@@ -1139,9 +1186,9 @@ class SignalTracer:
         Descends the statement tree: constant if/case conditions skip the dead
         branch; constant-bound for/repeat loops are unrolled with the loop
         variable bound in an EvalContext, so per-iteration ``p[i]`` indices fold
-        to concrete bits (slang-netlist-style bit precision).  Returns
-        (bit_pairs, control, ok); ok=False asks the caller to fall back to the
-        flat walk.  Never raises.  Anything not handled — while/do-while/foreach,
+        to concrete bits.  Returns (bit_pairs, control, ok); ok=False asks the
+        caller to fall back to the flat walk.  Never raises.  Anything not
+        handled — while/do-while/foreach,
         non-constant bounds, an over-budget loop, an unknown statement kind —
         degrades to the conservative flat handling for that subtree, so the
         result never under-reports edges.
@@ -1831,19 +1878,18 @@ class SignalTracer:
 
     def _is_registered(self, node):
         """True when ``node`` is a register — driven by a sequential (clocked)
-        procedure, i.e. the target of a clocked edge.  This is slang-netlist's
-        ``State`` node: the boundary a combinational cone stops at.  Resolved
-        lazily from the node's own incident edges (the same ``clocked`` flag the
-        whole engine keys off) and memoized, so combinational queries stay
-        demand-driven instead of materializing the whole flow graph.
+        procedure, i.e. the target of a clocked edge.  This is the boundary a
+        combinational cone stops at.  Resolved lazily from the node's own
+        incident edges (the same ``clocked`` flag the whole engine keys off) and
+        memoized, so combinational queries stay demand-driven instead of
+        materializing the whole flow graph.
 
         The test is at *signal* granularity: a node with **any** clocked driver
         is a boundary, even if some of its bits are driven combinationally (a
         signal that is part-latched, part-`assign`ed).  Such a node is then
         excluded from a combinational cone whole, dropping the genuinely
         combinational sub-range — rare in practice, and the conservative call
-        keeps the boundary simple and never *crosses* a sequential element.
-        (slang-netlist, whose State nodes are bit-split, keeps those bits.)"""
+        keeps the boundary simple and never *crosses* a sequential element."""
         cached = self._registered_cache.get(node)
         if cached is not None:
             return cached
@@ -1890,13 +1936,11 @@ class SignalTracer:
                 for edge in self._incident_edges(node, mode):
                     far = edge.source if mode == "fanin" else edge.target
                     # Combinational cone: a register node is a sequential
-                    # boundary, so don't cross into it — exactly slang-netlist's
-                    # getCombFan{In,Out}, whose DFS predicate refuses to enter a
-                    # State node (source != State for fan-in, target != State for
-                    # fan-out).  The start is the BFS seed (always expanded), so a
-                    # register *start* still yields its own combinational D-cone /
-                    # fan-out; only register nodes reached as neighbors terminate
-                    # the cone (and are themselves excluded).
+                    # boundary, so don't cross into it.  The start is the BFS
+                    # seed (always expanded), so a register *start* still yields
+                    # its own combinational D-cone / fan-out; only register
+                    # nodes reached as neighbors terminate the cone (and are
+                    # themselves excluded).
                     if comb and self._is_registered(far):
                         continue
                     nxt_rng = self._map_range(edge, rng, mode)
@@ -1934,6 +1978,32 @@ class SignalTracer:
             scope_module=inst.body.name, start=start,
             edges=traversed, max_depth=result_max_depth, bit_range=bit_range,
             comb=comb,
+        )
+
+    def find_path(self, from_signal, from_scope, to_signal, to_scope,
+                  comb=False):
+        """Find a directional dataflow path from one signal to another.
+
+        Resolves both endpoints to graph nodes, runs the DFS :class:`PathFinder`
+        (``comb`` selects the combinational predicate, which never enters a
+        register), and packages the node/edge walk into a :class:`PathResult`.  A
+        missing endpoint raises a precise SCOPE/SIGNAL error via ``_lookup``; a
+        nonexistent path is a normal empty result (``found == False``), not an
+        error.
+        """
+        _from_inst, from_sym = self._lookup(from_signal, from_scope)
+        _to_inst, to_sym = self._lookup(to_signal, to_scope)
+        start = self._sym_path(from_sym)
+        end = self._sym_path(to_sym)
+        finder = PathFinder(self)
+        nodes, edges = (finder.findComb(start, end) if comb
+                        else finder.find(start, end))
+        return PathResult(
+            from_signal=from_signal, to_signal=to_signal,
+            from_scope=from_scope, to_scope=to_scope,
+            start=start, end=end,
+            start_type=str(from_sym.type), end_type=str(to_sym.type),
+            nodes=nodes, edges=edges, comb=comb,
         )
 
     # ── clock / sequential classification ─────────────────────────────
@@ -2165,3 +2235,86 @@ class SignalTracer:
             r.extra_drivers = drivers[1:]
         r.loads = loads
         return r
+
+
+# ── Path finding ─────────────────────────────────────────────────────
+class PathFinder:
+    """Find a path between two nodes by depth-first search.
+
+    One forward DFS from the start node builds a *parent map* — for each node,
+    the edge by which it was first reached — and the path to the end node is read
+    back along that map and reversed (``_build``).  ``find`` and ``findComb``
+    differ only by the edge predicate:
+
+      * ``find``     — follow every edge.
+      * ``findComb`` — additionally refuse to enter a register (sequential) node,
+                       so the path is purely combinational, bounded by
+                       flip-flops.  The boundary is the same one ``--comb``
+                       fan-in/out uses (``SignalTracer._is_registered``).
+
+    The DFS walks the same demand-driven dataflow graph ``flow()`` traverses (via
+    ``SignalTracer._incident_edges`` in the forward / fan-out direction), so a
+    path crosses port boundaries and hierarchical references exactly as the
+    fan-in/out cones do.  The search stops as soon as the end node is reached:
+    a node's parent is fixed on first visit (it never gets a second parent), so
+    early exit yields the same path a full traversal would — and avoids walking
+    the rest of the start node's fan-out cone once the target is found.
+    """
+
+    def __init__(self, tracer: "SignalTracer"):
+        self._tracer = tracer
+
+    def find(self, start: str, end: str):
+        """Any path ``start`` -> ``end``: (nodes, edges), or ([], []) if none."""
+        return self._search(start, end, comb=False)
+
+    def findComb(self, start: str, end: str):
+        """A purely combinational path ``start`` -> ``end`` (never via a
+        register): (nodes, edges), or ([], []) if none exists."""
+        return self._search(start, end, comb=True)
+
+    def _search(self, start, end, *, comb):
+        """Iterative DFS with an explicit stack.  ``parent[node] = (source,
+        edge)`` records the edge that first reached ``node``."""
+        tracer = self._tracer
+        parent = {}                      # node -> (source_node, FlowEdge)
+        visited = {start}
+        stack = [(start, iter(tracer._incident_edges(start, "fanout")))]
+        while stack and end not in visited:
+            node, edge_it = stack[-1]
+            pushed = False
+            for edge in edge_it:
+                nxt = edge.target
+                # Combinational predicate: never enter a register node.
+                if comb and tracer._is_registered(nxt):
+                    continue
+                if nxt in visited:
+                    continue
+                visited.add(nxt)
+                parent[nxt] = (node, edge)
+                stack.append(
+                    (nxt, iter(tracer._incident_edges(nxt, "fanout"))))
+                pushed = True
+                break
+            if not pushed:
+                stack.pop()
+        return self._build(parent, start, end)
+
+    @staticmethod
+    def _build(parent, start, end):
+        """Reconstruct the ordered (nodes, edges) for ``start`` -> ``end`` from
+        the parent map, or ([], []) when ``end`` was never reached."""
+        if start == end:
+            return [start], []
+        if end not in parent:
+            return [], []
+        nodes, edges = [end], []
+        cur = end
+        while cur != start:
+            src, edge = parent[cur]
+            nodes.append(src)
+            edges.append(edge)
+            cur = src
+        nodes.reverse()
+        edges.reverse()
+        return nodes, edges

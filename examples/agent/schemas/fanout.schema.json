@@ -107,7 +107,7 @@
                   },
                   "source_bits": {
                     "type": "string",
-                    "description": "Bit sub-range of the source that this edge reads ('[5]' / '[7:4]'); absent when the whole signal is read. Bit-level dataflow (slang-netlist parity)."
+                    "description": "Bit sub-range of the source that this edge reads ('[5]' / '[7:4]'); absent when the whole signal is read. Bit-level dataflow."
                   },
                   "target_bits": {
                     "type": "string",

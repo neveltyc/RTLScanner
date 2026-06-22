@@ -1,9 +1,8 @@
 """Combinational-cone mode for ``fanin`` / ``fanout`` (``--comb``).
 
-A combinational cone stops at register nodes, exactly like slang-netlist's
-``getCombFanIn`` / ``getCombFanOut`` (DFS predicate ``source/target != State``).
-These tests pin that boundary in RTLScanner's edge model, where "register node"
-means "target of a clocked edge":
+A combinational cone stops at register nodes — the BFS refuses to enter a
+sequential element.  These tests pin that boundary in RTLScanner's edge model,
+where "register node" means "target of a clocked edge":
 
   * fan-out from combinational logic stops before a downstream flop;
   * fan-in to a combinational node excludes the upstream boundary flops;

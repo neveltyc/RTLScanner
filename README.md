@@ -14,6 +14,7 @@ Use `rtlscanner <subcommand>`:
 | `trace`    | Single-signal driver & load analyzer      | Simulation / debug |
 | `fanin`    | Upstream dataflow BFS from a signal       | Simulation / debug |
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
+| `path`     | Point-to-point dataflow path between two nodes | Simulation / debug / timing |
 | `lint`     | Static linter (semantic + analysis + port checks) | Code review / CI |
 | `xref`     | Symbol definitions and references         | Simulation / debug / code review |
 | `find`     | Design-wide node lookup by glob/regex pattern | Architecture / debug |
@@ -212,10 +213,9 @@ A cone can be large on a real design. `--summary` replaces the full
 
 **Combinational cone (`--comb`).** Stops the BFS at sequential (registered)
 edges, so the result is the *pure combinational* fan-in/out bounded by
-flip-flops — the same cone slang-netlist's `--fan-in`/`--fan-out` report (its
-`getCombFanIn`/`getCombFanOut`, which refuse to enter a register/`State` node).
-This is the cone for timing-path reasoning: "what combinational logic feeds this
-register's D", "where does this signal go before the next flop".
+flip-flops — the BFS refuses to enter a register node. This is the cone for
+timing-path reasoning: "what combinational logic feeds this register's D",
+"where does this signal go before the next flop".
 
 ```bash
 rtlscanner fanin  -d ./rtl -s data_q --scope top.u_pipe --comb   # comb logic into the flop's D
@@ -235,7 +235,7 @@ when left at its default — the effective bound is always `data.max_depth`.)
 The boundary is at signal granularity: a node with **any** registered driver is
 a boundary, so a signal that is part-`assign`ed and part-latched is excluded
 whole rather than split — a conservative simplification that never crosses a
-flop (slang-netlist, with bit-split state, would keep the combinational bits).
+flop.
 
 **Bit-level dataflow.** Edges carry the bit sub-range each read/drive touches
 (`source_bits` / `target_bits` in JSON, e.g. `top.a[2] → top.dout[5]`), so the
@@ -290,6 +290,57 @@ Reading the output:
 | **bits**  | `source_bits` / `target_bits`: the bit sub-range the edge reads / drives, e.g. `a[2] → dout[5]`. Absent when the whole signal is touched. |
 | **segments** | For a per-bit permutation (reversal / swap), the list of `{source_bits, target_bits}` sub-copies, e.g. `din[7] → rev[0]`. Absent for single-offset and whole-signal edges. |
 | **depth** | BFS distance in hops from the starting signal. |
+
+## `rtlscanner path` — point-to-point dataflow path
+
+```bash
+rtlscanner path -d ./rtl --from a --to y0 --scope top              # any path
+rtlscanner path -d ./rtl --from u_dp.q --to result --scope top     # dotted names
+rtlscanner path -d ./rtl --from top.u_a.x --to top.u_b.y           # absolute paths
+rtlscanner path -d ./rtl --from q --to result --scope top.u_dp --comb  # comb only
+```
+
+Where `fanin`/`fanout` report the whole cone *around* a signal, `path` answers a
+narrower question: **is there a dataflow path between these two specific nodes,
+and what is it?** The output is the path itself — the alternating node → edge →
+node sequence from `--from` to `--to`, each edge carrying its kind, source
+location, and description (an input/output port connection, a continuous
+`assign`, or a procedural block), plus the driven bit range when it is a
+sub-range.
+
+**Directional.** The path follows dataflow *forward*: `--from` must drive
+`--to`. There is no path the other way unless the design also wires it that way,
+so `path --from y --to a` on `assign y = a` finds nothing.
+
+**Mechanism — DFS + parent map + backtrack.** A single depth-first search runs
+from the start node over the same demand-driven dataflow graph `fanin`/`fanout`
+traverse (so a path crosses port boundaries and hierarchical references the same
+way). The DFS records, for each node, the edge by which it was *first* reached;
+the path to the end node is then read back along those parent pointers and
+reversed. The Python API is `PathFinder.find()` / `PathFinder.findComb()` on the
+dataflow engine.
+
+**No path is a normal result.** When the two nodes are not connected (in the
+`--from → --to` direction), the result is a successful, empty path —
+`status:"ok"` with `found:false` and empty `nodes`/`edges`, never an error.
+`--from == --to` is a found, zero-hop single-node path.
+
+**Combinational path (`--comb`).** Restricts the search to a *purely
+combinational* path: the DFS never enters a register (sequential) node — the
+same flip-flop boundary `--comb` fan-in/out uses. A path that exists only
+*through* a register therefore disappears under `--comb`, while a register
+*start* still finds its own combinational fan-out path (the start is the DFS
+seed, always expanded). This is the query for "do these two points sit in the
+same timing path (no flop between them)?".
+
+Reading the output:
+
+| Term     | Meaning |
+|----------|---------|
+| **found** | Whether a path exists. `false` (empty `nodes`/`edges`) is a normal result — the nodes are not connected in the queried direction (or, with `--comb`, only through a register). |
+| **nodes** | The ordered node sequence from start to end (elaborated hierarchical paths); `nodes[i]` →`edges[i]`→ `nodes[i+1]`. |
+| **edges** | The dataflow edges between the nodes (one fewer than `nodes`); same shape as `fanin`/`fanout` (`kind`, `description`, `file`/`line`, bit ranges, and `clocked` on a registered edge). |
+| **length** | Hop count (number of edges); `0` for a not-found or single-node path. |
 
 ## `rtlscanner xref` — source cross-reference lookup
 
@@ -418,10 +469,9 @@ rtlscanner find -d ./rtl -p '**' --scope top.u_ctrl    # everything under one sc
 
 `xref` looks up *one exact name*; `find` is the complement — it scans the
 **whole elaborated design** and reports every node whose hierarchical path
-matches a pattern, with its source location. It is the slang-netlist `--find` /
-`--find-regex` analogue: the way to discover the nodes to then feed into
-`trace`/`fanin`/`fanout`/`xref` when you only know a naming pattern, not the
-exact path.
+matches a pattern, with its source location. It is the way to discover the
+nodes to then feed into `trace`/`fanin`/`fanout`/`xref` when you only know a
+naming pattern, not the exact path.
 
 Each match reports the leaf `name`, the elaborated `kind` (`Net` / `Variable` /
 `Instance`), the matched `hierarchical_path`, the `type` (signal) or `module`
@@ -443,9 +493,9 @@ dot-separated segments):
 | `?`     | exactly one character within a segment (never `.`) |
 
 A recursive wildcard next to a literal `.` makes that `.` an optional boundary,
-so `a.**.b` matches `a.b`, `a.x.b`, and `a.x.y.b` alike — identical to
-slang-netlist's `wildcardMatch`. `--regex` switches to a Python regex matched
-against the whole path (`re.fullmatch`).
+so `a.**.b` matches `a.b`, `a.x.b`, and `a.x.y.b` alike — the gitignore `/**/`
+convention. `--regex` switches to a Python regex matched against the whole path
+(`re.fullmatch`).
 
 ## `rtlscanner batch` — many queries, one load
 
@@ -586,5 +636,6 @@ appended to human-mode error messages.
 |------|-------|
 | CLI and JSON envelope | `src/rtlscanner.py`, `src/rtl_cli.py`, `src/agent_json.py` |
 | Inputs and compilation | `src/rtl_config.py`, `src/rtl_common.py`, `src/rtl_slang.py`, `src/rtl_glob.py` |
-| RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/rtl_lint.py`, `src/rtl_xref.py`, `src/rtl_find.py` |
+| RTL analysis commands | `src/rtl_tree.py`, `src/rtl_scope.py`, `src/signal_trace.py`, `src/signal_flow.py`, `src/signal_path.py`, `src/rtl_lint.py`, `src/rtl_xref.py`, `src/rtl_find.py` |
+| Dataflow engine + shared front-end | `src/rtl_dataflow.py`, `src/signal_cli.py` |
 | Agent examples and contracts | `examples/agent/` |
