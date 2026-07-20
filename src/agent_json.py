@@ -27,7 +27,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.4.0"
+TOOL_VERSION = "0.5.0"
 
 # Default cap on the number of rows/items emitted per list, so a query against a
 # large design stays agent-friendly instead of dumping thousands of entries.
@@ -628,6 +628,73 @@ _TRACE_SCHEMA = _envelope_schema(
             "results": {"type": "integer"},
             "drivers": {"type": "integer"},
             "loads":   {"type": "integer"},
+        },
+    },
+)
+
+# ── driver: structured driver value-logic (branches / operands / timing) ──
+_DRIVER_OPERAND = {
+    "type": "object",
+    "required": ["name", "path"],
+    "properties": {
+        "name": {"type": "string"},
+        "path": {"type": "string", "description": "Hierarchical path of the operand."},
+        "bits": {"type": "string", "description": "Bit range read, e.g. '[7:0]'."},
+    },
+    "additionalProperties": True,
+}
+_DRIVER_ASSIGNMENT = {
+    "type": "object",
+    "properties": {
+        "lhs":          {"type": "string"},
+        "rhs_text":     {"type": "string", "description": "Source text of the RHS."},
+        "rhs_operands": {"type": "array", "items": _DRIVER_OPERAND},
+        "guards":       {"type": "array", "items": {"type": "object"},
+                         "description": "Guard chain (if/case conditions + polarity) "
+                                        "that must hold for this branch to be active."},
+        "file":         {"type": "string"},
+        "line":         {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_DRIVER_ENTRY = {
+    "type": "object",
+    "required": ["kind", "source", "timing", "assignments"],
+    "properties": {
+        "kind":        {"type": "string"},
+        "source":      {"type": "string"},
+        "description": {"type": "string"},
+        "file":        {"type": "string"},
+        "line":        {"type": "integer"},
+        "bits":        {"type": "string"},
+        "scope_path":  {"type": "string"},
+        "timing":      {"type": "object",
+                        "description": "sequential (clock/reset) | combinational | latch."},
+        "assignments": {"type": "array", "items": _DRIVER_ASSIGNMENT},
+    },
+    "additionalProperties": True,
+}
+_DRIVER_SCHEMA = _envelope_schema(
+    "driver",
+    data_schema={
+        "type": "object",
+        "required": ["signal", "scope", "drivers"],
+        "properties": {
+            "signal":      {"type": "string"},
+            "scope":       {"type": "string"},
+            "signal_path": {"type": "string"},
+            "width":       {"type": ["integer", "null"]},
+            "bit_select":  {"type": ["string", "null"]},
+            "drivers":     {"type": "array", "items": _DRIVER_ENTRY},
+        },
+    },
+    summary_schema={
+        "type": "object",
+        "required": ["drivers"],
+        "properties": {
+            "signal":  {"type": ["string", "null"]},
+            "scope":   {"type": ["string", "null"]},
+            "drivers": {"type": "integer"},
         },
     },
 )
@@ -1248,6 +1315,7 @@ _BATCH_SCHEMA = {
 TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     "tree":    _TREE_SCHEMA,
     "trace":   _TRACE_SCHEMA,
+    "driver":  _DRIVER_SCHEMA,
     "scope":   _SCOPE_SCHEMA,
     "fanin":   _FANIN_SCHEMA,
     "fanout":  _FANOUT_SCHEMA,

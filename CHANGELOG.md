@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`driver` — a signal driver's value-logic (branches, operands, timing).**
+  Where `trace` locates a signal's driver, `driver` returns the structure needed
+  to explain a value: for each driver, the branch/guard chain (if/case conditions
+  with polarity), each branch's RHS operands (name, hierarchical path, bit range),
+  and — for sequential drivers — the clock/reset timing read from the sensitivity
+  list. Combinational and continuous drivers report their operands directly. This
+  is the elaborated structure a waveform-aware root-cause ("why is S this value at
+  time T") analysis joins with runtime values. Branch structure and operands are
+  exact; reset classification and sequential-timing inference are best-effort and
+  flagged `heuristic`. Ships with a `--schema` contract and full envelope
+  conformance coverage.
+
 ## [0.4.0] - 2026-06-22
 
 ### Added

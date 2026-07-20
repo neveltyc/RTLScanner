@@ -113,6 +113,32 @@ def bits_overlap(bounds, rng):
     return bounds[0] <= rng[1] and rng[0] <= bounds[1]
 
 
+import re as _re
+
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
+_RESET_HINTS = ("rst", "reset", "clr", "clear", "arst")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text or "")
+
+
+def _edge_word(edge: str) -> str:
+    e = (edge or "").lower()
+    if "posedge" in e:
+        return "posedge"
+    if "negedge" in e:
+        return "negedge"
+    if "bothedges" in e or e == "edge":
+        return "edge"
+    return e
+
+
+def _looks_reset(name: str) -> bool:
+    low = (name or "").lower()
+    return any(hint in low for hint in _RESET_HINTS)
+
+
 @dataclass
 class LoadInfo:
     """One load (reader) of a signal."""
@@ -521,6 +547,246 @@ class SignalTracer:
                         continue
                     add(d, view.remap)
         return infos
+
+    # ── structured driver payload (for the `why` engine) ─────────────
+    #
+    # Beyond `_analyze_drivers` (which locates drivers), the `why` engine needs
+    # the *value logic*: for each driver, the branch structure (guard chain),
+    # each branch's RHS operands, and — for sequential drivers — the clock/reset
+    # timing. `driver_payload` walks the driver's containing procedure/assign AST
+    # and returns that as plain data. Times and value evaluation stay in the MCP
+    # layer; this is the elaborated *structure* the evaluator joins with waveform
+    # values.
+
+    def driver_payload(self, signal, scope, bit_range=None):
+        """Structured drivers of `signal`: branch/guard/operand/timing detail."""
+        inst, sym = self._lookup(signal, scope)
+        sym_key = symbol_key(sym)
+        width = None
+        try:
+            width = int(sym.type.bitWidth)
+        except Exception:
+            pass
+        drivers = [self._driver_entry(d, sym, sym_key) for d in self._mgr.getDrivers(sym)]
+        return {
+            "signal": sym.name,
+            "scope": scope,
+            "signal_path": self._sym_path(sym),
+            "width": width,
+            "bit_select": bit_label(bit_range) if bit_range else None,
+            "drivers": drivers,
+        }
+
+    def _driver_entry(self, d, sym, sym_key):
+        info = self._driver_info(d, sym)
+        entry = {
+            "kind": info.kind,
+            "source": info.source,
+            "description": _strip_ansi(info.description),
+            "file": info.file,
+            "line": info.line,
+            "bits": info.bits,
+            "scope_path": info.scope_path,
+        }
+        cs = getattr(d, "containingSymbol", None)
+        csk = type(cs).__name__ if cs is not None else ""
+        assignments: list = []
+        if csk == "ProceduralBlockSymbol":
+            entry["timing"] = self._extract_timing(cs)
+            body = getattr(cs, "body", None)
+            if body is not None:
+                self._collect_assignments(body, sym_key, [], assignments, 0)
+        elif hasattr(cs, "assignment"):
+            entry["timing"] = {"kind": "combinational", "heuristic": False}
+            assignments = self._continuous_payload(cs, sym_key)
+        else:
+            entry["timing"] = {"kind": info.source or "unknown", "heuristic": True}
+        entry["assignments"] = assignments
+        return entry
+
+    def _extract_timing(self, proc):
+        kindname = str(getattr(proc, "procedureKind", ""))
+        if "AlwaysComb" in kindname:
+            return {"kind": "combinational", "heuristic": False}
+        if "AlwaysLatch" in kindname:
+            return {"kind": "latch", "heuristic": True}
+        body = getattr(proc, "body", None)
+        tc = getattr(body, "timing", None)
+        events = []
+        if tc is not None and type(tc).__name__ == "EventListControl":
+            try:
+                for ev in tc.events:
+                    edge = str(getattr(ev, "edge", "")).split(".")[-1]
+                    sig = getattr(ev, "expr", None)
+                    syms = expr_symbols(sig) if sig is not None else []
+                    events.append(
+                        {
+                            "edge": _edge_word(edge),
+                            "signal": syms[0].name if syms else "",
+                            "path": self._sym_path(syms[0]) if syms else "",
+                        }
+                    )
+            except Exception:
+                pass
+        edged = [e for e in events if e["edge"] in ("posedge", "negedge", "edge")]
+        if not edged:
+            return {
+                "kind": "combinational" if not events else "sequential",
+                "events": events,
+                "heuristic": True,
+            }
+        reset = next((e for e in edged if _looks_reset(e["signal"])), None)
+        clocks = [e for e in edged if e is not reset]
+        out = {"kind": "sequential", "events": events, "heuristic": True}
+        if clocks:
+            out["clock"] = clocks[0]["signal"]
+            out["clock_path"] = clocks[0]["path"]
+            out["clock_edge"] = clocks[0]["edge"]
+        if reset is not None:
+            out["reset"] = reset["signal"]
+            out["reset_path"] = reset["path"]
+            out["reset_edge"] = reset["edge"]
+            out["reset_async"] = True
+        return out
+
+    def _collect_assignments(self, node, sym_key, guards, out, depth):
+        if depth > 60 or node is None:
+            return
+        tn = type(node).__name__
+        if tn == "ConditionalStatement":
+            conds = self._conditions(node)
+            if getattr(node, "ifTrue", None) is not None:
+                self._collect_assignments(
+                    node.ifTrue, sym_key,
+                    guards + [{"kind": "if", "conditions": conds, "polarity": True}], out, depth + 1)
+            if getattr(node, "ifFalse", None) is not None:
+                self._collect_assignments(
+                    node.ifFalse, sym_key,
+                    guards + [{"kind": "if", "conditions": conds, "polarity": False}], out, depth + 1)
+            return
+        if tn == "CaseStatement":
+            cexpr = getattr(node, "expr", None)
+            ctext = self._stext(cexpr) if cexpr is not None else ""
+            coperands = self._operand_dicts(cexpr) if cexpr is not None else []
+            try:
+                items = list(node.items)
+            except Exception:
+                items = []
+            for it in items:
+                labels = [self._stext(e) for e in (getattr(it, "expressions", None) or [])]
+                stmt = getattr(it, "stmt", None) or getattr(it, "statement", None)
+                g = {"kind": "case", "case_text": ctext, "case_operands": coperands,
+                     "match": labels, "polarity": True}
+                self._collect_assignments(stmt, sym_key, guards + [g], out, depth + 1)
+            dflt = getattr(node, "defaultCase", None)
+            if dflt is not None:
+                g = {"kind": "case", "case_text": ctext, "case_operands": coperands,
+                     "match": ["default"], "polarity": True}
+                self._collect_assignments(dflt, sym_key, guards + [g], out, depth + 1)
+            return
+        if tn == "ExpressionStatement":
+            e = getattr(node, "expr", None)
+            if e is not None and type(e).__name__ == "AssignmentExpression":
+                self._record_assign(e, sym_key, guards, out)
+            return
+        for child in self._child_statements(node):
+            self._collect_assignments(child, sym_key, guards, out, depth + 1)
+
+    def _record_assign(self, e, sym_key, guards, out):
+        try:
+            lhs_syms = expr_symbols(e.left)
+        except Exception:
+            return
+        if not any(symbol_key(s) == sym_key for s in lhs_syms):
+            return
+        f, ln = self._loc_range(e.sourceRange)
+        out.append(
+            {
+                "lhs": self._stext(e.left),
+                "rhs_text": self._stext(e.right),
+                "rhs_operands": self._operand_dicts(e.right, with_bounds=True),
+                "guards": guards,
+                "file": f,
+                "line": ln,
+            }
+        )
+
+    def _continuous_payload(self, cs, sym_key):
+        asn = getattr(cs, "assignment", None)
+        if asn is None or type(asn).__name__ != "AssignmentExpression":
+            return []
+        try:
+            f, ln = self._loc_range(asn.sourceRange)
+            return [
+                {
+                    "lhs": self._stext(asn.left),
+                    "rhs_text": self._stext(asn.right),
+                    "rhs_operands": self._operand_dicts(asn.right, with_bounds=True),
+                    "guards": [],
+                    "file": f,
+                    "line": ln,
+                }
+            ]
+        except Exception:
+            return []
+
+    def _conditions(self, node):
+        conds = []
+        for c in (getattr(node, "conditions", None) or []):
+            e = getattr(c, "expr", c)
+            conds.append({"text": self._stext(e), "operands": self._operand_dicts(e)})
+        return conds
+
+    def _operand_dicts(self, expr, with_bounds=False):
+        if expr is None:
+            return []
+        ops = []
+        seen = set()
+        try:
+            if with_bounds:
+                pairs = list(expr_reads_with_bounds(expr))
+            else:
+                pairs = [(s, None) for s in expr_symbols(expr)]
+        except Exception:
+            return []
+        for sym, bounds in pairs:
+            if not is_data_symbol(sym):
+                continue
+            k = symbol_key(sym)
+            if k in seen:
+                continue
+            seen.add(k)
+            item = {"name": getattr(sym, "name", ""), "path": self._sym_path(sym)}
+            if with_bounds and bounds is not None:
+                try:
+                    item["bits"] = bit_label((int(bounds[0]), int(bounds[1])))
+                except Exception:
+                    pass
+            ops.append(item)
+        return ops
+
+    def _child_statements(self, node):
+        kids = []
+        for a in ("stmt", "statement", "body"):
+            v = getattr(node, a, None)
+            if v is not None and type(v).__name__ not in ("EventListControl",):
+                kids.append(v)
+        for a in ("statements", "list"):
+            v = getattr(node, a, None)
+            if v is not None:
+                try:
+                    kids.extend(list(v))
+                except Exception:
+                    pass
+        return kids
+
+    def _stext(self, node):
+        try:
+            sr = node.sourceRange
+            buf = self._sm.getSourceText(sr.start.buffer)
+            return buf[sr.start.offset:sr.end.offset].strip().replace("\n", " ")
+        except Exception:
+            return ""
 
     # ── load analysis ────────────────────────────────────────────────
 

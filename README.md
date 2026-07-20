@@ -12,6 +12,7 @@ Use `rtlscanner <subcommand>`:
 | `tree`     | Hierarchy viewer & filelist exporter      | Architecture / code organisation |
 | `scope`    | Direct contents of one elaborated scope    | Architecture / debug |
 | `trace`    | Single-signal driver & load analyzer      | Simulation / debug |
+| `driver`   | Driver value-logic: branches, operands, timing | Simulation / debug / root-cause |
 | `fanin`    | Upstream dataflow BFS from a signal       | Simulation / debug |
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
 | `path`     | Point-to-point dataflow path between two nodes | Simulation / debug / timing |
@@ -171,6 +172,27 @@ so identical sibling instances (`u_dp0`/`u_dp1`) and generate-array
 elements (`gen_arr[2].u_lane`) report the same drivers/loads as the
 canonical copy, with hierarchical paths remapped to the queried
 instance.
+
+## `rtlscanner driver` — driver value-logic
+
+Where `trace` locates a signal's driver, `driver` returns its *value logic*:
+for each driver, the branch structure (the if/case guard chain with polarity),
+each branch's RHS operands (with bit ranges and hierarchical paths), and — for
+sequential drivers — the clock/reset timing extracted from the sensitivity list.
+This is the elaborated structure a waveform-aware "why is S this value at T"
+analysis joins with runtime values.
+
+```bash
+rtlscanner driver -d ./rtl -s q --scope top.u_dp --json
+```
+
+Each driver reports `timing` (`sequential` with `clock`/`clock_edge`/`reset`/
+`reset_edge`, or `combinational`/`latch`) and an `assignments` list; each
+assignment carries `rhs_text`, `rhs_operands` (`{name, path, bits}`), and
+`guards` (the `if`/`case` conditions plus polarity that make that branch active).
+Reset detection is a name heuristic (marked `heuristic`); operands and branch
+structure are exact. Sequential timing and reset classification are best-effort
+and flagged accordingly.
 
 ## `rtlscanner scope` — direct scope contents
 

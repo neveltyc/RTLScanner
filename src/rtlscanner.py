@@ -27,6 +27,7 @@ from rtl_common import Color
 
 import rtl_tree
 import signal_trace
+import signal_driver
 import signal_flow
 import signal_path
 import rtl_lint
@@ -41,6 +42,8 @@ SUBCOMMANDS = {
                 "Show design hierarchy"),
     "trace":   (signal_trace.add_trace_args,   signal_trace.run_trace,
                 "Trace a signal's driver and loads"),
+    "driver":  (signal_driver.add_driver_args, signal_driver.run_driver,
+                "Extract a signal driver's branch/operand/timing structure"),
     "scope":   (rtl_scope.add_arguments,        rtl_scope.run,
                 "Show direct contents of an elaborated scope"),
     "fanin":   (signal_flow.add_flow_args,
