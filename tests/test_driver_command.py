@@ -37,6 +37,25 @@ module fsm(input clk, input [1:0] s, output reg [1:0] y);
 endmodule
 """
 
+# Single-clock flop (single-event sensitivity list -> SignalEventControl).
+# The most common sequential form; must not be misread as combinational.
+SYNC_DESIGN = """
+module ff(input clk, input rst, input [7:0] d, output reg [7:0] q);
+  always_ff @(posedge clk) begin
+    if (rst) q <= 8'd0;
+    else q <= d;
+  end
+endmodule
+"""
+
+# One net driven by two disjoint per-slice continuous assigns.
+SPLIT_DESIGN = """
+module split(input [3:0] lo, input [3:0] hi, output [7:0] bus);
+  assign bus[3:0] = lo;
+  assign bus[7:4] = hi;
+endmodule
+"""
+
 
 def _run(design, args):
     with tempfile.TemporaryDirectory() as d:
@@ -86,12 +105,42 @@ class DriverCommand(unittest.TestCase):
     def test_case_statement_guards(self):
         env = _run(CASE_DESIGN, ["-s", "y", "--scope", "fsm"])
         d = env["data"]["drivers"][0]
+        # single-clock `always @(posedge clk)` is still sequential
+        self.assertEqual(d["timing"]["kind"], "sequential")
+        self.assertEqual(d["timing"]["clock"], "clk")
         assigns = d["assignments"]
         # three branches: y<=1, y<=2, default y<=0
         self.assertEqual(len(assigns), 3)
         for a in assigns:
             self.assertTrue(a["guards"])
             self.assertEqual(a["guards"][0]["kind"], "case")
+
+    def test_single_clock_flop_is_sequential(self):
+        # `always_ff @(posedge clk)` is a single-event sensitivity list;
+        # its clock must still be recovered (regression guard).
+        env = _run(SYNC_DESIGN, ["-s", "q", "--scope", "ff"])
+        timing = env["data"]["drivers"][0]["timing"]
+        self.assertEqual(timing["kind"], "sequential")
+        self.assertEqual(timing["clock"], "clk")
+        self.assertEqual(timing["clock_edge"], "posedge")
+        # no reset in the sensitivity list -> synchronous reset, not reported here
+        self.assertNotIn("reset", timing)
+
+    def test_bit_select_narrows_driver_origin(self):
+        # bus[1] is written only by the `bus[3:0] = lo` slice.
+        env = _run(SPLIT_DESIGN, ["-s", "bus[1]", "--scope", "split"])
+        drivers = env["data"]["drivers"]
+        self.assertEqual(len(drivers), 1)
+        self.assertEqual(drivers[0]["assignments"][0]["rhs_text"], "lo")
+        # bus[5] is written only by the `bus[7:4] = hi` slice.
+        env = _run(SPLIT_DESIGN, ["-s", "bus[5]", "--scope", "split"])
+        drivers = env["data"]["drivers"]
+        self.assertEqual(len(drivers), 1)
+        self.assertEqual(drivers[0]["assignments"][0]["rhs_text"], "hi")
+
+    def test_bit_select_out_of_range_errors(self):
+        env = _run(SPLIT_DESIGN, ["-s", "bus[99]", "--scope", "split"])
+        self.assertEqual(env["status"], "error")
 
     def test_summary_reports_driver_count(self):
         env = _run(SEQ_DESIGN, ["-s", "q", "--scope", "dut"])

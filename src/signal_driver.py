@@ -5,8 +5,8 @@ signal_driver — the ``driver`` command (presentation layer).
 Where ``trace`` locates a signal's single RTL driver and its loads, ``driver``
 returns the *value logic* of each driver: the branch structure (guard chain),
 each branch's RHS operands (with bit ranges), and — for sequential drivers — the
-clock/reset timing. This is the elaborated structure a downstream ``why`` engine
-joins with waveform values to explain "why is S this value at time T".
+clock/reset timing. This is the elaborated structure a downstream value/root-cause
+analysis joins with waveform values to explain "why is S this value at time T".
 
 All mechanism lives in ``rtl_dataflow.SignalTracer.driver_payload``; the shared
 argv front-end (input resolution, scope auto-detect, bit-select) lives in

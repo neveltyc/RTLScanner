@@ -548,26 +548,34 @@ class SignalTracer:
                     add(d, view.remap)
         return infos
 
-    # ── structured driver payload (for the `why` engine) ─────────────
+    # ── structured driver payload ────────────────────────────────────
     #
-    # Beyond `_analyze_drivers` (which locates drivers), the `why` engine needs
-    # the *value logic*: for each driver, the branch structure (guard chain),
-    # each branch's RHS operands, and — for sequential drivers — the clock/reset
-    # timing. `driver_payload` walks the driver's containing procedure/assign AST
-    # and returns that as plain data. Times and value evaluation stay in the MCP
-    # layer; this is the elaborated *structure* the evaluator joins with waveform
-    # values.
+    # Beyond `_analyze_drivers` (which locates drivers), a value/root-cause
+    # analysis needs the *value logic*: for each driver, the branch structure
+    # (guard chain), each branch's RHS operands, and — for sequential drivers —
+    # the clock/reset timing. `driver_payload` walks the driver's containing
+    # procedure/assign AST and returns that as plain data. Runtime value
+    # evaluation is intentionally out of scope: this is the elaborated *structure*
+    # a downstream consumer joins with waveform values.
 
     def driver_payload(self, signal, scope, bit_range=None):
         """Structured drivers of `signal`: branch/guard/operand/timing detail."""
         inst, sym = self._lookup(signal, scope)
+        self._check_bit_range(sym, signal, bit_range)
         sym_key = symbol_key(sym)
         width = None
         try:
             width = int(sym.type.bitWidth)
         except Exception:
             pass
-        drivers = [self._driver_entry(d, sym, sym_key) for d in self._mgr.getDrivers(sym)]
+        raw = list(self._mgr.getDrivers(sym))
+        if bit_range is not None:
+            # Bit-select narrows the driver origin to the drivers that actually
+            # write those bits (mirrors `trace`). Driver bounds are slang-internal,
+            # so match against the internal-coord query.
+            sel = self._to_internal(sym, bit_range)
+            raw = [d for d in raw if bits_overlap(self._raw_bounds(d), sel)]
+        drivers = [self._driver_entry(d, sym, sym_key) for d in raw]
         return {
             "signal": sym.name,
             "scope": scope,
@@ -576,6 +584,14 @@ class SignalTracer:
             "bit_select": bit_label(bit_range) if bit_range else None,
             "drivers": drivers,
         }
+
+    def _raw_bounds(self, d):
+        """Normalized (lo, hi) bit bounds of a raw slang driver, or None."""
+        try:
+            b = d.bounds
+            return (int(b[0]), int(b[1]))
+        except Exception:
+            return None
 
     def _driver_entry(self, d, sym, sym_key):
         info = self._driver_info(d, sym)
@@ -612,20 +628,34 @@ class SignalTracer:
             return {"kind": "latch", "heuristic": True}
         body = getattr(proc, "body", None)
         tc = getattr(body, "timing", None)
-        events = []
-        if tc is not None and type(tc).__name__ == "EventListControl":
+        tcn = type(tc).__name__ if tc is not None else ""
+        # A single-event sensitivity list (`always @(posedge clk)`,
+        # `always_ff @(posedge clk)`) is a SignalEventControl that carries
+        # edge/expr directly; a multi-event one (`@(posedge clk or posedge rst)`)
+        # is an EventListControl whose `.events` are the individual
+        # SignalEventControls. Both must be walked, or the single-clock flop —
+        # the most common form — is misread as combinational.
+        raw_events = []
+        if tcn == "EventListControl":
             try:
-                for ev in tc.events:
-                    edge = str(getattr(ev, "edge", "")).split(".")[-1]
-                    sig = getattr(ev, "expr", None)
-                    syms = expr_symbols(sig) if sig is not None else []
-                    events.append(
-                        {
-                            "edge": _edge_word(edge),
-                            "signal": syms[0].name if syms else "",
-                            "path": self._sym_path(syms[0]) if syms else "",
-                        }
-                    )
+                raw_events = list(tc.events)
+            except Exception:
+                raw_events = []
+        elif tcn == "SignalEventControl":
+            raw_events = [tc]
+        events = []
+        for ev in raw_events:
+            try:
+                edge = str(getattr(ev, "edge", "")).split(".")[-1]
+                sig = getattr(ev, "expr", None)
+                syms = expr_symbols(sig) if sig is not None else []
+                events.append(
+                    {
+                        "edge": _edge_word(edge),
+                        "signal": syms[0].name if syms else "",
+                        "path": self._sym_path(syms[0]) if syms else "",
+                    }
+                )
             except Exception:
                 pass
         edged = [e for e in events if e["edge"] in ("posedge", "negedge", "edge")]
