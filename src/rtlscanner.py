@@ -80,6 +80,11 @@ Examples:
   rtlscanner find    -d ./rtl -p 'top.**.u_fifo*'
   rtlscanner batch   -d ./rtl --json < queries.txt   # many queries, one load
 
+Agent mode (every subcommand):
+  --json    emit one structured envelope {tool,status,data,summary,errors,...}
+  --schema  print that command's JSON Schema (draft-07) and exit
+  --limit N cap rows per list (default 200; 0 = unlimited)
+
 Configuration:
   Use rtlscanner <cmd> --config FILE to select a project config .toml file.
   Otherwise, ./.rtlscanner.toml is auto-discovered (CWD only).
