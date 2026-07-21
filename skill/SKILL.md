@@ -47,7 +47,7 @@ rtlscanner --help
 |---|---|---|
 | Module hierarchy / design tree / resolved filelist | `tree` | `data.hierarchy[]` (instance, module, path, children); `summary.module_counts`; `--export FILE` writes a filelist instead |
 | Contents of one scope (ports, signals, child instances, params) | `scope --scope S` | `data.{ports,signals,instances,params}`; `--connections` → `data.connections[]`; `--typedefs` → local typedef/enum/struct/union |
-| What drives a signal and what loads it | `trace -s N --scope S` | `data.results[].driver` (one object) + `.loads[]` + `.load_count` |
+| What drives a signal and what loads it | `trace -s N --scope S` | `data.results[].driver` (one object) + `.loads[]` + `.load_count`; add `--logic` for `driver.logic` (branch guards, RHS operands, clock/reset timing) |
 | Upstream dataflow (where does this value come from) | `fanin -s N --scope S` | `data.nodes[]`, `data.edges[]` (source→target, kind, depth, file, line) |
 | Downstream dataflow (what does this value reach) | `fanout -s N --scope S` | same shape as `fanin` |
 | Dataflow path between two specific nodes | `path --from A --to B` | `data.found` + ordered `data.nodes[]` / `data.edges[]` walk; `--comb` for a path with no flop |
@@ -114,8 +114,10 @@ file/line of the declaration and each read/write.
 **Source-side of a waveform finding.** When a wave dump (e.g. from
 RWaveAnalyzer / `rwave`) flags a signal that is stuck or glitching at runtime,
 switch to RTL: `xref` for where it is declared and which blocks/ports touch it,
-then `trace`/`fanin` for what drives it. The wave tells you *when*; RTLScanner
-tells you *where and why* in source.
+then `trace`/`fanin` for what drives it. Add `--logic` to `trace` for the
+driver's branch/guard chain, RHS operands, and clock/reset timing — the exact
+value-logic to line up against the waveform ("why is S this value at time T").
+The wave tells you *when*; RTLScanner tells you *where and why* in source.
 
 **Lint in CI.** `rtlscanner lint -f rtl.f --json` runs all five categories and
 exits 1 on any error-level finding. Exclude noisy third-party sources with
@@ -143,6 +145,13 @@ finding's `check` is its category and its severity is fixed — there are no
   when driver bit ranges actually *overlap*. Several drivers with disjoint
   `bits` (e.g. per-bit generate outputs) are legal single-driver RTL, not a
   conflict.
+- **`trace --logic` explains a value.** Beyond locating the driver, `--logic`
+  attaches `driver.logic`: the if/case guard chain (with polarity), each
+  branch's RHS operands (`{name, path, bits}`), and — for sequential drivers —
+  clock/reset timing from the sensitivity list. Branch structure and operands
+  are exact; sequential-timing/reset classification are best-effort (flagged
+  `heuristic`). A bit-select narrows it to the covering driver(s). Without
+  `--logic` the output is byte-for-byte unchanged.
 - **Sibling/generate instances share one body.** Identical instances
   (`u_dp0`/`u_dp1`) and generate-array elements (`gen_arr[2].u_lane`) report
   the *same* drivers/loads as the canonical instance, with paths remapped to

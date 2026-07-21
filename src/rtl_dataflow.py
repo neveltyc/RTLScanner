@@ -78,6 +78,7 @@ class DriverInfo:
     line: int = 0
     bits: str = ""          # "[3]" / "[7:4]" when the driver covers a sub-range
     bounds: Optional[tuple] = None  # normalized (lo, hi) bit offsets
+    logic: Optional[dict] = None    # value logic (timing + assignments); `trace --logic` only
 
     def key(self):
         return (self.kind, self.source, self.scope_path,
@@ -111,6 +112,32 @@ def bits_overlap(bounds, rng):
     if bounds is None:
         return True
     return bounds[0] <= rng[1] and rng[0] <= bounds[1]
+
+
+import re as _re
+
+_ANSI_RE = _re.compile(r"\x1b\[[0-9;]*m")
+_RESET_HINTS = ("rst", "reset", "clr", "clear", "arst")
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub("", text or "")
+
+
+def _edge_word(edge: str) -> str:
+    e = (edge or "").lower()
+    if "posedge" in e:
+        return "posedge"
+    if "negedge" in e:
+        return "negedge"
+    if "bothedges" in e or e == "edge":
+        return "edge"
+    return e
+
+
+def _looks_reset(name: str) -> bool:
+    low = (name or "").lower()
+    return any(hint in low for hint in _RESET_HINTS)
 
 
 @dataclass
@@ -490,14 +517,17 @@ class SignalTracer:
                           scope_path=sp, file=f, line=ln,
                           bits=bits, bounds=bounds)
 
-    def _analyze_drivers(self, symbol, scope_inst):
+    def _analyze_drivers(self, symbol, scope_inst, with_logic=False):
         infos = []
         seen = set()
+        sym_key = symbol_key(symbol) if with_logic else None
 
         def add(d, remap=None):
             info = self._driver_info(d, symbol, remap)
             if info.key() not in seen:
                 seen.add(info.key())
+                if with_logic:
+                    info.logic = self._driver_logic(d, info, sym_key)
                 infos.append(info)
 
         for d in self._mgr.getDrivers(symbol):
@@ -521,6 +551,236 @@ class SignalTracer:
                         continue
                     add(d, view.remap)
         return infos
+
+    # ── driver value-logic (the `trace --logic` payload) ─────────────
+    #
+    # Beyond locating a driver, a value/root-cause analysis needs its *value
+    # logic*: the branch structure (guard chain), each branch's RHS operands,
+    # and — for sequential drivers — the clock/reset timing. `_driver_logic`
+    # walks a driver's containing procedure/assign AST and returns that as plain
+    # data, attached to each `DriverInfo` by `_analyze_drivers` when `trace` is
+    # invoked with `--logic`. Runtime value evaluation is intentionally out of
+    # scope: this is the elaborated *structure* a downstream consumer joins with
+    # waveform values.
+
+    def _driver_logic(self, d, info, sym_key):
+        """One driver's value logic: ``{"timing": ..., "assignments": [...]}``.
+
+        `info` is the driver's already-built ``DriverInfo`` (its ``source`` is the
+        fallback timing label for ports and other non-block/assign drivers).
+        """
+        cs = getattr(d, "containingSymbol", None)
+        csk = type(cs).__name__ if cs is not None else ""
+        assignments: list = []
+        if csk == "ProceduralBlockSymbol":
+            timing = self._extract_timing(cs)
+            body = getattr(cs, "body", None)
+            if body is not None:
+                self._collect_assignments(body, sym_key, [], assignments, 0)
+        elif hasattr(cs, "assignment"):
+            timing = {"kind": "combinational", "heuristic": False}
+            assignments = self._continuous_payload(cs, sym_key)
+        else:
+            timing = {"kind": info.source or "unknown", "heuristic": True}
+        return {"timing": timing, "assignments": assignments}
+
+    def _extract_timing(self, proc):
+        kindname = str(getattr(proc, "procedureKind", ""))
+        if "AlwaysComb" in kindname:
+            return {"kind": "combinational", "heuristic": False}
+        if "AlwaysLatch" in kindname:
+            return {"kind": "latch", "heuristic": True}
+        body = getattr(proc, "body", None)
+        tc = getattr(body, "timing", None)
+        tcn = type(tc).__name__ if tc is not None else ""
+        # A single-event sensitivity list (`always @(posedge clk)`,
+        # `always_ff @(posedge clk)`) is a SignalEventControl that carries
+        # edge/expr directly; a multi-event one (`@(posedge clk or posedge rst)`)
+        # is an EventListControl whose `.events` are the individual
+        # SignalEventControls. Both must be walked, or the single-clock flop —
+        # the most common form — is misread as combinational.
+        raw_events = []
+        if tcn == "EventListControl":
+            try:
+                raw_events = list(tc.events)
+            except Exception:
+                raw_events = []
+        elif tcn == "SignalEventControl":
+            raw_events = [tc]
+        events = []
+        for ev in raw_events:
+            try:
+                edge = str(getattr(ev, "edge", "")).split(".")[-1]
+                sig = getattr(ev, "expr", None)
+                syms = expr_symbols(sig) if sig is not None else []
+                events.append(
+                    {
+                        "edge": _edge_word(edge),
+                        "signal": syms[0].name if syms else "",
+                        "path": self._sym_path(syms[0]) if syms else "",
+                    }
+                )
+            except Exception:
+                pass
+        edged = [e for e in events if e["edge"] in ("posedge", "negedge", "edge")]
+        if not edged:
+            return {
+                "kind": "combinational" if not events else "sequential",
+                "events": events,
+                "heuristic": True,
+            }
+        reset = next((e for e in edged if _looks_reset(e["signal"])), None)
+        clocks = [e for e in edged if e is not reset]
+        out = {"kind": "sequential", "events": events, "heuristic": True}
+        if clocks:
+            out["clock"] = clocks[0]["signal"]
+            out["clock_path"] = clocks[0]["path"]
+            out["clock_edge"] = clocks[0]["edge"]
+        if reset is not None:
+            out["reset"] = reset["signal"]
+            out["reset_path"] = reset["path"]
+            out["reset_edge"] = reset["edge"]
+            out["reset_async"] = True
+        return out
+
+    def _collect_assignments(self, node, sym_key, guards, out, depth):
+        if depth > 60 or node is None:
+            return
+        tn = type(node).__name__
+        if tn == "ConditionalStatement":
+            conds = self._conditions(node)
+            if getattr(node, "ifTrue", None) is not None:
+                self._collect_assignments(
+                    node.ifTrue, sym_key,
+                    guards + [{"kind": "if", "conditions": conds, "polarity": True}], out, depth + 1)
+            if getattr(node, "ifFalse", None) is not None:
+                self._collect_assignments(
+                    node.ifFalse, sym_key,
+                    guards + [{"kind": "if", "conditions": conds, "polarity": False}], out, depth + 1)
+            return
+        if tn == "CaseStatement":
+            cexpr = getattr(node, "expr", None)
+            ctext = self._stext(cexpr) if cexpr is not None else ""
+            coperands = self._operand_dicts(cexpr) if cexpr is not None else []
+            try:
+                items = list(node.items)
+            except Exception:
+                items = []
+            for it in items:
+                labels = [self._stext(e) for e in (getattr(it, "expressions", None) or [])]
+                stmt = getattr(it, "stmt", None) or getattr(it, "statement", None)
+                g = {"kind": "case", "case_text": ctext, "case_operands": coperands,
+                     "match": labels, "polarity": True}
+                self._collect_assignments(stmt, sym_key, guards + [g], out, depth + 1)
+            dflt = getattr(node, "defaultCase", None)
+            if dflt is not None:
+                g = {"kind": "case", "case_text": ctext, "case_operands": coperands,
+                     "match": ["default"], "polarity": True}
+                self._collect_assignments(dflt, sym_key, guards + [g], out, depth + 1)
+            return
+        if tn == "ExpressionStatement":
+            e = getattr(node, "expr", None)
+            if e is not None and type(e).__name__ == "AssignmentExpression":
+                self._record_assign(e, sym_key, guards, out)
+            return
+        for child in self._child_statements(node):
+            self._collect_assignments(child, sym_key, guards, out, depth + 1)
+
+    def _record_assign(self, e, sym_key, guards, out):
+        try:
+            lhs_syms = expr_symbols(e.left)
+        except Exception:
+            return
+        if not any(symbol_key(s) == sym_key for s in lhs_syms):
+            return
+        f, ln = self._loc_range(e.sourceRange)
+        out.append(
+            {
+                "lhs": self._stext(e.left),
+                "rhs_text": self._stext(e.right),
+                "rhs_operands": self._operand_dicts(e.right, with_bounds=True),
+                "guards": guards,
+                "file": f,
+                "line": ln,
+            }
+        )
+
+    def _continuous_payload(self, cs, sym_key):
+        asn = getattr(cs, "assignment", None)
+        if asn is None or type(asn).__name__ != "AssignmentExpression":
+            return []
+        try:
+            f, ln = self._loc_range(asn.sourceRange)
+            return [
+                {
+                    "lhs": self._stext(asn.left),
+                    "rhs_text": self._stext(asn.right),
+                    "rhs_operands": self._operand_dicts(asn.right, with_bounds=True),
+                    "guards": [],
+                    "file": f,
+                    "line": ln,
+                }
+            ]
+        except Exception:
+            return []
+
+    def _conditions(self, node):
+        conds = []
+        for c in (getattr(node, "conditions", None) or []):
+            e = getattr(c, "expr", c)
+            conds.append({"text": self._stext(e), "operands": self._operand_dicts(e)})
+        return conds
+
+    def _operand_dicts(self, expr, with_bounds=False):
+        if expr is None:
+            return []
+        ops = []
+        seen = set()
+        try:
+            if with_bounds:
+                pairs = list(expr_reads_with_bounds(expr))
+            else:
+                pairs = [(s, None) for s in expr_symbols(expr)]
+        except Exception:
+            return []
+        for sym, bounds in pairs:
+            if not is_data_symbol(sym):
+                continue
+            k = symbol_key(sym)
+            if k in seen:
+                continue
+            seen.add(k)
+            item = {"name": getattr(sym, "name", ""), "path": self._sym_path(sym)}
+            if with_bounds and bounds is not None:
+                try:
+                    item["bits"] = bit_label((int(bounds[0]), int(bounds[1])))
+                except Exception:
+                    pass
+            ops.append(item)
+        return ops
+
+    def _child_statements(self, node):
+        kids = []
+        for a in ("stmt", "statement", "body"):
+            v = getattr(node, a, None)
+            if v is not None and type(v).__name__ not in ("EventListControl",):
+                kids.append(v)
+        for a in ("statements", "list"):
+            v = getattr(node, a, None)
+            if v is not None:
+                try:
+                    kids.extend(list(v))
+                except Exception:
+                    pass
+        return kids
+
+    def _stext(self, node):
+        try:
+            sr = node.sourceRange
+            buf = self._sm.getSourceText(sr.start.buffer)
+            return buf[sr.start.offset:sr.end.offset].strip().replace("\n", " ")
+        except Exception:
+            return ""
 
     # ── load analysis ────────────────────────────────────────────────
 
@@ -2210,11 +2470,11 @@ class SignalTracer:
                 f"bit {bit_label(bit_range)} out of range for "
                 f"'{signal_name}' ({sym.type}, {width} bits)", 1)
 
-    def trace(self, signal_name, scope_path, bit_range=None):
+    def trace(self, signal_name, scope_path, bit_range=None, with_logic=False):
         inst, sym = self._lookup(signal_name, scope_path)
         self._check_bit_range(sym, signal_name, bit_range)
 
-        drivers = self._analyze_drivers(sym, inst)
+        drivers = self._analyze_drivers(sym, inst, with_logic=with_logic)
         loads = self._analyze_loads(sym, inst.body, inst)
         if bit_range is not None:
             # Bit-select: narrow both the driver origin and the loads to the

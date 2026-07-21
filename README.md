@@ -11,7 +11,7 @@ Use `rtlscanner <subcommand>`:
 |------------|---------|---------------|
 | `tree`     | Hierarchy viewer & filelist exporter      | Architecture / code organisation |
 | `scope`    | Direct contents of one elaborated scope    | Architecture / debug |
-| `trace`    | Single-signal driver & load analyzer      | Simulation / debug |
+| `trace`    | Single-signal driver & load analyzer (`--logic` for driver value-logic) | Simulation / debug / root-cause |
 | `fanin`    | Upstream dataflow BFS from a signal       | Simulation / debug |
 | `fanout`   | Downstream dataflow BFS from a signal     | Simulation / debug |
 | `path`     | Point-to-point dataflow path between two nodes | Simulation / debug / timing |
@@ -171,6 +171,27 @@ so identical sibling instances (`u_dp0`/`u_dp1`) and generate-array
 elements (`gen_arr[2].u_lane`) report the same drivers/loads as the
 canonical copy, with hierarchical paths remapped to the queried
 instance.
+
+### `--logic` — driver value-logic
+
+`trace` locates a signal's driver; `--logic` additionally returns its *value
+logic*. Each driver in the result gains a `logic` field: the branch structure
+(the if/case guard chain with polarity), each branch's RHS operands (with bit
+ranges and hierarchical paths), and — for sequential drivers — the clock/reset
+timing read from the sensitivity list. This is the elaborated structure a
+waveform-aware "why is S this value at T" analysis joins with runtime values.
+
+```bash
+rtlscanner trace -d ./rtl -s q --scope top.u_dp --logic --json
+```
+
+`logic.timing` is `sequential` (with `clock`/`clock_edge`/`reset`/`reset_edge`),
+`combinational`, or `latch`; `logic.assignments` lists each branch's `rhs_text`,
+`rhs_operands` (`{name, path, bits}`), and `guards` (the `if`/`case` conditions
+plus polarity that make that branch active). Operands and branch structure are
+exact; sequential-timing inference and reset classification (a name heuristic)
+are best-effort and flagged `heuristic`. Without `--logic` the output is
+unchanged. A bit-select narrows `logic` to the driver(s) covering those bits.
 
 ## `rtlscanner scope` — direct scope contents
 

@@ -27,7 +27,7 @@ import sys
 from typing import Any, Dict, List, Optional
 
 # Keep in sync with pyproject.toml [project].version.
-TOOL_VERSION = "0.4.0"
+TOOL_VERSION = "0.5.0"
 
 # Default cap on the number of rows/items emitted per list, so a query against a
 # large design stays agent-friendly instead of dumping thousands of entries.
@@ -503,6 +503,41 @@ _TREE_SCHEMA["$defs"] = {"node": _TREE_NODE}
 
 
 # ── signal-trace ──
+# ── driver value logic (the optional `logic` field, emitted with --logic) ──
+_LOGIC_OPERAND = {
+    "type": "object",
+    "required": ["name", "path"],
+    "properties": {
+        "name": {"type": "string"},
+        "path": {"type": "string", "description": "Hierarchical path of the operand."},
+        "bits": {"type": "string", "description": "Bit range read, e.g. '[7:0]'."},
+    },
+    "additionalProperties": True,
+}
+_LOGIC_ASSIGNMENT = {
+    "type": "object",
+    "properties": {
+        "lhs":          {"type": "string"},
+        "rhs_text":     {"type": "string", "description": "Source text of the RHS."},
+        "rhs_operands": {"type": "array", "items": _LOGIC_OPERAND},
+        "guards":       {"type": "array", "items": {"type": "object"},
+                         "description": "Guard chain (if/case conditions + polarity) "
+                                        "that must hold for this branch to be active."},
+        "file":         {"type": "string"},
+        "line":         {"type": "integer"},
+    },
+    "additionalProperties": True,
+}
+_LOGIC = {
+    "type": "object",
+    "description": "Present with --logic: this driver's value logic.",
+    "properties": {
+        "timing":      {"type": "object",
+                        "description": "sequential (clock/reset) | combinational | latch."},
+        "assignments": {"type": "array", "items": _LOGIC_ASSIGNMENT},
+    },
+    "additionalProperties": True,
+}
 _TRACE_DRIVER = {
     "type": "object",
     "properties": {
@@ -518,6 +553,7 @@ _TRACE_DRIVER = {
                         "the whole signal."},
         "file":        {"type": "string"},
         "line":        {"type": "integer"},
+        "logic":       _LOGIC,
     },
     "additionalProperties": True,
 }
@@ -631,6 +667,7 @@ _TRACE_SCHEMA = _envelope_schema(
         },
     },
 )
+
 
 def _flow_schema(tool_name: str) -> Dict[str, Any]:
     return _envelope_schema(
