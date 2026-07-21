@@ -108,6 +108,70 @@
                           },
                           "line": {
                             "type": "integer"
+                          },
+                          "logic": {
+                            "type": "object",
+                            "description": "Present with --logic: this driver's value logic.",
+                            "properties": {
+                              "timing": {
+                                "type": "object",
+                                "description": "sequential (clock/reset) | combinational | latch."
+                              },
+                              "assignments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "lhs": {
+                                      "type": "string"
+                                    },
+                                    "rhs_text": {
+                                      "type": "string",
+                                      "description": "Source text of the RHS."
+                                    },
+                                    "rhs_operands": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object",
+                                        "required": [
+                                          "name",
+                                          "path"
+                                        ],
+                                        "properties": {
+                                          "name": {
+                                            "type": "string"
+                                          },
+                                          "path": {
+                                            "type": "string",
+                                            "description": "Hierarchical path of the operand."
+                                          },
+                                          "bits": {
+                                            "type": "string",
+                                            "description": "Bit range read, e.g. '[7:0]'."
+                                          }
+                                        },
+                                        "additionalProperties": true
+                                      }
+                                    },
+                                    "guards": {
+                                      "type": "array",
+                                      "items": {
+                                        "type": "object"
+                                      },
+                                      "description": "Guard chain (if/case conditions + polarity) that must hold for this branch to be active."
+                                    },
+                                    "file": {
+                                      "type": "string"
+                                    },
+                                    "line": {
+                                      "type": "integer"
+                                    }
+                                  },
+                                  "additionalProperties": true
+                                }
+                              }
+                            },
+                            "additionalProperties": true
                           }
                         },
                         "additionalProperties": true
@@ -149,6 +213,70 @@
                         },
                         "line": {
                           "type": "integer"
+                        },
+                        "logic": {
+                          "type": "object",
+                          "description": "Present with --logic: this driver's value logic.",
+                          "properties": {
+                            "timing": {
+                              "type": "object",
+                              "description": "sequential (clock/reset) | combinational | latch."
+                            },
+                            "assignments": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "lhs": {
+                                    "type": "string"
+                                  },
+                                  "rhs_text": {
+                                    "type": "string",
+                                    "description": "Source text of the RHS."
+                                  },
+                                  "rhs_operands": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object",
+                                      "required": [
+                                        "name",
+                                        "path"
+                                      ],
+                                      "properties": {
+                                        "name": {
+                                          "type": "string"
+                                        },
+                                        "path": {
+                                          "type": "string",
+                                          "description": "Hierarchical path of the operand."
+                                        },
+                                        "bits": {
+                                          "type": "string",
+                                          "description": "Bit range read, e.g. '[7:0]'."
+                                        }
+                                      },
+                                      "additionalProperties": true
+                                    }
+                                  },
+                                  "guards": {
+                                    "type": "array",
+                                    "items": {
+                                      "type": "object"
+                                    },
+                                    "description": "Guard chain (if/case conditions + polarity) that must hold for this branch to be active."
+                                  },
+                                  "file": {
+                                    "type": "string"
+                                  },
+                                  "line": {
+                                    "type": "integer"
+                                  }
+                                },
+                                "additionalProperties": true
+                              }
+                            }
+                          },
+                          "additionalProperties": true
                         }
                       },
                       "additionalProperties": true

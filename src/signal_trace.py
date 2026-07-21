@@ -46,7 +46,43 @@ def _driver_to_dict(d):
     if d.file:
         out['file'] = d.file
         out['line'] = d.line
+    if d.logic is not None:      # only when trace was invoked with --logic
+        out['logic'] = d.logic
     return out
+
+
+def _guard_summary(guards):
+    """Human one-liner for a branch's guard chain (if conditions + case labels)."""
+    parts = []
+    for g in guards:
+        if g.get('kind') == 'if':
+            conds = " && ".join(c.get('text', '') for c in g.get('conditions', []))
+            parts.append(conds if g.get('polarity') else f"!({conds})")
+        elif g.get('kind') == 'case':
+            parts.append(f"{g.get('case_text', '')} in "
+                         f"{{{', '.join(g.get('match', []))}}}")
+    return " && ".join(p for p in parts if p)
+
+
+def _print_driver_logic(logic):
+    """Render a driver's value logic (timing + guarded assignments) under it."""
+    C = Color
+    t = logic.get('timing', {})
+    if t.get('kind') == 'sequential':
+        clk = f"{t.get('clock_edge', '')} {t.get('clock', '?')}".strip()
+        rst = f", reset {t.get('reset_edge', '')} {t['reset']}" if t.get('reset') else ""
+        print(f"      {C.dim('timing:')} sequential ({clk}{rst})")
+    else:
+        print(f"      {C.dim('timing:')} {t.get('kind', 'unknown')}")
+    for a in logic.get('assignments', []):
+        guards = _guard_summary(a.get('guards', []))
+        when = f"  {C.dim('when ' + guards)}" if guards else ""
+        print(f"      {a.get('lhs', '')} {GLYPH_ARROW_L} "
+              f"{C.green(a.get('rhs_text', ''))}{when}")
+        ops = ", ".join(o.get('path', o.get('name', ''))
+                        for o in a.get('rhs_operands', []))
+        if ops:
+            print(f"          {C.dim('operands: ' + ops)}")
 
 
 def _load_to_dict(ld):
@@ -107,20 +143,25 @@ def _trace_pretty(r, load_filter=None, limit=0):
     print("─" * 60)
 
     # ── Driver (singular in RTL) ──
+    def _emit(d):
+        print(_driver_line(r, d))
+        if d.logic is not None:
+            _print_driver_logic(d.logic)
+
     drivers = ([r.driver] if r.driver else []) + r.extra_drivers
     if not drivers:
         print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.dim('(none ' + GLYPH_DASH + ' undriven)')}")
     elif len(drivers) == 1:
         print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}")
-        print(_driver_line(r, drivers[0]))
+        _emit(drivers[0])
     elif r.multi_driver:
         print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVER')}  {C.red(GLYPH_WARN + ' MULTI-DRIVER (' + str(len(drivers)) + ')')}")
         for d in drivers:
-            print(_driver_line(r, d))
+            _emit(d)
     else:
         print(f"\n  {C.red(GLYPH_DRIVER + ' DRIVERS')} ({len(drivers)})  {C.dim('disjoint bit ranges')}")
         for d in drivers:
-            print(_driver_line(r, d))
+            _emit(d)
 
     # ── Loads (narrowed to the queried bits on a bit-select) ──
     loads = _filtered_loads(r, load_filter)
@@ -165,6 +206,9 @@ def add_trace_args(p):
                    help='Hierarchical scope; auto-detect when single top')
     g.add_argument('--filter', default=None, metavar='GLOB',
                    help='Shell glob on instance names to narrow loads')
+    g.add_argument('--logic', action='store_true',
+                   help="Also extract each driver's value logic: branch guards, "
+                        'RHS operands, and clock/reset timing (root-cause analysis)')
     add_unroll_args(p)
 
 
@@ -206,6 +250,6 @@ class TraceOutput(agent_json.CommandResult):
 
 def run_trace(args, env):
     tracer, scope, signal, bit_range = prepare(args, env, need_signal=True)
-    r = tracer.trace(signal, scope, bit_range)
+    r = tracer.trace(signal, scope, bit_range, with_logic=args.logic)
     out = TraceOutput(r, scope, args.filter)
     return agent_json.render(env, out, agent_json.resolve_limit(args.limit))

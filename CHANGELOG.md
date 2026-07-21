@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`trace --logic` — a driver's value-logic (branches, operands, timing).**
+  `trace` locates a signal's driver; `--logic` additionally attaches, to each
+  driver in the result, the structure needed to explain a value: the branch/guard
+  chain (if/case conditions with polarity), each branch's RHS operands (name,
+  hierarchical path, bit range), and — for sequential drivers — the clock/reset
+  timing read from the sensitivity list. Combinational and continuous drivers
+  report their operands directly. This is the elaborated structure a waveform-aware
+  root-cause ("why is S this value at time T") analysis joins with runtime values.
+  Branch structure and operands are exact; reset classification and sequential-timing
+  inference are best-effort and flagged `heuristic`. A bit-select narrows the
+  logic to the covering driver(s); without `--logic` the output is unchanged. The
+  optional `logic` field is covered by the `trace` `--schema` contract.
+
 ## [0.4.0] - 2026-06-22
 
 ### Added
