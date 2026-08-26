@@ -1,0 +1,11 @@
+[package]
+name = "designdb"
+description = "Reader for an rtl-designdb design.db, schema v19"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+rusqlite.workspace = true

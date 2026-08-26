@@ -1,0 +1,3 @@
+[submodule "extern/RTLDebugDBKit"]
+	path = extern/RTLDebugDBKit
+	url = https://github.com/neveltyc/RTLDebugDBKit
