@@ -58,11 +58,21 @@ impl ConeResult {
     }
 
     /// The nets one hop out, which is what a caller following a cone reads
-    /// first.
-    fn direct(&self) -> Vec<&str> {
-        let mut names: Vec<&str> =
-            self.cone.nodes.iter().filter(|n| n.depth == 1).map(|n| n.path.as_str()).collect();
-        names.sort_unstable();
+    /// first. Taken from the edges shown: naming a net the answer clipped away
+    /// would point at something not in it.
+    fn direct(
+        &self,
+        edges: &[&Edge],
+        net_of: &dyn Fn(i64) -> (String, Option<(i64, i64)>),
+    ) -> Vec<String> {
+        let far = |e: &Edge| match self.cone.direction {
+            Direction::Driver => e.source,
+            Direction::Load => e.target,
+        };
+        let mut names: Vec<String> =
+            edges.iter().filter(|e| e.depth == 1).map(|e| net_of(far(e)).0).collect();
+        names.sort();
+        names.dedup();
         names
     }
 }
@@ -77,19 +87,25 @@ fn node_json(n: &Node) -> Value {
     })
 }
 
-fn edge_json(e: &Edge, path_of: &dyn Fn(i64) -> String, decl: Option<(i64, i64)>) -> Value {
+/// One edge, with each end's bits spelled against that end's own declared
+/// range — the two ends are different objects and rarely declared alike.
+fn edge_json(e: &Edge, net: &dyn Fn(i64) -> (String, Option<(i64, i64)>)) -> Value {
+    let (source, src_decl) = net(e.source);
+    let (target, tgt_decl) = net(e.target);
     json!({
-        "source": path_of(e.source),
-        "target": path_of(e.target),
+        "source": source,
+        "target": target,
         "kind": e.kind.tag(),
         "raw_kind": e.raw_kind,
         "depth": e.depth,
         "boundary": e.boundary,
         "control": e.control,
         "clocked": e.clocked,
-        "source_bits": e.src_bits.spell(decl),
-        "target_bits": e.tgt_bits.spell(decl),
+        "source_bits": e.src_bits.spell(src_decl),
+        "target_bits": e.tgt_bits.spell(tgt_decl),
         "map_exact": e.map_exact,
+        // Where a combinational walk stopped, so an empty answer can say why.
+        "ends_at_state": e.ends_at_state,
         // Which expansion the row belongs to, where a subroutine body produced
         // it: one call's rows are not another's.
         "call_site": e.call_site_id,
@@ -101,9 +117,11 @@ fn edge_json(e: &Edge, path_of: &dyn Fn(i64) -> String, decl: Option<(i64, i64)>
 impl CommandResult for ConeResult {
     fn to_json(&self) -> (Value, Value) {
         let (edges, nodes) = self.shown();
-        let paths: std::collections::HashMap<i64, String> =
-            self.cone.nodes.iter().map(|n| (n.net, n.path.clone())).collect();
-        let path_of = |net: i64| paths.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
+        let named: std::collections::HashMap<i64, (String, Option<(i64, i64)>)> =
+            self.cone.nodes.iter().map(|n| (n.net, (n.path.clone(), n.decl))).collect();
+        let net_of = |net: i64| {
+            named.get(&net).cloned().unwrap_or_else(|| (format!("<net {net}>"), None))
+        };
 
         let data = json!({
             "start": self.cone.start,
@@ -112,8 +130,10 @@ impl CommandResult for ConeResult {
             "comb": self.cone.bounds.comb,
             "control": self.cone.bounds.control,
             "nodes": nodes.iter().map(|n| node_json(n)).collect::<Vec<_>>(),
-            "edges": edges.iter().map(|e| edge_json(e, &path_of, None)).collect::<Vec<_>>(),
-            "direct": self.direct(),
+            "edges": edges.iter().map(|e| edge_json(e, &net_of)).collect::<Vec<_>>(),
+            // Of the edges shown, so `nodes` remains the set of things `edges`
+            // refers to and `direct` names some of them.
+            "direct": self.direct(&edges, &net_of),
         });
         let summary = json!({
             // The true counts, whatever was shown: a clipped list that also
@@ -122,6 +142,8 @@ impl CommandResult for ConeResult {
             "nodes": self.cone.nodes.len(),
             "edges": self.cone.edges.len(),
             "shown_edges": edges.len(),
+            "shown_nodes": nodes.len(),
+            "stopped_at_state": self.cone.edges.iter().filter(|e| e.ends_at_state).count(),
             "max_depth_reached": self.cone.nodes.iter().map(|n| n.depth).max().unwrap_or(0),
             "control_edges": self.cone.edges.iter().filter(|e| e.control).count(),
             "widened": self.cone.widened,
@@ -133,9 +155,10 @@ impl CommandResult for ConeResult {
 
     fn render_human(&self) -> String {
         let (edges, nodes) = self.shown();
-        let paths: std::collections::HashMap<i64, &str> =
-            self.cone.nodes.iter().map(|n| (n.net, n.path.as_str())).collect();
-        let name = |net: i64| *paths.get(&net).unwrap_or(&"<net>");
+        let named: std::collections::HashMap<i64, (&str, Option<(i64, i64)>)> =
+            self.cone.nodes.iter().map(|n| (n.net, (n.path.as_str(), n.decl))).collect();
+        let name = |net: i64| named.get(&net).map(|(p, _)| *p).unwrap_or("<net>");
+        let decl = |net: i64| named.get(&net).and_then(|(_, d)| *d);
 
         let mut out = String::new();
         let word = match self.cone.direction {
@@ -163,16 +186,24 @@ impl CommandResult for ConeResult {
                 edge.clocked.then_some("clocked"),
                 edge.boundary.then_some("boundary"),
                 edge.control.then_some("condition"),
+                edge.ends_at_state.then_some("stops here: state element"),
             ]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
             let note = if marks.is_empty() { String::new() } else { format!("  [{}]", marks.join(", ")) };
+            // Each end's bits against its own declared range: the two are
+            // different objects and rarely declared alike.
+            let spell = |span: &designdb::BitSpan, net: i64| {
+                span.spell(decl(net)).map(|b| b.to_string()).unwrap_or_default()
+            };
             out.push_str(&format!(
-                "  {:>2}  {} -> {}\n      {:<18} {}{note}\n",
+                "  {:>2}  {}{} -> {}{}\n      {:<18} {}{note}\n",
                 edge.depth,
                 name(edge.source),
+                spell(&edge.src_bits, edge.source),
                 name(edge.target),
+                spell(&edge.tgt_bits, edge.target),
                 edge.kind.tag(),
                 at,
             ));
@@ -210,6 +241,7 @@ impl CommandResult for PathResult {
     fn to_json(&self) -> (Value, Value) {
         let name = |net: i64| self.names.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
         let route = self.route.as_deref().unwrap_or_default();
+        let net_of = |id: i64| (name(id), None);
 
         // The nodes a route passes through, in order: `edges[i]` joins
         // `nodes[i]` to `nodes[i+1]`, which is what makes the two readable
@@ -224,7 +256,7 @@ impl CommandResult for PathResult {
             "comb": self.bounds.comb,
             "length": route.len(),
             "nodes": if self.route.is_some() { nodes } else { Vec::new() },
-            "edges": route.iter().map(|e| edge_json(e, &name, None)).collect::<Vec<_>>(),
+            "edges": route.iter().map(|e| edge_json(e, &net_of)).collect::<Vec<_>>(),
         });
         let summary = json!({
             "found": self.route.is_some(),

@@ -421,7 +421,10 @@ fn path_command(args: PathArgs) -> Rendered {
         "db": args.common.db.display().to_string(),
         "from": args.from,
         "to": args.to,
+        "depth": args.walk.depth,
         "comb": args.walk.comb,
+        "through_latch": args.walk.through_latch,
+        "no_control": args.walk.no_control,
     });
     let (outcome, notes) = match routed(&args) {
         Ok((result, notes)) => (Ok(result), notes),

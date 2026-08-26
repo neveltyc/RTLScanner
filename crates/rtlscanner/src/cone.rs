@@ -45,6 +45,9 @@ pub struct Node {
     /// the shortest, so this needs no revisiting.
     pub depth: u32,
     pub width: Option<i64>,
+    /// The net's own declared range, which is what a bit offset is spelled
+    /// against. `None` for a type that has no single one — an aggregate.
+    pub decl: Option<(i64, i64)>,
     /// Written by a procedure that runs on an edge.
     pub clocked: bool,
     /// Written by a procedure that runs on a level.
@@ -69,6 +72,10 @@ pub struct Edge {
     pub tgt_bits: BitSpan,
     /// Whether the two ends correspond bit for bit.
     pub map_exact: Option<bool>,
+    /// The far end is a state element and a combinational walk stopped here.
+    /// Reported so a cone that ends can say where, rather than only that it
+    /// ended.
+    pub ends_at_state: bool,
     pub stmt_id: Option<i64>,
     pub call_site_id: Option<i64>,
     pub file: Option<Rc<str>>,
@@ -147,17 +154,20 @@ struct Site {
 /// What the walk needs to know about a net, asked once each.
 #[derive(Default)]
 struct Facts {
-    /// Nets a state element writes, on either side of a port. Read once for
-    /// the database and on first use: the relation does not depend on the
-    /// walk, and a cone asks about nearly every net it reaches — but a walk
-    /// that asks about none should not pay to know where they all are.
+    /// Nets a state element writes, on either side of a whole-width port. Read
+    /// once for the database, on first use: the relation does not depend on the
+    /// walk, and a cone asks about every net it reaches.
     state_nets: Option<(HashSet<i64>, HashSet<i64>)>,
     body_local: HashMap<i64, bool>,
     dep: HashMap<i64, Option<(String, Option<i64>)>>,
     /// Statements, by id. A cone crosses many more arcs than a design has
     /// statements — one `always` block answers for hundreds of them.
     stmt: HashMap<i64, Option<schema::StatementRow>>,
-    path: HashMap<i64, (String, Option<i64>)>,
+    /// Which expansion encloses which. A body walked once per call is told
+    /// apart by this chain, and entering a nested call means arriving at a
+    /// site whose parent is where the walk already is.
+    call_parent: Option<HashMap<i64, Option<i64>>>,
+    path: HashMap<i64, (String, Option<i64>, Option<(i64, i64)>)>,
     /// Source paths, shared rather than copied per edge: a module's every
     /// statement names one file, and a cone crosses thousands of statements.
     files: HashMap<String, Rc<str>>,
@@ -186,6 +196,14 @@ impl Facts {
         let shared: Rc<str> = Rc::from(path);
         self.files.insert(path.to_string(), shared.clone());
         shared
+    }
+
+    /// The enclosing expansion of each call, read once.
+    fn call_parent(&mut self, c: &Connection) -> Result<&HashMap<i64, Option<i64>>, String> {
+        if self.call_parent.is_none() {
+            self.call_parent = Some(schema::call_parents(c)?);
+        }
+        Ok(self.call_parent.as_ref().expect("just filled"))
     }
 
     fn dep_kind(
@@ -240,18 +258,23 @@ impl Facts {
         Ok(found)
     }
 
-    /// The net's design path, and its width.
+    /// The net's design path, its width, and the range its bits are spelled
+    /// against.
     fn path(
         &mut self,
         c: &Connection,
         anchor: &Anchor,
         net: i64,
-    ) -> Result<(String, Option<i64>), String> {
+    ) -> Result<(String, Option<i64>, Option<(i64, i64)>), String> {
         if let Some(known) = self.path.get(&net) {
             return Ok(known.clone());
         }
         let found = match schema::net_of(c, net)? {
             Some(row) => {
+                let decl = row
+                    .data_type
+                    .as_deref()
+                    .and_then(|t| bits::declared_range(t, row.width));
                 let scope = match self.scope.get(&row.inst_id) {
                     Some(known) => known.clone(),
                     None => {
@@ -260,9 +283,9 @@ impl Facts {
                         walked
                     }
                 };
-                (format!("{scope}.{}", row.net_name), row.width)
+                (format!("{scope}.{}", row.net_name), row.width, decl)
             }
-            None => (format!("<net {net}>"), None),
+            None => (format!("<net {net}>"), None, None),
         };
         self.path.insert(net, found.clone());
         Ok(found)
@@ -339,7 +362,7 @@ pub fn walk(
                 {
                     continue;
                 }
-                if !admissible(row.call_site_id, site.ctx) {
+                if !admissible(facts.call_parent(c)?, row.call_site_id, site.ctx) {
                     continue;
                 }
                 let Some(far) = row.other_net_id else {
@@ -351,12 +374,11 @@ pub fn walk(
                 };
 
                 let (clocked, latch) = facts.state_element(c, far)?;
-                // In a combinational walk the far node is where the value
-                // stops being this cycle's: the arc into it goes with it, or
-                // the answer would name a boundary it does not include.
-                if bounds.comb && (clocked || (latch && !bounds.through_latch)) {
-                    continue;
-                }
+                // In a combinational walk the far node is where the value stops
+                // being this cycle's. The arc to it is still reported — a cone
+                // that fell silent could not be told from one that found
+                // nothing — but the walk does not go on past it.
+                let at_state = bounds.comb && (clocked || (latch && !bounds.through_latch));
 
                 let stmt = match row.stmt_id {
                     Some(id) => facts.statement(c, id)?,
@@ -387,19 +409,29 @@ pub fn walk(
                     src_bits,
                     tgt_bits,
                     map_exact: row.map_exact,
+                    ends_at_state: at_state,
                     stmt_id: row.stmt_id,
                     call_site_id: row.call_site_id,
                     file: row.file_path.as_deref().map(|p| facts.file(p)),
                     line: row.src_line,
                     depth: site.depth + 1,
                 };
-                if !emitted.insert(edge.key()) {
+                // Whether this arc is worth reporting again and whether the
+                // walk continues past it are separate: a row reached with a
+                // second window is one edge and two questions, and folding
+                // them dropped the second question's answer.
+                let next_depth = edge.depth;
+                if emitted.insert(edge.key()) {
+                    edges.push(edge);
+                }
+                // The far net belongs to the answer even where the walk stops
+                // there: an edge whose endpoint is not among the nodes would
+                // leave a caller reading `nodes` as the things `edges` names
+                // with a name that is not in it.
+                depth_of.entry(far).or_insert(next_depth);
+                if at_state {
                     continue;
                 }
-                edges.push(edge);
-
-                let next_depth = site.depth + 1;
-                depth_of.entry(far).or_insert(next_depth);
                 if bounds.max_depth.is_some_and(|max| next_depth >= max) {
                     continue;
                 }
@@ -435,9 +467,9 @@ pub fn walk(
 
     let mut nodes = Vec::with_capacity(depth_of.len());
     for (net, depth) in &depth_of {
-        let (path, width) = facts.path(c, anchor, *net)?;
+        let (path, width, decl) = facts.path(c, anchor, *net)?;
         let (clocked, latch) = facts.state_element(c, *net)?;
-        nodes.push(Node { net: *net, path, depth: *depth, width, clocked, latch });
+        nodes.push(Node { net: *net, path, depth: *depth, width, decl, clocked, latch });
     }
     nodes.sort_by(|a, b| (a.depth, &a.path).cmp(&(b.depth, &b.path)));
     edges.sort_by(|a, b| (a.depth, a.line, a.source, a.target).cmp(&(b.depth, b.line, b.source, b.target)));
@@ -459,17 +491,28 @@ pub fn walk(
 /// one call's condition and another's argument — a combination no execution
 /// makes. Module-level rows always pass; a call may be entered from outside
 /// it, and left the way it was entered.
-fn admissible(row_site: Option<i64>, ctx: Option<i64>) -> bool {
+fn admissible(
+    parent: &HashMap<i64, Option<i64>>,
+    row_site: Option<i64>,
+    ctx: Option<i64>,
+) -> bool {
     match (row_site, ctx) {
+        // A module-level row belongs to no call and passes always; a walk not
+        // inside a call may enter any.
         (None, _) | (_, None) => true,
-        (Some(row), Some(here)) => row == here,
+        // The same expansion, or the one nested directly inside it. A sibling
+        // expansion is what this refuses: following it would build a path out
+        // of one call's condition and another's argument.
+        (Some(row), Some(here)) => row == here || parent.get(&row) == Some(&Some(here)),
     }
 }
 
 /// The call context on the far side of an arc.
 ///
-/// A net that exists only inside a call keeps the call; one the module also
-/// names is where the call is left behind.
+/// A binding row is the body's boundary and crossing it always changes the
+/// level: entering, the walk takes the call; leaving, it returns to whatever
+/// enclosed that call. Any other row stays where it is, and a net the module
+/// also names is where a call is left behind in any case.
 fn next_ctx(
     c: &Connection,
     row: &schema::ArcRow,
@@ -477,11 +520,16 @@ fn next_ctx(
     far: i64,
     facts: &mut Facts,
 ) -> Result<Option<i64>, String> {
-    let site = row.call_site_id.or(ctx);
-    match site {
-        Some(site) if facts.body_local(c, far)? => Ok(Some(site)),
-        _ => Ok(None),
+    let Some(site) = row.call_site_id else {
+        return Ok(if facts.body_local(c, far)? { ctx } else { None });
+    };
+    if row.dep_kind.as_deref() == Some("procedure") {
+        let leaving = ctx == Some(site);
+        let outer = *facts.call_parent(c)?.get(&site).unwrap_or(&None);
+        let next = if leaving { outer } else { Some(site) };
+        return Ok(if facts.body_local(c, far)? { next } else { None });
     }
+    Ok(if facts.body_local(c, far)? { Some(site) } else { None })
 }
 
 
@@ -504,11 +552,20 @@ pub fn find_path(
         return Ok(Some(Vec::new()));
     }
 
-    // One arriving edge per node, the first found — which breadth-first order
-    // makes one on a shortest route.
+    // The shallowest arriving edge per node, which breadth-first order makes
+    // one on a shortest route. Taken by depth rather than by position: the
+    // edges are sorted for presentation, and a route's correctness must not
+    // rest on what that sort happens to put first.
     let mut arrival: HashMap<i64, &Edge> = HashMap::new();
     for edge in &cone.edges {
-        arrival.entry(edge.target).or_insert(edge);
+        arrival
+            .entry(edge.target)
+            .and_modify(|best| {
+                if edge.depth < best.depth {
+                    *best = edge;
+                }
+            })
+            .or_insert(edge);
     }
     if !arrival.contains_key(&goal.net.net_id) {
         return Ok(None);

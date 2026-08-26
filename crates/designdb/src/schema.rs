@@ -782,16 +782,23 @@ pub fn net_of(c: &Connection, net_id: i64) -> Result<Option<NetRow>, String> {
 /// A bare `always` is clocked when its sensitivity names an edge. Which edge is
 /// the clock is not decided here, and does not need to be.
 pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), String> {
+    // An edge-triggered procedure stores what it assigns non-blockingly; a
+    // blocking assignment in one is a temporary computed within the same
+    // evaluation, and reading it as storage ends a combinational cone at a
+    // value that never held one. A latch's assignments are blocking by nature,
+    // so there the kind says nothing.
     const WRITTEN: &str = "SELECT DISTINCT d.tgt_net_id, p.proc_kind \
          FROM net_dep d \
            JOIN stmt s ON s.id = d.stmt_id \
            JOIN proc p ON p.id = s.proc_id \
         WHERE d.dep_kind = 'data' \
-          AND (p.proc_kind IN ('always_ff', 'always_latch') \
-               OR (p.proc_kind = 'always' AND EXISTS(\
-                    SELECT 1 FROM proc_event e \
-                     WHERE e.proc_id = p.id AND e.event_kind = 'sensitivity' \
-                       AND e.edge_kind IS NOT NULL)))";
+          AND (p.proc_kind = 'always_latch' \
+               OR (s.assign_kind = 'nonblocking' \
+                   AND (p.proc_kind = 'always_ff' \
+                        OR (p.proc_kind = 'always' AND EXISTS(\
+                             SELECT 1 FROM proc_event e \
+                              WHERE e.proc_id = p.id AND e.event_kind = 'sensitivity' \
+                                AND e.edge_kind IS NOT NULL)))))";
     let mut stmt = c.prepare(WRITTEN).map_err(|e| q(e, "net_dep"))?;
     let mut clocked: HashSet<i64> = HashSet::new();
     let mut latch: HashSet<i64> = HashSet::new();
@@ -804,13 +811,20 @@ pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), St
         if kind == "always_latch" { latch.insert(net) } else { clocked.insert(net) };
     }
 
-    // The crossings, as one sorted array of both directions rather than a map
-    // of vectors: a design has tens of thousands of them, and the lookup is a
-    // binary search into one allocation instead of one allocation each.
+    // The crossings that carry the whole object, as one sorted array of both
+    // directions rather than a map of vectors: a design has tens of thousands
+    // of them, and the lookup is a binary search into one allocation instead of
+    // one allocation each.
+    //
+    // Only whole-width ties propagate. A port wired to four bits of a net makes
+    // those four a flop's output and says nothing about the other four, so
+    // carrying the property across would call a half-combinational net a state
+    // element and end every combinational cone through it.
     let mut stmt = c
         .prepare(
             "SELECT signal_net_id, driver_net_id FROM v_driver \
-              WHERE driver_kind = 'connection' AND driver_net_id IS NOT NULL",
+              WHERE driver_kind = 'connection' AND driver_net_id IS NOT NULL \
+                AND signal_lo IS NULL AND driver_lo IS NULL",
         )
         .map_err(|e| q(e, "v_driver"))?;
     let rows = stmt
@@ -842,21 +856,43 @@ pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), St
     Ok((clocked, latch))
 }
 
-/// Whether every row touching this net belongs to a subroutine expansion.
+/// Which expansion encloses which, for every call in the design.
 ///
-/// A body is walked once per call and its formals are shared between the calls,
-/// so a net with no untagged row exists only inside one. That is what decides
-/// whether crossing an arc stays in a call's context or leaves it behind.
+/// Read whole rather than chased per row: a design has a handful of call sites
+/// where a cone has thousands of arcs, and the chain is what tells a nested
+/// call from a sibling one.
+pub fn call_parents(c: &Connection) -> Result<std::collections::HashMap<i64, Option<i64>>, String> {
+    let mut stmt = c
+        .prepare("SELECT call_site_id, parent_call_site_id FROM v_call_site")
+        .map_err(|e| q(e, "v_call_site"))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<i64>>(1)?)))
+        .map_err(|e| q(e, "v_call_site"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_call_site"))
+}
+
+/// Whether this net is a subroutine's own — a formal or a local.
+///
+/// Those are the nets one call shares with another, and the only ones a walk
+/// has to keep calls apart at. The test is the name: a subroutine's nets are
+/// named through it (`put.d`), and a module-level net cannot be, since one
+/// spelled with a dot is an escaped identifier and keeps its backslash.
+///
+/// Asking instead whether every row touching the net carries a call tag looks
+/// equivalent and is not: a module variable a subroutine body happens to be the
+/// only writer of has no untagged row either, and treating it as a formal makes
+/// the walk refuse its own siblings' rows — which reads as no path where there
+/// plainly is one.
 pub fn is_body_local(c: &Connection, net: i64) -> Result<bool, String> {
     c.query_row(
-        "SELECT NOT EXISTS(\
-             SELECT 1 FROM net_dep \
-              WHERE (src_net_id = ?1 OR tgt_net_id = ?1) AND call_site_id IS NULL)",
+        "SELECT EXISTS(\
+             SELECT 1 FROM net n JOIN call_site cs ON cs.inst_id = n.inst_id \
+              WHERE n.id = ?1 AND n.name LIKE cs.subroutine_name || '.%')",
         [net],
         |r| r.get::<_, i64>(0),
     )
     .map(|v| v != 0)
-    .map_err(|e| q(e, "net_dep"))
+    .map_err(|e| q(e, "net"))
 }
 
 /// Where a source file actually is, and what it hashed to.

@@ -150,15 +150,27 @@ fn a_combinational_cone_is_part_of_the_whole_one_and_stops_at_the_flop() {
     for edge in arcs(&comb) {
         assert!(arcs(&all).contains(&edge), "the combinational cone invented {edge:?}");
     }
-    // The flop ends this cycle: neither it nor the arc into it belongs to the
-    // logic that settles within one.
+    // The flop ends this cycle. Where it stopped is part of the answer — a
+    // cone that fell silent could not be told from one that found nothing — so
+    // the boundary is named and marked, and nothing beyond it is reached.
     let reached = nodes(&comb);
     assert!(reached.iter().any(|n| n == "pipe.m"), "{reached:?}");
-    assert!(!reached.iter().any(|n| n == "pipe.q"), "the flop is past the boundary: {reached:?}");
-    assert!(
-        !arcs(&comb).iter().any(|(_, t)| t == "pipe.q"),
-        "the arc into a flop goes with it, or the cone names a boundary it excludes"
-    );
+    assert!(reached.iter().any(|n| n == "pipe.q"), "the boundary is named: {reached:?}");
+    for past in ["pipe.u_reg.d", "pipe.s", "pipe.a"] {
+        assert!(!reached.iter().any(|n| n == past), "{past} is past the flop: {reached:?}");
+    }
+    let stops: Vec<&serde_json::Value> = comb["data"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|e| e["ends_at_state"] == true)
+        .collect();
+    assert_eq!(stops.len(), 1, "one boundary, said once");
+    // Walking backwards, the state element is the far end of the arc — its
+    // source. The mark is on the arc that reaches it either way.
+    assert_eq!(stops[0]["source"], "pipe.q");
+    assert_eq!(comb["summary"]["stopped_at_state"], 1);
+    // The walk itself crossed nothing clocked: the boundary arc is a wire.
     assert!(comb["data"]["edges"].as_array().unwrap().iter().all(|e| e["clocked"] == false));
 }
 
@@ -189,11 +201,15 @@ fn clipping_a_cone_keeps_the_counts_true_and_the_graph_whole() {
     assert_eq!(clipped["summary"]["truncated"], true);
 
     // Every edge shown names nodes that are shown: a caller reading `nodes` as
-    // the things `edges` refers to would otherwise be reading a lie.
-    let shown = nodes(&clipped);
-    for (src, tgt) in arcs(&clipped) {
-        assert!(shown.contains(&src), "{src} is an endpoint of a shown edge but not a shown node");
-        assert!(shown.contains(&tgt), "{tgt} is an endpoint of a shown edge but not a shown node");
+    // the things `edges` refers to would otherwise be reading a lie. It holds
+    // of the whole answer as much as of a clipped one — a cone that stops at a
+    // state element still names where it stopped.
+    for answer in [&whole, &clipped] {
+        let shown = nodes(answer);
+        for (src, tgt) in arcs(answer) {
+            assert!(shown.contains(&src), "{src} is an edge endpoint and not a node");
+            assert!(shown.contains(&tgt), "{tgt} is an edge endpoint and not a node");
+        }
     }
 }
 
@@ -324,15 +340,183 @@ endmodule
     let Some(fx) = exported("lat", LATCH, "a_latch_ends_a_combinational_cone") else { return };
 
     // A latch holds state, so by default a combinational walk stops there
-    // rather than crossing silently into another timing context.
+    // rather than crossing silently into another timing context. It says so:
+    // the latch is named as the boundary, and what feeds it is not reached.
     let stopped = cone(&fx, "fanin", &["lat.o", "--comb", "--limit", "0"]);
-    assert!(!nodes(&stopped).iter().any(|n| n == "lat.held"), "{:?}", nodes(&stopped));
+    let reached = nodes(&stopped);
+    assert!(reached.iter().any(|n| n == "lat.held"), "the boundary is named: {reached:?}");
+    assert!(!reached.iter().any(|n| n == "lat.a"), "past the latch: {reached:?}");
+    assert_eq!(stopped["summary"]["stopped_at_state"], 1);
 
     // It is also transparent while its enable holds, which is the whole
     // subject of a glitch, a loop closing through one, or a pulse-latch
     // borrow. Asking for that view is a different question, and has a flag.
     let crossed = cone(&fx, "fanin", &["lat.o", "--comb", "--through-latch", "--limit", "0"]);
     let reached = nodes(&crossed);
-    assert!(reached.iter().any(|n| n == "lat.held"), "{reached:?}");
     assert!(reached.iter().any(|n| n == "lat.a"), "the far side of the latch: {reached:?}");
+    assert_eq!(crossed["summary"]["stopped_at_state"], 0, "nothing stopped it");
+}
+
+#[test]
+fn asking_about_every_bit_is_asking_about_the_whole_object() {
+    const WIDE: &str = r#"
+module wide(input logic [3:0] p, q, output logic [7:0] y);
+  logic [7:0] s, t;
+  assign s[7:4] = p;
+  assign s[3:0] = q;
+  assign t = s;
+  assign y[7:4] = t[7:4];
+  assign y[3:0] = t[3:0];
+endmodule
+"#;
+    let Some(fx) = exported("wide", WIDE, "asking_about_every_bit") else { return };
+
+    // A window covering the whole object asks the same question as no window
+    // at all, and so does one spanning the halves two statements write. The
+    // cheapest invariant there is, and the one that catches a walk which
+    // reports an arc without following it.
+    let whole = arcs(&cone(&fx, "fanin", &["wide.y", "--depth", "0", "--limit", "0"]));
+    for spelled in ["wide.y[7:0]", "wide.y[5:2]"] {
+        let narrowed = arcs(&cone(&fx, "fanin", &[spelled, "--depth", "0", "--limit", "0"]));
+        for edge in &whole {
+            assert!(narrowed.contains(edge), "{spelled} lost {edge:?}");
+        }
+    }
+}
+
+#[test]
+fn one_call_of_a_subroutine_is_not_another() {
+    const CALLS: &str = r#"
+module calls(input logic clk, input logic [7:0] d1, d2, output logic [7:0] q);
+  function automatic [7:0] inc(input [7:0] v); return v + 8'd1; endfunction
+  task automatic put(input [7:0] dd); q <= inc(dd); endtask
+  always_ff @(posedge clk) begin
+    put(d1);
+    put(d2);
+  end
+endmodule
+"#;
+    let Some(fx) = exported("calls", CALLS, "one_call_of_a_subroutine_is_not_another") else {
+        return;
+    };
+
+    // A body is walked once per call and its formals are shared, so following
+    // every row that touches one builds a path out of one call's argument and
+    // another's — a combination no execution makes.
+    let from_d1 = cone(&fx, "fanout", &["calls.d1", "--depth", "0", "--limit", "0"]);
+    let reached: Vec<String> = arcs(&from_d1).into_iter().map(|(_, t)| t).collect();
+    assert!(!reached.iter().any(|n| n.contains("d2")), "{reached:?}");
+
+    // The nested call is reachable: `put` calls `inc`, and a walk that only
+    // admitted the same expansion would stop at the outer body's formal.
+    assert!(reached.iter().any(|n| n.ends_with("inc.v")), "the nested call: {reached:?}");
+    assert!(reached.iter().any(|n| n.ends_with("inc.inc")), "past it: {reached:?}");
+
+    // Read the other way, each chain of expansions ends at its own argument.
+    let into_result = cone(&fx, "fanin", &["calls.inc.inc", "--depth", "0", "--limit", "0"]);
+    let sites: Vec<(Option<u64>, String)> = into_result["data"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| (e["call_site"].as_u64(), e["source"].as_str().unwrap().to_string()))
+        .collect();
+    for arg in ["calls.d1", "calls.d2"] {
+        assert!(sites.iter().any(|(_, s)| s == arg), "{arg} is reachable: {sites:?}");
+    }
+    // Each expansion's rows carry its own tag, which is what kept them apart.
+    let tags: Vec<Option<u64>> = sites.iter().map(|(cs, _)| *cs).collect();
+    assert!(tags.iter().filter(|t| t.is_some()).count() >= 2, "{tags:?}");
+}
+
+#[test]
+fn a_temporary_inside_a_clocked_procedure_is_not_storage() {
+    const TEMP: &str = r#"
+module temp(input logic clk, input logic [7:0] a, b, output logic [7:0] q);
+  logic [7:0] t;
+  always_ff @(posedge clk) begin
+    t = a + b;          // blocking: computed within this evaluation
+    q <= t ^ 8'h0F;     // non-blocking: what the flop stores
+  end
+endmodule
+"#;
+    let Some(fx) = exported("temp", TEMP, "a_temporary_inside_a_clocked_procedure") else {
+        return;
+    };
+
+    // Only what a clocked procedure assigns non-blockingly is storage. Reading
+    // the temporary as a flop output would end the combinational cone at a
+    // value that never held one — and `--comb` would answer nothing at all.
+    let comb = cone(&fx, "fanin", &["temp.q", "--comb", "--limit", "0"]);
+    let reached = nodes(&comb);
+    for expected in ["temp.t", "temp.a", "temp.b"] {
+        assert!(reached.iter().any(|n| n == expected), "{expected} missing: {reached:?}");
+    }
+}
+
+#[test]
+fn a_port_wired_to_part_of_a_net_says_nothing_about_the_rest() {
+    const PART: &str = r#"
+module flop(input logic clk, output logic [3:0] o);
+  always_ff @(posedge clk) o <= 4'h5;
+endmodule
+
+module part(input logic clk, input logic [3:0] a, output logic [7:0] y);
+  logic [7:0] bus;
+  flop u (.clk(clk), .o(bus[3:0]));   // a flop drives the low half
+  assign bus[7:4] = a;                // the high half is combinational
+  assign y = bus;
+endmodule
+"#;
+    let Some(fx) = exported("part", PART, "a_port_wired_to_part_of_a_net") else { return };
+
+    // A crossing carries "is a state element" only where it carries the whole
+    // object. Propagating it across a four-bit tie would call `bus` a flop
+    // output and end every combinational cone through it — including the half
+    // that is plain logic.
+    let comb = cone(&fx, "fanin", &["part.y", "--comb", "--limit", "0"]);
+    let reached = nodes(&comb);
+    assert!(reached.iter().any(|n| n == "part.a"), "the combinational half: {reached:?}");
+    assert_eq!(comb["summary"]["stopped_at_state"], 1, "and only the other half stops");
+}
+
+#[test]
+fn a_variable_a_subroutine_writes_is_still_the_module_s() {
+    const SHARED: &str = r#"
+module shared(input logic [7:0] a, output logic [7:0] o);
+  logic [7:0] m;
+  task automatic w(input logic [7:0] x); m = x; endtask
+  task automatic r(output logic [7:0] y); y = m; endtask
+  always_comb begin w(a); r(o); end
+endmodule
+"#;
+    let Some(fx) = exported("shared", SHARED, "a_variable_a_subroutine_writes") else { return };
+
+    // `m` is the module's, written by one call and read by another. Treating
+    // it as a formal — which every row touching it carrying a call tag makes
+    // it look like — would leave each call refusing the other's rows, and the
+    // route through it reported as absent.
+    let (v, code) = json_of(&["path", "--json", fx.db.to_str().unwrap(), "shared.a", "shared.o"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["data"]["found"], true, "there is plainly a route: {v}");
+    let route: Vec<&str> =
+        v["data"]["nodes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
+    assert!(route.iter().any(|n| *n == "shared.m"), "through the shared variable: {route:?}");
+}
+
+#[test]
+fn an_edge_says_which_bits_of_each_end_it_touches() {
+    const SLICE: &str = r#"
+module slice(input logic [7:0] wide, output logic [3:0] narrow);
+  assign narrow = wide[7:4];
+endmodule
+"#;
+    let Some(fx) = exported("slice", SLICE, "an_edge_says_which_bits_of_each_end") else { return };
+    let v = cone(&fx, "fanin", &["slice.narrow", "--depth", "1", "--limit", "0"]);
+    let edge = &v["data"]["edges"][0];
+
+    // Each end is spelled against its own declared range: the two are
+    // different objects and rarely declared alike. The database has both
+    // windows, and an answer that dropped them would be hiding what it knows.
+    assert_eq!(edge["source_bits"], "[7:4]", "{edge}");
+    assert_eq!(edge["target_bits"], serde_json::Value::Null, "the whole of a four-bit net");
 }
