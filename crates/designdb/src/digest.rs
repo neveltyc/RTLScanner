@@ -33,9 +33,9 @@ pub fn sha256_hex(data: &[u8]) -> String {
     msg.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
 
     let mut w = [0u32; 64];
-    for block in msg.chunks_exact(64) {
-        for (i, c) in block.chunks_exact(4).enumerate() {
-            w[i] = u32::from_be_bytes([c[0], c[1], c[2], c[3]]);
+    for block in msg.as_chunks::<64>().0 {
+        for (i, c) in block.as_chunks::<4>().0.iter().enumerate() {
+            w[i] = u32::from_be_bytes(*c);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
