@@ -15,12 +15,18 @@
 //! `v_conn_arc` is scaffolding the kit may change without a version bump, and
 //! is deliberately never queried.
 
+pub mod bits;
 pub mod digest;
 pub mod open;
+pub mod resolve;
 pub mod schema;
+pub mod source;
 
+pub use bits::BitSpan;
+pub use rusqlite::Connection;
 pub use open::{Db, OpenError, SCHEMA_VERSION};
-pub use schema::DbInfo;
+pub use schema::{DbInfo, Direction};
+pub use source::{SourceCache, SourceState};
 
 /// Prefix on every message from this reader, so a failure names its layer.
 const ERR_PREFIX: &str = "designdb";

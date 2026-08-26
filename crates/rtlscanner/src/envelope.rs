@@ -27,6 +27,12 @@ pub enum ErrorCode {
     DbUnreadable,
     /// The database is readable but a required part of it is not.
     BadDb,
+    /// A path did not name a signal in this design.
+    SignalNotFound,
+    /// The design has no top to resolve against, or several and none named.
+    NoTop,
+    /// A bit-select the signal cannot be measured against.
+    BadSelect,
 }
 
 impl ErrorCode {
@@ -35,6 +41,9 @@ impl ErrorCode {
             ErrorCode::InputNotFound => "INPUT_NOT_FOUND",
             ErrorCode::DbUnreadable => "DB_UNREADABLE",
             ErrorCode::BadDb => "BAD_DB",
+            ErrorCode::SignalNotFound => "SIGNAL_NOT_FOUND",
+            ErrorCode::NoTop => "NO_TOP",
+            ErrorCode::BadSelect => "BAD_SELECT",
         }
     }
 }

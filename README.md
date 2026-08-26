@@ -13,8 +13,8 @@ what at time T; RTLScanner says which statement in which file put it there. What
 they have in common is the hierarchical path, so an agent holding both can join
 them.
 
-**Status: in development.** `info` is the only command; trace, fan-in, fan-out
-and path follow. See [doc/implementation-plan.md](doc/implementation-plan.md).
+**Status: in development.** `info` and `trace` work; fan-in, fan-out and path
+follow. See [doc/implementation-plan.md](doc/implementation-plan.md).
 
 ## Requires
 
@@ -32,7 +32,9 @@ still.
 ```bash
 cargo build
 ./target/debug/rtlscanner info design.db
-./target/debug/rtlscanner info --json design.db
+./target/debug/rtlscanner trace design.db top.u_core.u_alu.result
+./target/debug/rtlscanner trace design.db 'top.u_core.status[3]' --load
+./target/debug/rtlscanner trace --json design.db tb.dut.q --strip-prefix tb
 ```
 
 `info` answers what every other command depends on: which schema version, what
@@ -40,6 +42,15 @@ produced it, which tops it covers, whether the analysis is `complete` or fell
 short — the export writes a database and exits 0 even when elaboration errored —
 and whether the source files still hash to what was exported, since a location
 in a file that has moved on names a line that is no longer the one.
+
+`trace` answers one hop: every arc the export recorded for that signal, grouped
+by the statement, gate or port crossing that produced it. A hop carries the
+statement's own words — its construct, its assignment kind, the operands it
+reads, the conditions that gate it and which arm of each it is on, the events
+its procedure triggers on, and the line it was quoted from where the file still
+hashes to what was exported. Which of several drivers was in effect at some
+moment is not a structural fact and is not claimed; the material to decide it
+is in the answer.
 
 Every command answers in one JSON envelope: `tool`, `version`, `status`,
 `command`, `data`, `diagnostics`, `errors`, `summary`. A failure is a

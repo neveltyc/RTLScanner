@@ -153,6 +153,12 @@ impl Db {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
+
+    /// Where the file lies. A relative `file_path` in a row resolves against
+    /// this directory, the export having been run beside the RTL.
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 /// Building a design database to test against.

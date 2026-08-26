@@ -1,11 +1,12 @@
 //! `info` end to end: the binary, a database, the envelope a caller parses.
 //!
-//! Two kinds of database appear here. Most tests build one from the kit's own
-//! DDL, which covers what `info` says about a seal without needing an exporter
-//! at all. The ones that must see what the current producer actually writes run
-//! the pinned `rtl-designdb`; where it is absent they say so and skip, and
-//! `RTLSCANNER_REQUIRE_EXPORTER=1` turns that skip into a failure so a run
-//! meant to cover them cannot pass by not running them.
+//! Most tests build their database from the kit's own DDL, which covers what
+//! `info` says about a seal without needing an exporter at all. The ones that
+//! must see what the current producer writes run the pinned `rtl-designdb`.
+
+mod common;
+
+use common::{Exported, exported, json_of, run, scanner, tmp};
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -17,70 +18,14 @@ const RTL: &str = "module info_cli(input logic clk, input logic d, output logic 
                    \x20 always_ff @(posedge clk) q <= d;\n\
                    endmodule\n";
 
-/// The exporter, from the environment or the submodule build.
-fn exporter(test: &str) -> Option<PathBuf> {
-    let from_env = std::env::var("RTL_DESIGNDB").ok().map(PathBuf::from);
-    let built = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../extern/RTLDebugDBKit/build/rtl-designdb");
-    let found = from_env.into_iter().chain([built]).find(|p| p.exists());
-
-    if found.is_none() {
-        let demand = std::env::var("RTLSCANNER_REQUIRE_EXPORTER").is_ok_and(|v| v != "0");
-        assert!(!demand, "{test} needs rtl-designdb and RTLSCANNER_REQUIRE_EXPORTER is set");
-        eprintln!("SKIP {test}: no rtl-designdb (run `make designdb`, or set RTL_DESIGNDB)");
-    }
-    found
-}
-
-fn scanner() -> PathBuf {
-    // The integration test binary sits beside the one under test.
-    let mut p = std::env::current_exe().unwrap();
-    p.pop();
-    if p.ends_with("deps") {
-        p.pop();
-    }
-    p.join("rtlscanner")
-}
-
-fn run(args: &[&str]) -> (String, String, i32) {
-    let out = Command::new(scanner()).args(args).output().expect("running rtlscanner");
-    (
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-        out.status.code().unwrap_or(-1),
-    )
-}
-
-/// The JSON envelope on stdout, which every command produces under `--json`.
+/// The JSON envelope of `info --json <db>`.
 fn info_json(db: &PathBuf) -> (Value, i32) {
-    let (stdout, stderr, code) = run(&["info", "--json", db.to_str().unwrap()]);
-    assert!(stderr.is_empty(), "JSON keeps everything on stdout, got: {stderr}");
-    (serde_json::from_str(&stdout).expect("stdout is one JSON envelope"), code)
-}
-
-/// Export a database from the RTL above, or `None` where no exporter is around.
-fn exported(tag: &str, test: &str) -> Option<(PathBuf, PathBuf)> {
-    let exporter = exporter(test)?;
-    let dir = fixture::tmp(tag);
-    let rtl = dir.join("info_cli.sv");
-    std::fs::write(&rtl, RTL).unwrap();
-    let db = dir.join("design.db");
-
-    let out = Command::new(&exporter)
-        .arg(&rtl)
-        .args(["--top", "info_cli", "-o"])
-        .arg(&db)
-        .arg("-q")
-        .output()
-        .expect("running rtl-designdb");
-    assert!(out.status.success(), "export failed: {}", String::from_utf8_lossy(&out.stderr));
-
-    Some((db, rtl))
+    json_of(&["info", "--json", db.to_str().unwrap()])
 }
 
 #[test]
 fn info_reports_the_seal_of_a_freshly_exported_database() {
-    let Some((db, _rtl)) = exported("info-seal", "info_reports_the_seal") else { return };
+    let Some(Exported { db, .. }) = exported("info_cli", RTL, "info_reports_the_seal") else { return };
     let (v, code) = info_json(&db);
 
     assert_eq!(code, 0);
@@ -99,7 +44,8 @@ fn info_reports_the_seal_of_a_freshly_exported_database() {
 
 #[test]
 fn editing_the_rtl_makes_the_export_stale_without_making_it_an_error() {
-    let Some((db, rtl)) = exported("info-stale", "editing_the_rtl_makes_it_stale") else { return };
+    let Some(Exported { db, rtl, .. }) = exported("info_cli", RTL, "editing_the_rtl_makes_it_stale")
+    else { return };
     std::fs::write(&rtl, format!("{RTL}// a line the export never saw\n")).unwrap();
 
     let (v, code) = info_json(&db);
@@ -115,7 +61,7 @@ fn editing_the_rtl_makes_the_export_stale_without_making_it_an_error() {
 
 #[test]
 fn a_partial_export_names_what_it_fell_short_of() {
-    let dir = fixture::tmp("info-partial");
+    let dir = tmp("info-partial");
     let db = dir.join("design.db");
     fixture::write_db(
         &db,
@@ -138,7 +84,7 @@ fn a_partial_export_names_what_it_fell_short_of() {
 
 #[test]
 fn a_truncated_recursion_is_told_apart_from_a_construct_the_export_declined() {
-    let dir = fixture::tmp("info-recursion");
+    let dir = tmp("info-recursion");
     let db = dir.join("design.db");
     // Neither count makes an export partial, but they mean different things: a
     // black box is named and a truncated tree is simply absent below the cut.
@@ -162,7 +108,7 @@ fn a_truncated_recursion_is_told_apart_from_a_construct_the_export_declined() {
 
 #[test]
 fn a_seal_that_contradicts_itself_is_reported_as_such() {
-    let dir = fixture::tmp("info-malformed");
+    let dir = tmp("info-malformed");
     let db = dir.join("design.db");
     // The contract: `partial` is exactly the five counts, so `partial` with
     // none of them is a file whose seal cannot be taken at its word.
@@ -179,7 +125,7 @@ fn a_seal_that_contradicts_itself_is_reported_as_such() {
 
 #[test]
 fn a_file_that_is_not_a_design_database_is_an_error_envelope_on_stdout() {
-    let dir = fixture::tmp("info-junk");
+    let dir = tmp("info-junk");
     let junk = dir.join("junk.db");
     std::fs::write(&junk, b"not a database").unwrap();
 
@@ -201,7 +147,7 @@ fn a_missing_file_names_itself_and_is_told_apart_from_an_unreadable_one() {
 
 #[test]
 fn a_closed_pipe_ends_the_process_without_a_backtrace() {
-    let dir = fixture::tmp("info-pipe");
+    let dir = tmp("info-pipe");
     let db = dir.join("design.db");
     // Enough output to exceed the pipe buffer, so the write fails rather than
     // fitting in it: `| head -1` is an everyday way to read one line.
