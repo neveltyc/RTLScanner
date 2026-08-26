@@ -1,0 +1,37 @@
+$ rtlscanner find *ed --json design.db
+
+{
+  "command": {
+    "args": {
+      "db": "design.db",
+      "instances": false,
+      "limit": null,
+      "modules": false,
+      "pattern": "*ed"
+    },
+    "name": "find"
+  },
+  "data": {
+    "hits": [
+      {
+        "detail": "variable [8 bit(s)]",
+        "path": "top.muxed",
+        "what": "net"
+      }
+    ],
+    "kind": "net",
+    "pattern": "*ed"
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "capped": false,
+    "hits": 1,
+    "limit": 200,
+    "shown": 1,
+    "truncated": false
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

@@ -856,6 +856,90 @@ pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), St
     Ok((clocked, latch))
 }
 
+/// How many nets one occurrence declares. What a tree shows to say whether a
+/// level is worth descending into.
+pub fn net_count(c: &Connection, inst: i64) -> Result<i64, String> {
+    c.prepare_cached("SELECT count(*) FROM net WHERE inst_id = ?1")
+        .and_then(|mut s| s.query_row([inst], |r| r.get(0)))
+        .map_err(|e| q(e, "net"))
+}
+
+/// Nets whose name matches a glob, anywhere in the design.
+///
+/// Matching is on the name relative to an instance, which is what the index
+/// holds; a caller wanting to match a full path filters the answers. `limit`
+/// bounds the query itself rather than the answer — a pattern of `*` on a large
+/// design would otherwise read every net into memory to show twenty.
+pub fn nets_matching(c: &Connection, pattern: &str, limit: usize) -> Result<Vec<NetRow>, String> {
+    let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_name GLOB ?1 ORDER BY net_id LIMIT ?2");
+    let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_net"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pattern, limit as i64], net_row)
+        .map_err(|e| q(e, "v_net"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_net"))
+}
+
+/// Tree levels whose own segment matches a glob.
+pub fn nodes_matching(c: &Connection, pattern: &str, limit: usize) -> Result<Vec<NodeRow>, String> {
+    let sql = format!(
+        "SELECT {NODE_COLS} FROM v_tree_node WHERE node_name GLOB ?1 ORDER BY node_id LIMIT ?2"
+    );
+    let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_tree_node"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pattern, limit as i64], node_row)
+        .map_err(|e| q(e, "v_tree_node"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_tree_node"))
+}
+
+/// Definitions whose name matches a glob, with how many times each elaborated.
+pub fn modules_matching(
+    c: &Connection,
+    pattern: &str,
+    limit: usize,
+) -> Result<Vec<(String, String, i64)>, String> {
+    let mut stmt = c
+        .prepare_cached(
+            "SELECT m.name, m.def_kind, count(i.id) FROM module m \
+               LEFT JOIN inst i ON i.module_id = m.id \
+              WHERE m.name GLOB ?1 GROUP BY m.id ORDER BY m.name LIMIT ?2",
+        )
+        .map_err(|e| q(e, "module"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![pattern, limit as i64], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(|e| q(e, "module"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "module"))
+}
+
+/// The statements of one procedure that write one net, in execution order.
+///
+/// Which of several assignments to a variable is in effect is a matter of the
+/// order they run in and the conditions each sits under: a `y = '0` before a
+/// case is a default the later arms overwrite. The order is `sequence`, and
+/// deciding what it means is the reader's.
+pub fn procedure_writes(
+    c: &Connection,
+    proc_id: i64,
+    net: i64,
+) -> Result<Vec<StatementRow>, String> {
+    // Qualified: the two views share several column names, and an unqualified
+    // list would be ambiguous where they overlap.
+    let cols =
+        STMT_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT {cols} FROM v_stmt s \
+           JOIN v_stmt_target t ON t.stmt_id = s.stmt_id \
+          WHERE s.proc_id = ?1 AND t.net_id = ?2 AND t.target_kind = 'written_by' \
+          ORDER BY s.sequence"
+    );
+    let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_stmt"))?;
+    let rows = stmt
+        .query_map(rusqlite::params![proc_id, net], stmt_row)
+        .map_err(|e| q(e, "v_stmt"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_stmt"))
+}
+
 /// Which expansion encloses which, for every call in the design.
 ///
 /// Read whole rather than chased per row: a design has a handful of call sites

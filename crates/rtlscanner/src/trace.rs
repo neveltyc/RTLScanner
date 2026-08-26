@@ -157,12 +157,32 @@ pub struct Hop {
     unreachable: bool,
     /// The call string, where the statement came from a subroutine body.
     call_chain: Vec<String>,
+    /// Every assignment this procedure makes to this signal, in the order they
+    /// run. Which one is in effect is a matter of that order and of what gates
+    /// each — a `y = '0` before a case is a default the arms overwrite — and
+    /// deciding it is the reader's.
+    procedure_writes: Vec<Write>,
     /// What identifies the arc, so two arcs of one statement are one hop.
     provenance: String,
     /// What identifies the DRIVING SOURCE, which is coarser: the two arms of
     /// one `if` are two statements and one driver, since a procedure drives as
     /// a whole and its statements cannot contend with each other.
     source_key: String,
+}
+
+/// One of a procedure's assignments to the signal being traced.
+#[derive(Debug, Clone)]
+struct Write {
+    /// Execution order within the procedure. Later overwrites earlier.
+    sequence: Option<i64>,
+    line: Option<u32>,
+    /// The statement's text, where the source still matches the export.
+    statement: Option<String>,
+    /// Whether this is the assignment the hop is about.
+    is_this: bool,
+    /// Whether nothing gates it — an unconditional write, which every earlier
+    /// one is overwritten by and which is what a default looks like.
+    unconditional: bool,
 }
 
 /// What makes a procedure run.
@@ -252,6 +272,13 @@ impl CommandResult for Trace {
                         })).collect::<Vec<_>>(),
                     })),
                     "gates": h.gates.iter().map(gate_json).collect::<Vec<_>>(),
+                    "procedure_writes": h.procedure_writes.iter().map(|w| json!({
+                        "sequence": w.sequence,
+                        "line": w.line,
+                        "statement": w.statement,
+                        "is_this": w.is_this,
+                        "unconditional": w.unconditional,
+                    })).collect::<Vec<_>>(),
                     "unreachable": h.unreachable,
                     "call_chain": h.call_chain,
                 })
@@ -340,6 +367,25 @@ impl CommandResult for Trace {
             }
             if !hop.call_chain.is_empty() {
                 out.push_str(&format!("      via: {}\n", hop.call_chain.join(" -> ")));
+            }
+            // Where a procedure writes the signal more than once, the order is
+            // the answer to "which one held": later overwrites earlier, and an
+            // unconditional write overwrites everything before it.
+            if hop.procedure_writes.len() > 1 {
+                out.push_str(&format!(
+                    "      in this {} ({} writes, in order):\n",
+                    hop.timing.as_ref().map(|t| t.proc_kind.as_str()).unwrap_or("procedure"),
+                    hop.procedure_writes.len()
+                ));
+                for w in &hop.procedure_writes {
+                    out.push_str(&format!(
+                        "        {} {:>4}  {}{}\n",
+                        if w.is_this { "->" } else { "  " },
+                        w.line.map(|l| l.to_string()).unwrap_or_default(),
+                        w.statement.as_deref().unwrap_or("<assignment>"),
+                        if w.unconditional { "   [unconditional]" } else { "" },
+                    ));
+                }
             }
             for s in &hop.signals {
                 out.push_str(&format!("      {}: {s}\n", match self.direction {
@@ -645,6 +691,7 @@ fn build_hop(
         gates: Vec::new(),
         unreachable: false,
         call_chain: Vec::new(),
+        procedure_writes: Vec::new(),
         provenance: provenance_of(row, index),
         source_key: match stmt.as_ref().and_then(|s| s.proc_id) {
             Some(proc) => format!("proc{proc}"),
@@ -667,6 +714,7 @@ fn build_hop(
         }
         hop.timing = timing_of(c, stmt)?;
         (hop.gates, hop.unreachable) = gates_of(c, stmt)?;
+        hop.procedure_writes = writes_of(c, source, stmt, signal.net.net_id)?;
         hop.call_chain = match stmt.call_site_id {
             Some(id) => schema::call_chain(c, id)?
                 .into_iter()
@@ -747,6 +795,40 @@ fn timing_of(
         .map(|e| (e.edge_kind, e.net_name.unwrap_or_else(|| "<expression>".into())))
         .collect();
     Ok(Some(Timing { proc_kind, events }))
+}
+
+/// Every assignment the statement's procedure makes to this signal, in order.
+///
+/// Only where there is more than one: a single write is the statement already
+/// reported, and repeating it would say nothing.
+fn writes_of(
+    c: &Connection,
+    source: &mut SourceCache,
+    stmt: &schema::StatementRow,
+    net: i64,
+) -> Result<Vec<Write>, String> {
+    let Some(proc_id) = stmt.proc_id else { return Ok(Vec::new()) };
+    let siblings = schema::procedure_writes(c, proc_id, net)?;
+    if siblings.len() < 2 {
+        return Ok(Vec::new());
+    }
+    let mut writes = Vec::with_capacity(siblings.len());
+    for row in siblings {
+        let text = match (&row.file_path, row.src_line) {
+            (Some(f), Some(l)) => source.line(c, f, l).0,
+            _ => None,
+        };
+        writes.push(Write {
+            sequence: row.sequence,
+            line: row.src_line,
+            statement: text,
+            is_this: row.stmt_id == stmt.stmt_id,
+            // No gating level at all: nothing stands between the procedure
+            // running and this assignment happening.
+            unconditional: row.branch_id.is_none(),
+        });
+    }
+    Ok(writes)
 }
 
 /// The conditions a statement sits under, outermost first, and whether any of

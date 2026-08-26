@@ -29,6 +29,8 @@ pub enum ErrorCode {
     BadDb,
     /// A path did not name a signal in this design.
     SignalNotFound,
+    /// A path did not name a level of the hierarchy.
+    ScopeNotFound,
     /// The design has no top to resolve against, or several and none named.
     NoTop,
     /// A bit-select the signal cannot be measured against.
@@ -42,6 +44,7 @@ impl ErrorCode {
             ErrorCode::DbUnreadable => "DB_UNREADABLE",
             ErrorCode::BadDb => "BAD_DB",
             ErrorCode::SignalNotFound => "SIGNAL_NOT_FOUND",
+            ErrorCode::ScopeNotFound => "SCOPE_NOT_FOUND",
             ErrorCode::NoTop => "NO_TOP",
             ErrorCode::BadSelect => "BAD_SELECT",
         }

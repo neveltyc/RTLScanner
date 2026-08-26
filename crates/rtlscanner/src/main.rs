@@ -5,6 +5,7 @@
 //! RTL beyond quoting a line it can verify, and no waveform — so what it
 //! reports is what the export recorded, at the precision it recorded it.
 
+mod browse;
 mod cone;
 mod cone_result;
 mod envelope;
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use designdb::{Db, Direction, bits, resolve};
+use designdb::{Db, Direction, bits, resolve, schema};
 use serde_json::json;
 
 use envelope::{CommandError, Diagnostic, ErrorCode, Rendered};
@@ -46,6 +47,42 @@ enum Command {
     Fanout(ConeArgs),
     /// A route from one signal to another
     Path(PathArgs),
+    /// What the design is made of, level by level
+    Tree(TreeArgs),
+    /// Where a name lives
+    Find(FindArgs),
+}
+
+#[derive(Args)]
+struct TreeArgs {
+    #[command(flatten)]
+    common: Common,
+    /// Start below this scope rather than at the top
+    scope: Option<String>,
+    /// Show this many levels; 0 for all
+    #[arg(long)]
+    depth: Option<u32>,
+    /// Show at most this many levels; 0 for all
+    #[arg(long)]
+    limit: Option<i64>,
+}
+
+#[derive(Args)]
+struct FindArgs {
+    #[command(flatten)]
+    common: Common,
+    /// A glob against the name — `*` and `?` as a shell spells them. A net's
+    /// name is the one relative to its instance, not its full path
+    pattern: String,
+    /// Search instances rather than nets
+    #[arg(long)]
+    instances: bool,
+    /// Search definitions rather than nets
+    #[arg(long)]
+    modules: bool,
+    /// Show at most this many hits; 0 for all
+    #[arg(long)]
+    limit: Option<i64>,
 }
 
 /// What every command needs to reach the design.
@@ -169,6 +206,27 @@ fn main() -> ExitCode {
         Command::Fanin(args) => cone_command(args, Direction::Driver),
         Command::Fanout(args) => cone_command(args, Direction::Load),
         Command::Path(args) => path_command(args),
+        Command::Tree(args) => {
+            let echo = json!({
+                "db": args.common.db.display().to_string(),
+                "scope": args.scope,
+                "depth": args.depth,
+                "limit": args.limit,
+            });
+            let outcome = tree_command(&args);
+            envelope::render("tree", echo, &outcome, &[], args.common.json)
+        }
+        Command::Find(args) => {
+            let echo = json!({
+                "db": args.common.db.display().to_string(),
+                "pattern": args.pattern,
+                "instances": args.instances,
+                "modules": args.modules,
+                "limit": args.limit,
+            });
+            let outcome = find_command(&args);
+            envelope::render("find", echo, &outcome, &[], args.common.json)
+        }
         Command::Trace(args) => {
             let echo = json!({
                 "db": args.db.display().to_string(),
@@ -472,4 +530,87 @@ fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>),
         },
         notes,
     ))
+}
+
+fn tree_command(args: &TreeArgs) -> Result<browse::Tree, CommandError> {
+    let (db, anchor) = design(&args.common)?;
+    // A scope names a level of the tree, not a net: the walk down is the same
+    // one, and what it stops at is a node rather than a name inside one.
+    let (node, path) = match &args.scope {
+        None => (anchor.root, anchor.root_name.clone()),
+        Some(scope) => scope_node(&db, &anchor, scope)?,
+    };
+    // Zero is unbounded, as it is everywhere else in this tool.
+    let depth = match args.depth {
+        Some(0) => None,
+        other => other.or(Some(3)),
+    };
+    browse::tree(&db, node, &path, depth, args.limit)
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))
+}
+
+/// Resolve a path to the tree level it names.
+fn scope_node(
+    db: &Db,
+    anchor: &resolve::Anchor,
+    scope: &str,
+) -> Result<(i64, String), CommandError> {
+    let stripped = resolve::strip_prefix(anchor, scope)
+        .map_err(|e| CommandError::new(ErrorCode::ScopeNotFound, e))?;
+    let mut segments = resolve::segments(stripped);
+    if segments.first() == Some(&anchor.root_name.as_str()) {
+        segments.remove(0);
+    }
+
+    let mut at = anchor.root;
+    let mut walked = vec![anchor.root_name.clone()];
+    for segment in segments {
+        let found = schema::child_node(db.conn(), at, segment)
+            .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+        match found {
+            Some(child) => {
+                at = child.node_id;
+                walked.push(child.node_name);
+            }
+            None => {
+                // What is at the level that did resolve, so the next call is a
+                // correction rather than a search.
+                let here: Vec<String> = schema::children_of(db.conn(), at)
+                    .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?
+                    .into_iter()
+                    .map(|n| n.node_name)
+                    .collect();
+                let close = resolve::close_matches(segment, &here, 5);
+                return Err(CommandError::new(
+                    ErrorCode::ScopeNotFound,
+                    format!("'{scope}' does not name a scope: '{segment}' is not there"),
+                )
+                .with_details(json!({
+                    "scope": scope,
+                    "valid_prefix": walked.join("."),
+                    "failing_segment": segment,
+                    "close_matches": close,
+                    "children": here,
+                })));
+            }
+        }
+    }
+    Ok((at, walked.join(".")))
+}
+
+fn find_command(args: &FindArgs) -> Result<browse::Found, CommandError> {
+    let (db, anchor) = design(&args.common)?;
+    let kind = match (args.instances, args.modules) {
+        (true, true) => {
+            return Err(CommandError::new(
+                ErrorCode::BadSelect,
+                "--instances and --modules ask for different things; pick one",
+            ));
+        }
+        (true, false) => browse::Kind::Instance,
+        (false, true) => browse::Kind::Module,
+        (false, false) => browse::Kind::Net,
+    };
+    browse::find(&db, &anchor, &args.pattern, kind, args.limit)
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))
 }

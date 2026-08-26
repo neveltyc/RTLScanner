@@ -1,0 +1,51 @@
+$ rtlscanner info --json design.db
+
+{
+  "command": {
+    "args": {
+      "db": "design.db"
+    },
+    "name": "info"
+  },
+  "data": {
+    "analysis": {
+      "checker_inst_count": 0,
+      "duplicate_path_count": 0,
+      "empty_procedure_count": 0,
+      "error_count": 0,
+      "recursion_count": 0,
+      "status": "complete",
+      "truncated_call_count": 0,
+      "unanalysed_inst_count": 0,
+      "unresolved_count": 0
+    },
+    "path": "design.db",
+    "producer": {
+      "config_digest": "f984691a830cfed2706935b08c8962fe7bc4baf168b3565ada88ad0c28626e56",
+      "revision": "f45f16d",
+      "slang_version": "v11.0",
+      "tool": "rtl-designdb",
+      "tool_version": "0.1.0"
+    },
+    "schema_version": 19,
+    "sources": [
+      {
+        "path": "design.sv",
+        "state": "current"
+      }
+    ],
+    "top": "top"
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "analysis_status": "complete",
+    "schema_version": 19,
+    "sources": 1,
+    "sources_missing": 0,
+    "sources_stale": 0
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

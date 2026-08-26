@@ -1,0 +1,83 @@
+$ rtlscanner trace top.packed_up --json design.db
+
+{
+  "command": {
+    "args": {
+      "control": false,
+      "db": "design.db",
+      "load": false,
+      "signal": "top.packed_up",
+      "strip_prefix": null,
+      "top": null
+    },
+    "name": "trace"
+  },
+  "data": {
+    "bits": null,
+    "direction": "driver",
+    "hops": [
+      {
+        "assign_kind": "continuous",
+        "bits": [
+          "[7:4]"
+        ],
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [],
+        "kind": "continuous_assign",
+        "line": 29,
+        "procedure_writes": [],
+        "raw_kind": "assign",
+        "scope": "top",
+        "sequence": null,
+        "signals": [
+          "top.a"
+        ],
+        "source": "read",
+        "statement": "assign packed_up[7:4] = a[3:0];  // two disjoint windows, one signal",
+        "timing": null,
+        "unreachable": false
+      },
+      {
+        "assign_kind": "continuous",
+        "bits": [
+          "[3:0]"
+        ],
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [],
+        "kind": "continuous_assign",
+        "line": 30,
+        "procedure_writes": [],
+        "raw_kind": "assign",
+        "scope": "top",
+        "sequence": null,
+        "signals": [
+          "top.b"
+        ],
+        "source": "read",
+        "statement": "assign packed_up[3:0] = b[7:4];",
+        "timing": null,
+        "unreachable": false
+      }
+    ],
+    "signal": "top.packed_up",
+    "status": "resolved",
+    "width": 8
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "drivers": 2,
+    "hops": 2,
+    "multiple_drivers": false,
+    "status": "resolved"
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

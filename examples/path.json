@@ -1,0 +1,146 @@
+$ rtlscanner path top.a top.out --json design.db
+
+{
+  "command": {
+    "args": {
+      "comb": false,
+      "db": "design.db",
+      "depth": null,
+      "from": "top.a",
+      "no_control": false,
+      "through_latch": false,
+      "to": "top.out"
+    },
+    "name": "path"
+  },
+  "data": {
+    "comb": false,
+    "edges": [
+      {
+        "boundary": true,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 1,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "port",
+        "line": 19,
+        "map_exact": true,
+        "raw_kind": "connection",
+        "source": "top.a",
+        "source_bits": null,
+        "target": "top.u_core.a",
+        "target_bits": null
+      },
+      {
+        "boundary": true,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 2,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "port",
+        "line": 10,
+        "map_exact": true,
+        "raw_kind": "connection",
+        "source": "top.u_core.a",
+        "source_bits": null,
+        "target": "top.u_core.u_alu.a",
+        "target_bits": null
+      },
+      {
+        "boundary": false,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 3,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "continuous_assign",
+        "line": 5,
+        "map_exact": false,
+        "raw_kind": "assign",
+        "source": "top.u_core.u_alu.a",
+        "source_bits": null,
+        "target": "top.u_core.u_alu.r",
+        "target_bits": null
+      },
+      {
+        "boundary": true,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 4,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "port",
+        "line": 10,
+        "map_exact": true,
+        "raw_kind": "connection",
+        "source": "top.u_core.u_alu.r",
+        "source_bits": null,
+        "target": "top.u_core.sum",
+        "target_bits": null
+      },
+      {
+        "boundary": false,
+        "call_site": null,
+        "clocked": true,
+        "control": false,
+        "depth": 5,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "procedural",
+        "line": 12,
+        "map_exact": true,
+        "raw_kind": "always_ff",
+        "source": "top.u_core.sum",
+        "source_bits": null,
+        "target": "top.u_core.out",
+        "target_bits": null
+      },
+      {
+        "boundary": true,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 6,
+        "ends_at_state": false,
+        "file": "design.sv",
+        "kind": "port",
+        "line": 19,
+        "map_exact": true,
+        "raw_kind": "connection",
+        "source": "top.u_core.out",
+        "source_bits": null,
+        "target": "top.out",
+        "target_bits": null
+      }
+    ],
+    "found": true,
+    "from": "top.a",
+    "length": 6,
+    "nodes": [
+      "top.a",
+      "top.u_core.a",
+      "top.u_core.u_alu.a",
+      "top.u_core.u_alu.r",
+      "top.u_core.sum",
+      "top.u_core.out",
+      "top.out"
+    ],
+    "to": "top.out"
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "clocked_edges": 1,
+    "found": true,
+    "length": 6
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

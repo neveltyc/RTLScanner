@@ -13,8 +13,9 @@ what at time T; RTLScanner says which statement in which file put it there. What
 they have in common is the hierarchical path, so an agent holding both can join
 them.
 
-**Status: in development.** `info`, `trace`, `fanin`, `fanout` and `path` work.
-See [doc/implementation-plan.md](doc/implementation-plan.md).
+**Status: in development.** All seven commands work: `info`, `tree`, `find`,
+`trace`, `fanin`, `fanout`, `path`. See
+[doc/implementation-plan.md](doc/implementation-plan.md) for what remains.
 
 ## Requires
 
@@ -38,7 +39,13 @@ cargo build
 ./target/debug/rtlscanner fanin design.db top.u_core.status --depth 6
 ./target/debug/rtlscanner fanin design.db top.u_core.status --comb   # this cycle's logic
 ./target/debug/rtlscanner path design.db top.a top.u_core.result
+./target/debug/rtlscanner tree design.db --depth 2       # what is this design
+./target/debug/rtlscanner find design.db 'req*'          # where does that name live
 ```
+
+Worked answers to each of these, on a design small enough to read whole, are in
+[examples/](examples/). They are generated from this tree and a test
+regenerates them to compare, so what they show is what the tool currently says.
 
 `info` answers what every other command depends on: which schema version, what
 produced it, which tops it covers, whether the analysis is `complete` or fell
@@ -54,6 +61,10 @@ its procedure triggers on, and the line it was quoted from where the file still
 hashes to what was exported. Which of several drivers was in effect at some
 moment is not a structural fact and is not claimed; the material to decide it
 is in the answer.
+
+`tree` and `find` are where a path comes from when you do not have one yet:
+what the design is made of, and where a name lives. What `find` returns, every
+other command accepts.
 
 `fanin` and `fanout` follow those hops outward, and `path` reads the walk
 backwards to give one route. A cone stops where the caller says: after so many
@@ -85,9 +96,12 @@ extern/RTLDebugDBKit  the producer, pinned to the schema version above
 doc/                design and the plan it follows
 ```
 
+An agent driving this tool should read [skill/SKILL.md](skill/SKILL.md), which
+says which command answers which question and how to read what comes back.
+
 `make test` runs the tests. Most build their database from the kit's own DDL, so
 they need no exporter; the few that must see what the current producer writes
 skip without one, and `make test-exporter` builds it and makes them mandatory.
 `make check` runs clippy and rustfmt; `make sync-ddl` re-extracts the DDL the
 fixtures build from, and refuses to leave it disagreeing with the schema version
-this reader accepts.
+this reader accepts; `make examples` regenerates the worked answers.

@@ -1,7 +1,7 @@
 DESIGNDB_DIR := extern/RTLDebugDBKit
 DESIGNDB_BIN := $(DESIGNDB_DIR)/build/rtl-designdb
 
-.PHONY: build test test-exporter check designdb sync-ddl
+.PHONY: build test test-exporter check designdb sync-ddl examples
 
 build:
 	cargo build
@@ -17,6 +17,13 @@ test:
 test-exporter: $(DESIGNDB_BIN)
 	RTL_DESIGNDB=$(abspath $(DESIGNDB_BIN)) RTLSCANNER_REQUIRE_EXPORTER=1 \
 		cargo test --all-targets
+
+# Regenerate the worked answers in examples/. They are the shape of an answer
+# an agent sees before asking for one, and a hand-kept copy of that shape drifts
+# silently — so it is generated, and a test regenerates it to compare.
+examples: $(DESIGNDB_BIN)
+	RTL_DESIGNDB=$(abspath $(DESIGNDB_BIN)) RTLSCANNER_REQUIRE_EXPORTER=1 \
+		RTLSCANNER_WRITE_EXAMPLES=1 cargo test --test examples -- --nocapture
 
 check:
 	cargo clippy --all-targets -- -D warnings

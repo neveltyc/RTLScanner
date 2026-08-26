@@ -1,0 +1,78 @@
+$ rtlscanner fanin top.out --comb --json design.db
+
+{
+  "command": {
+    "args": {
+      "comb": true,
+      "db": "design.db",
+      "depth": null,
+      "limit": null,
+      "no_control": false,
+      "signal": "top.out",
+      "through_latch": false
+    },
+    "name": "fanin"
+  },
+  "data": {
+    "comb": true,
+    "control": true,
+    "direct": [
+      "top.u_core.out"
+    ],
+    "direction": "driver",
+    "edges": [
+      {
+        "boundary": true,
+        "call_site": null,
+        "clocked": false,
+        "control": false,
+        "depth": 1,
+        "ends_at_state": true,
+        "file": "design.sv",
+        "kind": "port",
+        "line": 19,
+        "map_exact": true,
+        "raw_kind": "connection",
+        "source": "top.u_core.out",
+        "source_bits": null,
+        "target": "top.out",
+        "target_bits": null
+      }
+    ],
+    "max_depth": null,
+    "nodes": [
+      {
+        "clocked": true,
+        "depth": 0,
+        "latch": false,
+        "path": "top.out",
+        "width": 8
+      },
+      {
+        "clocked": true,
+        "depth": 1,
+        "latch": false,
+        "path": "top.u_core.out",
+        "width": 8
+      }
+    ],
+    "start": "top.out"
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "control_edges": 0,
+    "edges": 1,
+    "limit": 200,
+    "max_depth_reached": 1,
+    "nodes": 2,
+    "shown_edges": 1,
+    "shown_nodes": 2,
+    "stopped_at_state": 1,
+    "truncated": false,
+    "widened": 0
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

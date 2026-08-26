@@ -1,0 +1,80 @@
+$ rtlscanner trace top.u_core.sum --load --json design.db
+
+{
+  "command": {
+    "args": {
+      "control": false,
+      "db": "design.db",
+      "load": true,
+      "signal": "top.u_core.sum",
+      "strip_prefix": null,
+      "top": null
+    },
+    "name": "trace"
+  },
+  "data": {
+    "bits": null,
+    "direction": "load",
+    "hops": [
+      {
+        "assign_kind": "nonblocking",
+        "bits": null,
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [
+          {
+            "case_kind": null,
+            "check": null,
+            "iteration": null,
+            "kind": "if",
+            "labels": null,
+            "line": 12,
+            "ordinal": null,
+            "reads": [
+              "en"
+            ],
+            "sense": "then",
+            "static_taken": null
+          }
+        ],
+        "kind": "procedural",
+        "line": 12,
+        "procedure_writes": [],
+        "raw_kind": "always_ff",
+        "scope": "top.u_core",
+        "sequence": 0,
+        "signals": [
+          "top.u_core.out"
+        ],
+        "source": "read",
+        "statement": "if (en) out <= sum;",
+        "timing": {
+          "events": [
+            {
+              "edge": "posedge",
+              "signal": "clk"
+            }
+          ],
+          "proc_kind": "always_ff"
+        },
+        "unreachable": false
+      }
+    ],
+    "signal": "top.u_core.sum",
+    "status": "resolved",
+    "width": 8
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "drivers": 0,
+    "hops": 1,
+    "multiple_drivers": false,
+    "status": "resolved"
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

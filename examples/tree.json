@@ -1,0 +1,70 @@
+$ rtlscanner tree --depth 0 --json design.db
+
+{
+  "command": {
+    "args": {
+      "db": "design.db",
+      "depth": 0,
+      "limit": null,
+      "scope": null
+    },
+    "name": "tree"
+  },
+  "data": {
+    "levels": [
+      {
+        "children": 3,
+        "depth": 0,
+        "kind": "root",
+        "module": "top",
+        "nets": 10,
+        "path": "top"
+      },
+      {
+        "children": 0,
+        "depth": 1,
+        "kind": "generate",
+        "module": null,
+        "nets": 0,
+        "path": "top.lane[0]"
+      },
+      {
+        "children": 0,
+        "depth": 1,
+        "kind": "generate",
+        "module": null,
+        "nets": 0,
+        "path": "top.lane[1]"
+      },
+      {
+        "children": 1,
+        "depth": 1,
+        "kind": "instance",
+        "module": "core",
+        "nets": 6,
+        "path": "top.u_core"
+      },
+      {
+        "children": 0,
+        "depth": 2,
+        "kind": "instance",
+        "module": "alu",
+        "nets": 3,
+        "path": "top.u_core.u_alu"
+      }
+    ],
+    "max_depth": null,
+    "root": "top"
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "levels": 5,
+    "limit": 200,
+    "shown": 5,
+    "truncated": false
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}

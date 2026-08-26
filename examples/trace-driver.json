@@ -1,0 +1,228 @@
+$ rtlscanner trace top.muxed --json design.db
+
+{
+  "command": {
+    "args": {
+      "control": false,
+      "db": "design.db",
+      "load": false,
+      "signal": "top.muxed",
+      "strip_prefix": null,
+      "top": null
+    },
+    "name": "trace"
+  },
+  "data": {
+    "bits": null,
+    "direction": "driver",
+    "hops": [
+      {
+        "assign_kind": "blocking",
+        "bits": null,
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [],
+        "kind": "constant",
+        "line": 22,
+        "procedure_writes": [
+          {
+            "is_this": true,
+            "line": 22,
+            "sequence": 0,
+            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
+            "unconditional": true
+          },
+          {
+            "is_this": false,
+            "line": 24,
+            "sequence": 1,
+            "statement": "2'b01: muxed = a;",
+            "unconditional": false
+          },
+          {
+            "is_this": false,
+            "line": 25,
+            "sequence": 2,
+            "statement": "2'b10: muxed = b;",
+            "unconditional": false
+          }
+        ],
+        "raw_kind": "always_comb",
+        "scope": "top",
+        "sequence": 0,
+        "signals": [],
+        "source": "read",
+        "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
+        "timing": {
+          "events": [],
+          "proc_kind": "always_comb"
+        },
+        "unreachable": false
+      },
+      {
+        "assign_kind": "blocking",
+        "bits": null,
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [
+          {
+            "case_kind": "case",
+            "check": null,
+            "iteration": null,
+            "kind": "case",
+            "labels": null,
+            "line": 23,
+            "ordinal": null,
+            "reads": [
+              "sel"
+            ],
+            "sense": null,
+            "static_taken": null
+          },
+          {
+            "case_kind": null,
+            "check": null,
+            "iteration": null,
+            "kind": "case_item",
+            "labels": "2'b1",
+            "line": 24,
+            "ordinal": 0,
+            "reads": [],
+            "sense": null,
+            "static_taken": null
+          }
+        ],
+        "kind": "procedural",
+        "line": 24,
+        "procedure_writes": [
+          {
+            "is_this": false,
+            "line": 22,
+            "sequence": 0,
+            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
+            "unconditional": true
+          },
+          {
+            "is_this": true,
+            "line": 24,
+            "sequence": 1,
+            "statement": "2'b01: muxed = a;",
+            "unconditional": false
+          },
+          {
+            "is_this": false,
+            "line": 25,
+            "sequence": 2,
+            "statement": "2'b10: muxed = b;",
+            "unconditional": false
+          }
+        ],
+        "raw_kind": "always_comb",
+        "scope": "top",
+        "sequence": 1,
+        "signals": [
+          "top.a"
+        ],
+        "source": "read",
+        "statement": "2'b01: muxed = a;",
+        "timing": {
+          "events": [],
+          "proc_kind": "always_comb"
+        },
+        "unreachable": false
+      },
+      {
+        "assign_kind": "blocking",
+        "bits": null,
+        "bits_exact": true,
+        "boundary": false,
+        "call_chain": [],
+        "file": "design.sv",
+        "gates": [
+          {
+            "case_kind": "case",
+            "check": null,
+            "iteration": null,
+            "kind": "case",
+            "labels": null,
+            "line": 23,
+            "ordinal": null,
+            "reads": [
+              "sel"
+            ],
+            "sense": null,
+            "static_taken": null
+          },
+          {
+            "case_kind": null,
+            "check": null,
+            "iteration": null,
+            "kind": "case_item",
+            "labels": "2'b10",
+            "line": 25,
+            "ordinal": 1,
+            "reads": [],
+            "sense": null,
+            "static_taken": null
+          }
+        ],
+        "kind": "procedural",
+        "line": 25,
+        "procedure_writes": [
+          {
+            "is_this": false,
+            "line": 22,
+            "sequence": 0,
+            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
+            "unconditional": true
+          },
+          {
+            "is_this": false,
+            "line": 24,
+            "sequence": 1,
+            "statement": "2'b01: muxed = a;",
+            "unconditional": false
+          },
+          {
+            "is_this": true,
+            "line": 25,
+            "sequence": 2,
+            "statement": "2'b10: muxed = b;",
+            "unconditional": false
+          }
+        ],
+        "raw_kind": "always_comb",
+        "scope": "top",
+        "sequence": 2,
+        "signals": [
+          "top.b"
+        ],
+        "source": "read",
+        "statement": "2'b10: muxed = b;",
+        "timing": {
+          "events": [],
+          "proc_kind": "always_comb"
+        },
+        "unreachable": false
+      }
+    ],
+    "signal": "top.muxed",
+    "status": "resolved",
+    "width": 8
+  },
+  "diagnostics": [],
+  "errors": [],
+  "status": "ok",
+  "summary": {
+    "drivers": 1,
+    "hops": 3,
+    "multiple_drivers": false,
+    "status": "resolved"
+  },
+  "tool": "rtlscanner",
+  "version": "2.0.0-alpha.1"
+}
