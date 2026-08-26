@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """The migration gate: every answer the Python engine gave, this one still gives.
 
-The predecessor on `dev-python-bk` read RTL through pyslang and answered the
-same questions this tool answers from a database. Nothing says the rewrite kept
+The predecessor — the Python line this repository tags `v0.1.0` through
+`v0.5.0` — read RTL through pyslang and answered the same questions this tool
+answers from a database. Nothing says the rewrite kept
 all of them, and this repository's tests cannot say so: they were written
 alongside the rewrite and share its idea of what the answers are. The oracle
 does not — it was written against these same designs, from a different model —

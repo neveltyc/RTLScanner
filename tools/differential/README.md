@@ -16,9 +16,9 @@ regression line afterwards is the golden tests plus the invariants in
 
 ## The recorded run
 
-Against `dev-python-bk` at `fa327df` (0.5.0), over that branch's own eleven
-example designs plus `examples/design.sv`, with `rtl-designdb` at the pinned
-submodule commit:
+Against the Python line at its last release, `v0.5.0`, over that history's own
+eleven example designs plus `examples/design.sv`, with `rtl-designdb` at the
+pinned submodule commit:
 
 ```
 1696 comparison(s), 1147 of them with an oracle fact to find, 146 extra fact(s)
@@ -47,7 +47,7 @@ on a branch rather than in this tree.
 
 ```bash
 python3 -m venv /tmp/oracle && /tmp/oracle/bin/pip install -q pyslang
-mkdir -p /tmp/oracle-src && git archive dev-python-bk | tar -x -C /tmp/oracle-src
+mkdir -p /tmp/oracle-src && git archive v0.5.0 | tar -x -C /tmp/oracle-src
 /tmp/oracle/bin/pip install -q -e /tmp/oracle-src
 mkdir -p /tmp/corpus && cp /tmp/oracle-src/examples/*/*.sv examples/design.sv /tmp/corpus/
 ```
