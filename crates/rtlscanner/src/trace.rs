@@ -576,7 +576,7 @@ fn far_path(
 }
 
 /// The path of one instance, from the root.
-fn instance_path(
+pub fn instance_path(
     c: &Connection,
     anchor: &Anchor,
     inst: i64,
@@ -679,7 +679,7 @@ fn build_hop(
 }
 
 /// Fold a row's kind into the word a caller reasons about.
-fn classify(row: &schema::ArcRow, stmt: Option<&schema::StatementRow>) -> HopKind {
+pub fn classify(row: &schema::ArcRow, stmt: Option<&schema::StatementRow>) -> HopKind {
     // A control dependency is one whichever word the view uses: `v_driver`
     // folds one whose source is a hierarchical name into `external`, which says
     // where the source is but not that it gates rather than drives.
@@ -719,7 +719,7 @@ fn classify(row: &schema::ArcRow, stmt: Option<&schema::StatementRow>) -> HopKin
 }
 
 /// The database's own word for this arc, kept beside the folded one.
-fn raw_kind_of(
+pub fn raw_kind_of(
     row: &schema::ArcRow,
     stmt: Option<&schema::StatementRow>,
     kind: HopKind,

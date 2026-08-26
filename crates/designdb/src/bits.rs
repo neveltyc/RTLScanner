@@ -12,7 +12,7 @@
 /// object" and "somewhere inside it, unknown where" are different facts and are
 /// stored as different rows, so collapsing them would answer a question the
 /// database took care to keep open.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BitSpan {
     /// The whole object.
     Whole,
@@ -132,6 +132,41 @@ pub fn split_select(leaf: &str) -> (&str, Option<(i64, i64)>) {
     }
 }
 
+/// Carry a window across one arc, onto the far end's bits.
+///
+/// One rule decides it: the correspondence must be exact at every step — this
+/// end's span, the mapping, and the far end's span — or the window is dropped
+/// and the whole far object is taken instead. A narrower answer that might be
+/// the wrong bits is worse than a wider one that certainly contains them.
+///
+/// `None` in and `None` out both mean the whole object.
+pub fn cross(
+    window: Option<(u64, u64)>,
+    signal: BitSpan,
+    far: BitSpan,
+    map_exact: Option<bool>,
+) -> Option<(u64, u64)> {
+    let (lo, hi) = window?;
+    if map_exact != Some(true) {
+        return None;
+    }
+    // Where the window sits within this end's span, as an offset from its base.
+    let (wlo, whi, base) = match signal {
+        BitSpan::Whole => (lo, hi, 0),
+        BitSpan::Range { lo: a, hi: b, exact: true } => (lo.max(a), hi.min(b), a),
+        _ => return None,
+    };
+    if wlo > whi {
+        return None;
+    }
+    let (off_lo, off_hi) = (wlo - base, whi - base);
+    match far {
+        BitSpan::Whole => Some((off_lo, off_hi)),
+        BitSpan::Range { lo: c, exact: true, .. } => Some((c + off_lo, c + off_hi)),
+        _ => None,
+    }
+}
+
 /// Declared indices to LSB-relative offsets, against the object's own range.
 pub fn offsets_of(select: (i64, i64), decl: (i64, i64)) -> Result<(u64, u64), String> {
     let (left, right) = decl;
@@ -196,6 +231,35 @@ mod tests {
 
         assert!(offsets_of((16, 16), (15, 8)).is_err());
         assert!(offsets_of((7, 7), (15, 8)).is_err());
+    }
+
+    #[test]
+    fn a_window_crosses_only_where_every_step_is_exact() {
+        let whole = BitSpan::Whole;
+        let exact = |lo, hi| BitSpan::Range { lo, hi, exact: true };
+        let inexact = |lo, hi| BitSpan::Range { lo, hi, exact: false };
+
+        // A port wiring `[7:4]` of one net to the low half of another rebases
+        // the window onto the far end's own offsets.
+        assert_eq!(cross(Some((5, 6)), exact(4, 7), exact(0, 3), Some(true)), Some((1, 2)));
+        assert_eq!(cross(Some((0, 3)), whole, exact(8, 11), Some(true)), Some((8, 11)));
+        assert_eq!(cross(Some((2, 2)), whole, whole, Some(true)), Some((2, 2)));
+
+        // Whichever step is not exact, the answer is the whole far object: a
+        // sum's operands correspond to no particular bits of it, and an
+        // upper-bound range is not the bits actually touched.
+        assert_eq!(cross(Some((0, 3)), whole, whole, Some(false)), None, "no per-bit mapping");
+        assert_eq!(cross(Some((0, 3)), whole, whole, None), None, "nothing to correspond with");
+        assert_eq!(cross(Some((0, 3)), inexact(0, 7), whole, Some(true)), None);
+        assert_eq!(cross(Some((0, 3)), whole, inexact(0, 7), Some(true)), None);
+        assert_eq!(cross(Some((0, 3)), BitSpan::Unknown, whole, Some(true)), None);
+
+        // A window disjoint from the arc degrades like any other uncertainty.
+        // The walk never gets here — such a row is filtered by `may_touch`
+        // first — and the safe answer is the wide one either way.
+        assert_eq!(cross(Some((9, 9)), exact(0, 3), whole, Some(true)), None);
+        // The whole object stays the whole object.
+        assert_eq!(cross(None, whole, whole, Some(true)), None);
     }
 
     #[test]

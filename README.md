@@ -13,8 +13,8 @@ what at time T; RTLScanner says which statement in which file put it there. What
 they have in common is the hierarchical path, so an agent holding both can join
 them.
 
-**Status: in development.** `info` and `trace` work; fan-in, fan-out and path
-follow. See [doc/implementation-plan.md](doc/implementation-plan.md).
+**Status: in development.** `info`, `trace`, `fanin`, `fanout` and `path` work.
+See [doc/implementation-plan.md](doc/implementation-plan.md).
 
 ## Requires
 
@@ -35,6 +35,9 @@ cargo build
 ./target/debug/rtlscanner trace design.db top.u_core.u_alu.result
 ./target/debug/rtlscanner trace design.db 'top.u_core.status[3]' --load
 ./target/debug/rtlscanner trace --json design.db tb.dut.q --strip-prefix tb
+./target/debug/rtlscanner fanin design.db top.u_core.status --depth 6
+./target/debug/rtlscanner fanin design.db top.u_core.status --comb   # this cycle's logic
+./target/debug/rtlscanner path design.db top.a top.u_core.result
 ```
 
 `info` answers what every other command depends on: which schema version, what
@@ -51,6 +54,20 @@ its procedure triggers on, and the line it was quoted from where the file still
 hashes to what was exported. Which of several drivers was in effect at some
 moment is not a structural fact and is not claimed; the material to decide it
 is in the answer.
+
+`fanin` and `fanout` follow those hops outward, and `path` reads the walk
+backwards to give one route. A cone stops where the caller says: after so many
+hops, or — with `--comb` — at the state elements that end the cycle, latches
+included, since a latch holds a level. `--through-latch` crosses one anyway,
+which is what a glitch, a loop closing through it, or a pulse-latch borrow is
+about. Conditions are followed like any other dependency and counted
+separately, because on real RTL most of a cone is conditions; `--no-control`
+leaves them out.
+
+A bit-select narrows a cone to what feeds those bits, and carries the window
+across each hop for as long as the correspondence is exact — widening to the
+whole object rather than naming bits that might be the wrong ones, and saying
+how often it had to.
 
 Every command answers in one JSON envelope: `tool`, `version`, `status`,
 `command`, `data`, `diagnostics`, `errors`, `summary`. A failure is a

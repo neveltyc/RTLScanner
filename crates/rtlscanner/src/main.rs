@@ -5,6 +5,8 @@
 //! RTL beyond quoting a line it can verify, and no waveform — so what it
 //! reports is what the export recorded, at the precision it recorded it.
 
+mod cone;
+mod cone_result;
 mod envelope;
 mod info;
 mod trace;
@@ -38,6 +40,93 @@ enum Command {
     },
     /// What drives a signal, or what reads it, one hop out
     Trace(TraceArgs),
+    /// Everything a signal depends on, transitively
+    Fanin(ConeArgs),
+    /// Everything that depends on a signal, transitively
+    Fanout(ConeArgs),
+    /// A route from one signal to another
+    Path(PathArgs),
+}
+
+/// What every command needs to reach the design.
+#[derive(Args)]
+struct Common {
+    /// Path to the design database
+    db: PathBuf,
+    /// Name the top to resolve against, where the design has several
+    #[arg(long)]
+    top: Option<String>,
+    /// Strip this prefix from paths — a testbench scope the design has never
+    /// heard of, as a waveform tool spells it
+    #[arg(long)]
+    strip_prefix: Option<String>,
+    /// Emit the JSON envelope rather than a terminal view
+    #[arg(long)]
+    json: bool,
+}
+
+/// How far a walk goes, and what ends it.
+#[derive(Args, Clone)]
+struct WalkArgs {
+    /// Stop after this many hops; 0 for as far as the design goes. Unbounded
+    /// by default in `--comb`, where state elements bound it instead
+    #[arg(long)]
+    depth: Option<u32>,
+    /// Stop at state elements: the answer is then this cycle's logic
+    #[arg(long)]
+    comb: bool,
+    /// Cross a latch anyway — for a glitch, a loop closing through one, or a
+    /// pulse-latch borrow, where its transparent window is the point
+    #[arg(long)]
+    through_latch: bool,
+    /// Leave out the conditions that gate a statement. They are real
+    /// dependencies and usually the numerous ones
+    #[arg(long)]
+    no_control: bool,
+}
+
+impl WalkArgs {
+    fn bounds(&self) -> cone::Bounds {
+        cone::Bounds {
+            // Zero is unbounded, as it is for `--limit`: one spelling for
+            // "no bound" across the tool. A combinational walk is bounded by
+            // the state elements it stops at, so it needs no default.
+            max_depth: match self.depth {
+                Some(0) => None,
+                Some(n) => Some(n),
+                None if self.comb => None,
+                None => Some(4),
+            },
+            comb: self.comb,
+            through_latch: self.through_latch,
+            control: !self.no_control,
+        }
+    }
+}
+
+#[derive(Args)]
+struct ConeArgs {
+    #[command(flatten)]
+    common: Common,
+    /// Hierarchical path of the signal, with an optional bit-select
+    signal: String,
+    #[command(flatten)]
+    walk: WalkArgs,
+    /// Show at most this many edges; 0 for all
+    #[arg(long)]
+    limit: Option<i64>,
+}
+
+#[derive(Args)]
+struct PathArgs {
+    #[command(flatten)]
+    common: Common,
+    /// Where the route starts
+    from: String,
+    /// Where it should arrive
+    to: String,
+    #[command(flatten)]
+    walk: WalkArgs,
 }
 
 #[derive(Args)]
@@ -77,6 +166,9 @@ fn main() -> ExitCode {
                 json,
             )
         }
+        Command::Fanin(args) => cone_command(args, Direction::Driver),
+        Command::Fanout(args) => cone_command(args, Direction::Load),
+        Command::Path(args) => path_command(args),
         Command::Trace(args) => {
             let echo = json!({
                 "db": args.db.display().to_string(),
@@ -237,3 +329,144 @@ fn write_all(w: &mut impl Write, s: &str) -> std::io::Result<()> {
     w.flush()
 }
 
+
+/// Open the database and choose the root, which every command does first.
+fn design(common: &Common) -> Result<(Db, resolve::Anchor), CommandError> {
+    let db = open(&common.db)?;
+    let anchor = resolve::anchor(db.conn(), common.top.as_deref(), common.strip_prefix.as_deref())
+        .map_err(|e| CommandError::new(ErrorCode::NoTop, e))?;
+    Ok((db, anchor))
+}
+
+/// Resolve one signal path, with the bit-select it may carry.
+fn signal_of(
+    db: &Db,
+    anchor: &resolve::Anchor,
+    spelled: &str,
+) -> Result<(resolve::ResolvedSignal, Option<(u64, u64)>), CommandError> {
+    let (path, select) = split_signal(db, anchor, spelled)?;
+    let signal = match resolve::resolve(db.conn(), anchor, path)
+        .map_err(|e| CommandError::new(ErrorCode::SignalNotFound, e))?
+    {
+        Ok(found) => found,
+        Err(u) => return Err(not_found(spelled, &u)),
+    };
+    let window = match select {
+        None => None,
+        Some(sel) => {
+            let decl = signal
+                .net
+                .data_type
+                .as_deref()
+                .and_then(|t| bits::declared_range(t, signal.net.width))
+                .ok_or_else(|| {
+                    CommandError::new(
+                        ErrorCode::BadSelect,
+                        format!(
+                            "{} is {} and has no single declared bit range to select from; \
+                             trace the whole object",
+                            signal.local,
+                            signal.net.data_type.as_deref().unwrap_or("untyped")
+                        ),
+                    )
+                })?;
+            Some(
+                bits::offsets_of(sel, decl)
+                    .map_err(|e| CommandError::new(ErrorCode::BadSelect, e))?,
+            )
+        }
+    };
+    Ok((signal, window))
+}
+
+fn cone_command(args: ConeArgs, dir: Direction) -> Rendered {
+    let name = match dir {
+        Direction::Driver => "fanin",
+        Direction::Load => "fanout",
+    };
+    let echo = json!({
+        "db": args.common.db.display().to_string(),
+        "signal": args.signal,
+        "depth": args.walk.depth,
+        "comb": args.walk.comb,
+        "through_latch": args.walk.through_latch,
+        "no_control": args.walk.no_control,
+        "limit": args.limit,
+    });
+    let (outcome, notes) = match walked(&args, dir) {
+        Ok((result, notes)) => (Ok(result), notes),
+        Err(e) => (Err(e), Vec::new()),
+    };
+    envelope::render(name, echo, &outcome, &notes, args.common.json)
+}
+
+fn walked(
+    args: &ConeArgs,
+    dir: Direction,
+) -> Result<(cone_result::ConeResult, Vec<Diagnostic>), CommandError> {
+    let (db, anchor) = design(&args.common)?;
+    let notes = designdb::schema::db_info(db.conn())
+        .map(|seal| info::trust_notes(&seal))
+        .unwrap_or_default();
+    let (signal, window) = signal_of(&db, &anchor, &args.signal)?;
+
+    let cone = cone::walk(&db, &anchor, &signal, dir, window, args.walk.bounds())
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+    let limit = cone_result::resolve_limit(args.limit);
+    Ok((cone_result::ConeResult::new(cone, limit), notes))
+}
+
+fn path_command(args: PathArgs) -> Rendered {
+    let echo = json!({
+        "db": args.common.db.display().to_string(),
+        "from": args.from,
+        "to": args.to,
+        "comb": args.walk.comb,
+    });
+    let (outcome, notes) = match routed(&args) {
+        Ok((result, notes)) => (Ok(result), notes),
+        Err(e) => (Err(e), Vec::new()),
+    };
+    envelope::render("path", echo, &outcome, &notes, args.common.json)
+}
+
+fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>), CommandError> {
+    let (db, anchor) = design(&args.common)?;
+    let notes = designdb::schema::db_info(db.conn())
+        .map(|seal| info::trust_notes(&seal))
+        .unwrap_or_default();
+    let (from, _) = signal_of(&db, &anchor, &args.from)?;
+    let (to, _) = signal_of(&db, &anchor, &args.to)?;
+
+    // A route search is bounded by finding the route, not by a hop count: a
+    // default depth here would report "no path" for one that is simply longer
+    // than the default, which is the answer a caller is least able to check.
+    let bounds = cone::Bounds { max_depth: args.walk.depth.filter(|d| *d > 0), ..args.walk.bounds() };
+    let route = cone::find_path(&db, &anchor, &from, &to, bounds)
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+
+    // Every net a route names, so the answer spells paths and not ids.
+    let mut names = std::collections::HashMap::new();
+    if let Some(route) = &route {
+        for edge in route {
+            for net in [edge.source, edge.target] {
+                if let std::collections::hash_map::Entry::Vacant(slot) = names.entry(net)
+                    && let Ok(Some(row)) = designdb::schema::net_of(db.conn(), net)
+                    && let Ok(scope) = trace::instance_path(db.conn(), &anchor, row.inst_id, '.')
+                {
+                    slot.insert(format!("{scope}.{}", row.net_name));
+                }
+            }
+        }
+    }
+    Ok((
+        cone_result::PathResult {
+            from: from.path(&anchor.root_name, '.'),
+            to: to.path(&anchor.root_name, '.'),
+            bounds,
+            route,
+            names,
+        },
+        notes,
+    ))
+}

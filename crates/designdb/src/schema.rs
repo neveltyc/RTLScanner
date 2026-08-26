@@ -11,6 +11,8 @@
 //! three orders of magnitude on the arc queries, so a kind that needs a second
 //! row looks it up per row instead.
 
+use std::collections::HashSet;
+
 use rusqlite::Connection;
 
 use crate::bits::BitSpan;
@@ -131,12 +133,18 @@ pub struct StatementRow {
 /// shape with the ends exchanged, so one row type reads both.
 #[derive(Debug, Clone)]
 pub struct ArcRow {
+    /// The net this arc was asked about, so a batched answer can be sorted
+    /// back to the questions that produced it.
+    pub signal_net_id: i64,
     /// Which bits of the signal this arc touches.
     pub signal_bits: BitSpan,
     /// The other end, where it is a net this export names.
     pub other_net_id: Option<i64>,
     pub other_inst_id: Option<i64>,
     pub other_name: Option<String>,
+    /// Which bits of the far end the arc touches. A window crossing this arc
+    /// is rebased onto these.
+    pub other_bits: BitSpan,
     /// How the other end was spelled when reached by a hierarchical name.
     pub other_ref: Option<String>,
     /// `driver_kind` or `load_kind`, carried through as the database's own
@@ -153,6 +161,9 @@ pub struct ArcRow {
     /// Whether the two ends correspond bit for bit. NULL where there is no
     /// second end to correspond with.
     pub map_exact: Option<bool>,
+    /// The expansion this row belongs to, where a subroutine body produced it.
+    /// A transitive walk that ignores it mixes one call's rows with another's.
+    pub call_site_id: Option<i64>,
     pub file_path: Option<String>,
     pub src_line: Option<u32>,
 }
@@ -300,7 +311,9 @@ pub fn roots(c: &Connection) -> Result<Vec<NodeRow>, String> {
 
 pub fn node(c: &Connection, node_id: i64) -> Result<Option<NodeRow>, String> {
     let sql = format!("SELECT {NODE_COLS} FROM v_tree_node WHERE node_id = ?1");
-    c.query_row(&sql, [node_id], node_row).map(Some).or_else(|e| match e {
+    c.prepare_cached(&sql)
+        .and_then(|mut s| s.query_row([node_id], node_row))
+        .map(Some).or_else(|e| match e {
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         e => Err(q(e, "v_tree_node")),
     })
@@ -437,7 +450,9 @@ fn stmt_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatementRow> {
 
 pub fn statement(c: &Connection, stmt_id: i64) -> Result<Option<StatementRow>, String> {
     let sql = format!("SELECT {STMT_COLS} FROM v_stmt WHERE stmt_id = ?1");
-    c.query_row(&sql, [stmt_id], stmt_row).map(Some).or_else(|e| match e {
+    c.prepare_cached(&sql)
+        .and_then(|mut s| s.query_row([stmt_id], stmt_row))
+        .map(Some).or_else(|e| match e {
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         e => Err(q(e, "v_stmt")),
     })
@@ -460,48 +475,83 @@ impl Direction {
 }
 
 /// Every recorded arc of one net, in the given direction.
+pub fn arcs(c: &Connection, net: i64, dir: Direction) -> Result<Vec<ArcRow>, String> {
+    arcs_of(c, &[net], dir)
+}
+
+/// The batch sizes a query is padded up to.
+///
+/// One statement per net costs three times what one statement per five hundred
+/// does — measured, on a design whose cone reaches six thousand — and a walk
+/// asks about a whole breadth-first level at once. Padding to a few fixed
+/// widths keeps the SQL text constant, so SQLite's own statement cache still
+/// holds it; a size that varied with the level would miss every time.
+const BATCH_SIZES: [usize; 4] = [1, 16, 128, 512];
+
+/// Every recorded arc of each of `nets`, in the given direction.
 ///
 /// `v_driver` and `v_load` differ in which end they call the signal, so the
 /// column lists are written out separately and read into one row shape.
-pub fn arcs(c: &Connection, net: i64, dir: Direction) -> Result<Vec<ArcRow>, String> {
+pub fn arcs_of(c: &Connection, nets: &[i64], dir: Direction) -> Result<Vec<ArcRow>, String> {
+    let mut out = Vec::new();
+    let mut rest = nets;
+    while !rest.is_empty() {
+        let width = *BATCH_SIZES.iter().find(|w| **w >= rest.len()).unwrap_or(&512);
+        let take = width.min(rest.len());
+        let (batch, tail) = rest.split_at(take);
+        rest = tail;
+        // Padded with an id no row carries, so one prepared statement serves
+        // every batch of this width.
+        let mut ids: Vec<i64> = batch.to_vec();
+        ids.resize(width, -1);
+        out.extend(arcs_batch(c, &ids, dir)?);
+    }
+    Ok(out)
+}
+
+fn arcs_batch(c: &Connection, ids: &[i64], dir: Direction) -> Result<Vec<ArcRow>, String> {
     let sql = match dir {
         Direction::Driver => {
-            "SELECT signal_lo, signal_hi, signal_exact, \
+            "SELECT signal_net_id, signal_lo, signal_hi, signal_exact, \
                     driver_net_id, driver_inst_id, driver_name, \
-                    driver_ref, \
+                    driver_lo, driver_hi, driver_exact, driver_ref, \
                     driver_kind, dep_id, stmt_id, conn_id, prim_id, term_id, NULL, \
-                    map_exact, file_path, src_line \
-             FROM v_driver WHERE signal_net_id = ?1"
+                    map_exact, call_site_id, file_path, src_line \
+             FROM v_driver WHERE signal_net_id IN "
         }
         Direction::Load => {
-            "SELECT signal_lo, signal_hi, signal_exact, \
+            "SELECT signal_net_id, signal_lo, signal_hi, signal_exact, \
                     load_net_id, load_inst_id, load_name, \
-                    load_ref, \
+                    load_lo, load_hi, load_exact, load_ref, \
                     load_kind, dep_id, stmt_id, conn_id, NULL, term_id, proc_id, \
-                    map_exact, file_path, src_line \
-             FROM v_load WHERE signal_net_id = ?1"
+                    map_exact, call_site_id, file_path, src_line \
+             FROM v_load WHERE signal_net_id IN "
         }
     };
-    let mut stmt = c.prepare(sql).map_err(|e| q(e, "v_driver/v_load"))?;
+    let places = format!("({})", vec!["?"; ids.len()].join(","));
+    let mut stmt = c.prepare_cached(&(sql.to_string() + &places)).map_err(|e| q(e, "v_driver/v_load"))?;
     let rows = stmt
-        .query_map([net], |r| {
+        .query_map(rusqlite::params_from_iter(ids), |r| {
             Ok(ArcRow {
-                signal_bits: BitSpan::read(r.get(0)?, r.get(1)?, r.get(2)?),
-                other_net_id: r.get(3)?,
-                other_inst_id: r.get(4)?,
-                other_name: r.get(5)?,
-                other_ref: r.get(6)?,
-                kind: r.get(7)?,
+                signal_net_id: r.get(0)?,
+                signal_bits: BitSpan::read(r.get(1)?, r.get(2)?, r.get(3)?),
+                other_net_id: r.get(4)?,
+                other_inst_id: r.get(5)?,
+                other_name: r.get(6)?,
+                other_bits: BitSpan::read(r.get(7)?, r.get(8)?, r.get(9)?),
+                other_ref: r.get(10)?,
+                kind: r.get(11)?,
                 dep_kind: None,
-                dep_id: r.get(8)?,
-                stmt_id: r.get(9)?,
-                conn_id: r.get(10)?,
-                prim_id: r.get(11)?,
-                term_id: r.get(12)?,
-                proc_id: r.get(13)?,
-                map_exact: r.get::<_, Option<i64>>(14)?.map(|v| v != 0),
-                file_path: r.get(15)?,
-                src_line: line_of(r.get(16)?),
+                dep_id: r.get(12)?,
+                stmt_id: r.get(13)?,
+                conn_id: r.get(14)?,
+                prim_id: r.get(15)?,
+                term_id: r.get(16)?,
+                proc_id: r.get(17)?,
+                map_exact: r.get::<_, Option<i64>>(18)?.map(|v| v != 0),
+                call_site_id: r.get(19)?,
+                file_path: r.get(20)?,
+                src_line: line_of(r.get(21)?),
             })
         })
         .map_err(|e| q(e, "v_driver/v_load"))?;
@@ -515,10 +565,9 @@ pub fn arcs(c: &Connection, net: i64, dir: Direction) -> Result<Vec<ArcRow>, Str
 /// these lookups as there are dataflow rows, which is as many as there are
 /// answers.
 pub fn dep_kind(c: &Connection, dep_id: i64) -> Result<Option<(String, Option<i64>)>, String> {
-    c.query_row("SELECT dep_kind, prim_id FROM v_net_dep WHERE dep_id = ?1", [dep_id], |r| {
-        Ok((r.get(0)?, r.get(1)?))
-    })
-    .map(Some)
+    c.prepare_cached("SELECT dep_kind, prim_id FROM v_net_dep WHERE dep_id = ?1")
+        .and_then(|mut s| s.query_row([dep_id], |r| Ok((r.get(0)?, r.get(1)?))))
+        .map(Some)
     .or_else(|e| match e {
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         e => Err(q(e, "v_net_dep")),
@@ -706,6 +755,108 @@ pub fn call_chain(c: &Connection, call_site_id: i64) -> Result<Vec<CallSiteRow>,
     }
     chain.reverse();
     Ok(chain)
+}
+
+/// A net, by id. What a walk needs once it has arrived somewhere by an arc
+/// rather than by a name.
+pub fn net_of(c: &Connection, net_id: i64) -> Result<Option<NetRow>, String> {
+    let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_id = ?1");
+    c.prepare_cached(&sql)
+        .and_then(|mut s| s.query_row([net_id], net_row))
+        .map(Some).or_else(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => Ok(None),
+        e => Err(q(e, "v_net")),
+    })
+}
+
+/// Every net a state element writes, and every net one of those is wired to.
+///
+/// This is what a combinational walk stops at, and it is computed once for the
+/// database rather than asked per net. Two reasons. A port ties two names to
+/// one electrical node, so a flop's output is a state element under the child's
+/// name and the parent's alike, and finding that out per net means following
+/// the crossings from each — a query per net where the whole relation is two
+/// scans. And a cone asks about every net it reaches, so per-net would be the
+/// walk's dominant cost while the answer does not depend on the walk at all.
+///
+/// A bare `always` is clocked when its sensitivity names an edge. Which edge is
+/// the clock is not decided here, and does not need to be.
+pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), String> {
+    const WRITTEN: &str = "SELECT DISTINCT d.tgt_net_id, p.proc_kind \
+         FROM net_dep d \
+           JOIN stmt s ON s.id = d.stmt_id \
+           JOIN proc p ON p.id = s.proc_id \
+        WHERE d.dep_kind = 'data' \
+          AND (p.proc_kind IN ('always_ff', 'always_latch') \
+               OR (p.proc_kind = 'always' AND EXISTS(\
+                    SELECT 1 FROM proc_event e \
+                     WHERE e.proc_id = p.id AND e.event_kind = 'sensitivity' \
+                       AND e.edge_kind IS NOT NULL)))";
+    let mut stmt = c.prepare(WRITTEN).map_err(|e| q(e, "net_dep"))?;
+    let mut clocked: HashSet<i64> = HashSet::new();
+    let mut latch: HashSet<i64> = HashSet::new();
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| q(e, "net_dep"))?;
+    for row in rows {
+        let (net, kind) = row.map_err(|e| q(e, "net_dep"))?;
+        // `always_latch` holds a level; the other two run on an edge.
+        if kind == "always_latch" { latch.insert(net) } else { clocked.insert(net) };
+    }
+
+    // The crossings, as one sorted array of both directions rather than a map
+    // of vectors: a design has tens of thousands of them, and the lookup is a
+    // binary search into one allocation instead of one allocation each.
+    let mut stmt = c
+        .prepare(
+            "SELECT signal_net_id, driver_net_id FROM v_driver \
+              WHERE driver_kind = 'connection' AND driver_net_id IS NOT NULL",
+        )
+        .map_err(|e| q(e, "v_driver"))?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .map_err(|e| q(e, "v_driver"))?;
+    let mut wired: Vec<(i64, i64)> = Vec::new();
+    for row in rows {
+        let (a, b) = row.map_err(|e| q(e, "v_driver"))?;
+        wired.push((a, b));
+        wired.push((b, a));
+    }
+    wired.sort_unstable();
+
+    let neighbours = |net: i64| -> &[(i64, i64)] {
+        let lo = wired.partition_point(|(a, _)| *a < net);
+        let hi = wired.partition_point(|(a, _)| *a <= net);
+        &wired[lo..hi]
+    };
+    for set in [&mut clocked, &mut latch] {
+        let mut frontier: Vec<i64> = set.iter().copied().collect();
+        while let Some(net) = frontier.pop() {
+            for (_, far) in neighbours(net) {
+                if set.insert(*far) {
+                    frontier.push(*far);
+                }
+            }
+        }
+    }
+    Ok((clocked, latch))
+}
+
+/// Whether every row touching this net belongs to a subroutine expansion.
+///
+/// A body is walked once per call and its formals are shared between the calls,
+/// so a net with no untagged row exists only inside one. That is what decides
+/// whether crossing an arc stays in a call's context or leaves it behind.
+pub fn is_body_local(c: &Connection, net: i64) -> Result<bool, String> {
+    c.query_row(
+        "SELECT NOT EXISTS(\
+             SELECT 1 FROM net_dep \
+              WHERE (src_net_id = ?1 OR tgt_net_id = ?1) AND call_site_id IS NULL)",
+        [net],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|v| v != 0)
+    .map_err(|e| q(e, "net_dep"))
 }
 
 /// Where a source file actually is, and what it hashed to.
