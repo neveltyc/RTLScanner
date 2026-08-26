@@ -7,6 +7,7 @@
 //! the layout held. Reading a moved column would produce a confident wrong
 //! answer, which is worse than no answer.
 
+use std::fmt;
 use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
@@ -22,25 +23,73 @@ use crate::err;
 /// silently rather than loudly.
 pub const SCHEMA_VERSION: i64 = 19;
 
+/// Why a file could not be opened as a design database.
+///
+/// The variants are distinct facts a caller acts on differently — a path to fix
+/// against a database to re-export — so the reason travels with the message
+/// rather than being re-derived from the filesystem afterwards.
+#[derive(Debug)]
+pub enum OpenError {
+    /// Nothing readable at that path, with the reason it could not be reached.
+    NotFound { path: PathBuf, reason: String },
+    /// The bytes are not a SQLite database.
+    NotADatabase { path: PathBuf, reason: String },
+    /// A database, but with no `meta` version to check.
+    NoSchemaVersion { path: PathBuf },
+    /// A design database of a version this build does not read.
+    VersionMismatch { path: PathBuf, found: i64, tool: Option<String> },
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            OpenError::NotFound { path, reason } => {
+                format!("{}: {reason}.", path.display())
+            }
+            OpenError::NotADatabase { path, reason } => {
+                format!("{} did not open as a database: {reason}", path.display())
+            }
+            OpenError::NoSchemaVersion { path } => format!(
+                "{} carries no schema version; it is not a design database. \
+                 Build one with rtl-designdb.",
+                path.display()
+            ),
+            OpenError::VersionMismatch { path, found, tool } => format!(
+                "{} is schema version {found}; rtlscanner reads version {SCHEMA_VERSION}{}. \
+                 Re-export it with a matching rtl-designdb.",
+                path.display(),
+                tool.as_ref().map(|t| format!(" (written by {t})")).unwrap_or_default()
+            ),
+        };
+        write!(f, "{}", err(msg))
+    }
+}
+
 /// An open, read-only design database.
 pub struct Db {
     conn: Connection,
     path: PathBuf,
 }
 
-impl std::fmt::Debug for Db {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `Connection` is not Debug, and the path is the only identifying part.
-        write!(f, "Db({})", self.path.display())
-    }
-}
-
 impl Db {
     /// Open `path` where it lies, read-only, and check the schema version.
-    pub fn open(path: &Path) -> Result<Db, String> {
-        if !path.exists() {
-            return Err(err(format!("{}: no such file.", path.display())));
+    pub fn open(path: &Path) -> Result<Db, OpenError> {
+        // try_exists, not exists: a directory this process may not traverse is
+        // a permission problem, and reporting it as a missing file sends the
+        // caller to check a path that is right.
+        match path.try_exists() {
+            Ok(true) => {}
+            Ok(false) => {
+                return Err(OpenError::NotFound {
+                    path: path.to_path_buf(),
+                    reason: "no such file".into(),
+                });
+            }
+            Err(e) => {
+                return Err(OpenError::NotFound { path: path.to_path_buf(), reason: e.to_string() });
+            }
         }
+
         let conn = Connection::open_with_flags(
             path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -51,39 +100,38 @@ impl Db {
             // whichever query happens to run first.
             c.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)).map(|_| c)
         })
-        .map_err(|e| err(format!("{} did not open as a database: {e}", path.display())))?;
+        .map_err(|e| OpenError::NotADatabase {
+            path: path.to_path_buf(),
+            reason: e.to_string(),
+        })?;
 
         let db = Db { conn, path: path.to_path_buf() };
         db.check_version()?;
         Ok(db)
     }
 
-    fn check_version(&self) -> Result<(), String> {
-        let got: Option<i64> = self
+    fn check_version(&self) -> Result<(), OpenError> {
+        let found: Option<i64> = self
             .conn
             .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| {
                 r.get::<_, String>(0)
             })
             .ok()
             .and_then(|v| v.parse().ok());
-        match got {
+        match found {
             Some(v) if v == SCHEMA_VERSION => Ok(()),
-            Some(v) => Err(err(format!(
-                "{} is schema version {v}; rtlscanner reads version {SCHEMA_VERSION}{}. \
-                 Re-export it with a matching rtl-designdb.",
-                self.path.display(),
-                self.meta("tool").map(|t| format!(" (written by {t})")).unwrap_or_default()
-            ))),
-            None => Err(err(format!(
-                "{} carries no schema version; it is not a design database. \
-                 Build one with rtl-designdb.",
-                self.path.display()
-            ))),
+            Some(found) => Err(OpenError::VersionMismatch {
+                path: self.path.clone(),
+                found,
+                tool: self.meta("tool"),
+            }),
+            None => Err(OpenError::NoSchemaVersion { path: self.path.clone() }),
         }
     }
 
     /// A `meta` value, when present. `top` is only recorded when the export was
-    /// given `--top`, so its absence is ordinary.
+    /// given `--top`, so its absence is ordinary; every other key of the seal is
+    /// required, and a missing one means the file is not what it claims.
     pub fn meta(&self, key: &str) -> Option<String> {
         self.conn
             .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
@@ -105,22 +153,45 @@ impl Db {
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// Building a design database to test against.
+///
+/// Exposed beyond the crate because the commands' own tests need one: covering
+/// what a command does with a hierarchy_only export, or with a source file that
+/// has moved on, must not depend on having an exporter — and building slang is
+/// not a precondition for running tests.
+pub mod fixture {
     use super::*;
 
-    /// A database with the kit's own DDL and a `meta` claiming `version`.
+    /// The seal a compliant export always writes. Only `top` is optional, so a
+    /// fixture that omitted the rest would be testing a file the kit never
+    /// writes — the same reason the DDL keeps its CHECK clauses.
+    const SEAL: [(&str, &str); 14] = [
+        ("tool", "rtl-designdb"),
+        ("tool_version", "0.1.0"),
+        ("slang_version", "v11.0"),
+        ("producer_revision", "0000000"),
+        ("analysis_status", "complete"),
+        ("error_count", "0"),
+        ("unresolved_count", "0"),
+        ("empty_procedure_count", "0"),
+        ("duplicate_path_count", "0"),
+        ("recursion_count", "0"),
+        ("truncated_call_count", "0"),
+        ("checker_inst_count", "0"),
+        ("unanalysed_inst_count", "0"),
+        ("config_digest", "0000000000000000000000000000000000000000000000000000000000000000"),
+    ];
+
+    /// A database with the kit's own DDL, a complete seal claiming `version`,
+    /// and whatever `seed` adds.
     ///
     /// The DDL is the kit's, verbatim, so what a test observes of a view is the
     /// view's real behaviour rather than an imitation of it; seeds write base
     /// tables only. Generating the file also keeps a fixture from pinning one
-    /// design's shapes, which a committed `.db` would.
+    /// design's shapes, which a committed `.db` would. Seeds override the seal
+    /// with `INSERT OR REPLACE`, `meta.key` being the primary key.
     pub fn write_db(path: &Path, version: i64, seed: &[&str]) {
         let c = Connection::open(path).unwrap();
         for ddl in [
@@ -130,25 +201,30 @@ pub(crate) mod tests {
         ] {
             c.execute_batch(ddl).unwrap();
         }
-        c.execute(
-            "INSERT INTO meta VALUES ('schema_version', ?1), ('tool', 'rtl-designdb')",
-            [version.to_string()],
-        )
-        .unwrap();
+        c.execute("INSERT INTO meta VALUES ('schema_version', ?1)", [version.to_string()]).unwrap();
+        for (key, value) in SEAL {
+            c.execute("INSERT INTO meta VALUES (?1, ?2)", [key, value]).unwrap();
+        }
         for sql in seed {
             c.execute_batch(sql).unwrap();
         }
     }
 
     /// A fresh directory for one test. The tag distinguishes concurrent tests
-    /// of one process, so it must be unique within the crate.
+    /// of one process, so it must be unique among the tests that use it.
     pub fn tmp(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("rtlscanner-designdb-{tag}-{}", std::process::id()));
+        p.push(format!("rtlscanner-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixture::{tmp, write_db};
+    use super::*;
 
     #[test]
     fn opens_a_design_database_read_only() {
@@ -173,26 +249,31 @@ pub(crate) mod tests {
         for bad in [1, 13, 17, 18, 20] {
             let path = dir.join(format!("v{bad}.db"));
             write_db(&path, bad, &[]);
-            let e = Db::open(&path).unwrap_err();
-            assert!(e.contains(&format!("schema version {bad}")), "{e}");
-            assert!(e.contains(&format!("version {SCHEMA_VERSION}")), "{e}");
-            assert!(e.contains("rtl-designdb"), "{e}");
+            let Err(e) = Db::open(&path) else { panic!("v{bad} was opened, not refused") };
+            assert!(matches!(e, OpenError::VersionMismatch { found, .. } if found == bad));
+
+            let said = e.to_string();
+            assert!(said.contains(&format!("schema version {bad}")), "{said}");
+            assert!(said.contains(&format!("version {SCHEMA_VERSION}")), "{said}");
+            assert!(said.contains("rtl-designdb"), "{said}");
         }
     }
 
     #[test]
-    fn a_file_that_is_not_a_design_database_says_so() {
+    fn a_file_that_is_not_a_design_database_says_which_way_it_is_not() {
         let dir = tmp("notdb");
 
         let empty = dir.join("empty.db");
         Connection::open(&empty).unwrap().execute_batch("CREATE TABLE t(x)").unwrap();
-        assert!(Db::open(&empty).unwrap_err().contains("carries no schema version"));
+        assert!(matches!(Db::open(&empty), Err(OpenError::NoSchemaVersion { .. })));
 
         let junk = dir.join("junk.db");
         std::fs::write(&junk, b"not a database at all").unwrap();
-        assert!(Db::open(&junk).unwrap_err().contains("did not open as a database"));
+        assert!(matches!(Db::open(&junk), Err(OpenError::NotADatabase { .. })));
 
-        assert!(Db::open(&dir.join("nope.db")).unwrap_err().contains("no such file"));
+        let Err(e) = Db::open(&dir.join("nope.db")) else { panic!("a missing file was opened") };
+        assert!(matches!(e, OpenError::NotFound { .. }));
+        assert!(e.to_string().contains("no such file"));
     }
 
     #[test]

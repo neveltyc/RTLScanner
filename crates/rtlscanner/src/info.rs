@@ -9,7 +9,7 @@
 
 use std::path::{Path, PathBuf};
 
-use designdb::{Db, DbInfo, digest, schema};
+use designdb::{Db, DbInfo, OpenError, digest, schema};
 use serde_json::{Value, json};
 
 use crate::envelope::{CommandError, CommandResult, Diagnostic, ErrorCode};
@@ -67,15 +67,14 @@ impl Info {
         .collect()
     }
 
-    /// Things the export declined to model rather than failed to reach. They do
-    /// not make it `partial`, and a trace that ends in one is a boundary rather
-    /// than a gap.
+    /// Constructs the export declined to model. They do not make it `partial`,
+    /// and a trace that ends in one is a boundary rather than a gap: the object
+    /// is named, and what is inside it was never going to be here.
     fn declined(&self) -> Vec<(&'static str, i64)> {
         let s = &self.seal;
         [
             ("unresolved instantiations", s.unresolved_count),
             ("checker instantiations", s.checker_inst_count),
-            ("recursive instances", s.recursion_count),
         ]
         .into_iter()
         .filter(|(_, n)| *n > 0)
@@ -127,23 +126,21 @@ impl CommandResult for Info {
         let s = &self.seal;
         let mut out = String::new();
         out.push_str(&format!("Database: {}\n", self.path.display()));
-        let producer = match (s.tool.as_deref(), s.tool_version.as_deref()) {
-            (Some(tool), Some(version)) => format!("{tool} {version}"),
-            (Some(tool), None) => tool.to_string(),
-            (None, _) => "unknown producer".to_string(),
-        };
-        out.push_str(&format!("Schema:   v{}  ({producer})\n", s.schema_version));
-        out.push_str(&format!("Top:      {}\n", s.top.as_deref().unwrap_or("(none recorded)")));
         out.push_str(&format!(
-            "Analysis: {}\n",
-            s.analysis_status.as_deref().unwrap_or("(not stated)")
+            "Schema:   v{}  ({} {})\n",
+            s.schema_version, s.tool, s.tool_version
         ));
+        out.push_str(&format!("Top:      {}\n", s.top.as_deref().unwrap_or("(none recorded)")));
+        out.push_str(&format!("Analysis: {}\n", s.analysis_status));
 
         for (label, n) in self.shortfalls() {
-            out.push_str(&format!("  short:   {n} {label}\n"));
+            out.push_str(&format!("  short:    {n} {label}\n"));
         }
         for (label, n) in self.declined() {
             out.push_str(&format!("  declined: {n} {label}\n"));
+        }
+        if s.recursion_count > 0 {
+            out.push_str(&format!("  truncated: {} recursive instance(s)\n", s.recursion_count));
         }
 
         let (stale, missing) = (self.stale(), self.missing());
@@ -163,10 +160,16 @@ impl CommandResult for Info {
 pub fn run(path: &Path) -> (Result<Info, CommandError>, Vec<Diagnostic>) {
     let db = match Db::open(path) {
         Ok(db) => db,
-        Err(message) => {
-            let code = if path.exists() { ErrorCode::DbUnreadable } else { ErrorCode::InputNotFound };
+        Err(e) => {
+            // The reason travels with the error: a path to fix and a database
+            // to re-export are different jobs, and asking the filesystem a
+            // second time would only guess at what open already knew.
+            let code = match e {
+                OpenError::NotFound { .. } => ErrorCode::InputNotFound,
+                _ => ErrorCode::DbUnreadable,
+            };
             return (
-                Err(CommandError::new(code, message)
+                Err(CommandError::new(code, e.to_string())
                     .with_details(json!({ "path": path.display().to_string() }))),
                 Vec::new(),
             );
@@ -200,21 +203,39 @@ fn check_source(path: &str, recorded: &str) -> SourceState {
 fn notes(info: &Info) -> Vec<Diagnostic> {
     let mut notes = Vec::new();
 
-    if info.seal.analysis_status.as_deref() == Some("hierarchy_only") {
-        notes.push(Diagnostic::warning(
+    let shortfalls = info.shortfalls();
+    match info.seal.analysis_status.as_str() {
+        "hierarchy_only" => notes.push(Diagnostic::warning(
             "the compilation errored fatally: this database has hierarchy and no dataflow, \
              so no driver or load query can answer",
-        ));
-    } else if info.seal.analysis_status.as_deref() == Some("partial") {
-        let shortfalls = info
-            .shortfalls()
-            .iter()
-            .map(|(label, n)| format!("{n} {label}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        )),
+        // The status is never a claim a consumer cannot look at: `partial` is
+        // exactly the five counts, so `partial` with none of them is a seal
+        // contradicting itself rather than an export with a small shortfall.
+        "partial" if shortfalls.is_empty() => notes.push(Diagnostic::warning(
+            "the export calls itself partial while every count that causes it is zero; \
+             the seal contradicts itself and the file should be re-exported",
+        )),
+        "partial" => notes.push(Diagnostic::warning(format!(
+            "the export is partial ({}); answers may be missing rows rather than reporting none",
+            shortfalls.iter().map(|(l, n)| format!("{n} {l}")).collect::<Vec<_>>().join(", ")
+        ))),
+        "complete" => {}
+        other => notes.push(Diagnostic::warning(format!(
+            "the export reports an analysis status of '{other}', which is not one of \
+             complete, partial or hierarchy_only"
+        ))),
+    }
+
+    if info.seal.recursion_count > 0 {
+        // Not a shortfall and not a decline: the tree holds a prefix. An
+        // instance whose module and parameters are already an ancestor's keeps
+        // its own rows and no children, so a query below one of these answers
+        // nothing without anything being wrong.
         notes.push(Diagnostic::warning(format!(
-            "the export is partial ({shortfalls}); answers may be missing rows rather than \
-             reporting none"
+            "the hierarchy stops at {} recursive instance(s): what is below them was \
+             never exported, so a query there is empty rather than undriven",
+            info.seal.recursion_count
         )));
     }
 

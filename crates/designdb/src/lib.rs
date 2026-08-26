@@ -19,14 +19,14 @@ pub mod digest;
 pub mod open;
 pub mod schema;
 
-pub use open::{Db, SCHEMA_VERSION};
+pub use open::{Db, OpenError, SCHEMA_VERSION};
 pub use schema::DbInfo;
 
 /// Prefix on every message from this reader, so a failure names its layer.
-pub const ERR_PREFIX: &str = "designdb";
+const ERR_PREFIX: &str = "designdb";
 
 /// Prefix a message for the user.
-pub fn err(msg: impl AsRef<str>) -> String {
+pub(crate) fn err(msg: impl AsRef<str>) -> String {
     format!("{ERR_PREFIX}: {}", msg.as_ref())
 }
 

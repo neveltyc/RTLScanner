@@ -44,7 +44,9 @@ in a file that has moved on names a line that is no longer the one.
 Every command answers in one JSON envelope: `tool`, `version`, `status`,
 `command`, `data`, `diagnostics`, `errors`, `summary`. A failure is a
 well-formed envelope on stdout with a non-zero exit, so a caller reads the
-outcome before the answer and never has to parse stderr.
+outcome before the answer rather than parsing stderr. The exception is a
+command line clap itself rejects — an unknown flag, a missing argument — which
+is a usage error on stderr with exit 2, before any command runs.
 
 ## Layout
 
@@ -55,5 +57,9 @@ extern/RTLDebugDBKit  the producer, pinned to the schema version above
 doc/                design and the plan it follows
 ```
 
-`make test` runs the tests, `make check` runs clippy and rustfmt, `make sync-ddl`
-re-extracts the DDL the fixtures build from when the submodule moves.
+`make test` runs the tests. Most build their database from the kit's own DDL, so
+they need no exporter; the few that must see what the current producer writes
+skip without one, and `make test-exporter` builds it and makes them mandatory.
+`make check` runs clippy and rustfmt; `make sync-ddl` re-extracts the DDL the
+fixtures build from, and refuses to leave it disagreeing with the schema version
+this reader accepts.

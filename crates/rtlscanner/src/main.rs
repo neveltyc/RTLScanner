@@ -49,8 +49,21 @@ fn main() -> ExitCode {
         }
     };
 
-    print!("{}", rendered.stdout);
-    let _ = std::io::stdout().flush();
-    eprint!("{}", rendered.stderr);
+    if write_all(&mut std::io::stdout(), &rendered.stdout).is_err() {
+        // The reader went away: `| head`, an agent that stopped reading. There
+        // is no one left to tell, and the `print!` macros would panic here —
+        // printing a Rust backtrace to stderr, which is the one thing the
+        // envelope promises never to do.
+        return ExitCode::from(EXIT_SIGPIPE);
+    }
+    let _ = write_all(&mut std::io::stderr(), &rendered.stderr);
     ExitCode::from(rendered.exit_code as u8)
+}
+
+/// 128 + SIGPIPE, the shell's convention for a process a closed pipe ended.
+const EXIT_SIGPIPE: u8 = 141;
+
+fn write_all(w: &mut impl Write, s: &str) -> std::io::Result<()> {
+    w.write_all(s.as_bytes())?;
+    w.flush()
 }
