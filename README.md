@@ -14,8 +14,7 @@ they have in common is the hierarchical path, so an agent holding both can join
 them.
 
 **Status: in development.** All seven commands work: `info`, `tree`, `find`,
-`trace`, `fanin`, `fanout`, `path`. See
-[doc/implementation-plan.md](doc/implementation-plan.md) for what remains.
+`trace`, `fanin`, `fanout`, `path`.
 
 ## Requires
 
