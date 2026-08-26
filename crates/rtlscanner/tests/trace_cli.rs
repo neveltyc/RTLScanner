@@ -47,7 +47,10 @@ fn a_signal_assembled_from_slices_names_each_driver_with_its_bits() {
         assert_eq!(hop["kind"], "continuous_assign");
         assert_eq!(hop["assign_kind"], "continuous");
     }
-    let bits: Vec<&str> = hops.iter().map(|h| h["bits"].as_str().unwrap()).collect();
+    // `bits` is a list: a statement may write more than one window, and one
+    // range spanning them would claim the bits in between.
+    let bits: Vec<&str> =
+        hops.iter().map(|h| h["bits"][0].as_str().unwrap()).collect();
     assert!(bits.contains(&"[7:4]") && bits.contains(&"[3:0]"), "{bits:?}");
 
     // Two drivers writing disjoint halves is a signal assembled from parts,
@@ -64,6 +67,7 @@ fn a_bit_select_narrows_to_the_driver_that_writes_those_bits() {
     let hops = upper["data"]["hops"].as_array().unwrap();
     assert_eq!(hops.len(), 1, "only the assignment covering [7:4]");
     assert_eq!(upper["data"]["bits"], "[7:4]");
+    assert_eq!(hops[0]["bits"][0], "[7:4]");
     assert!(hops[0]["signals"][0].as_str().unwrap().ends_with(".mid"));
 
     // The other half answers with the other driver, and a single index is a
@@ -285,4 +289,151 @@ fn a_waveform_path_resolves_once_its_testbench_prefix_is_named() {
     let (v, code) = json_trace(&fx, &["tb.u_dutch.y", "--strip-prefix", "tb.u_dut"]);
     assert_eq!(code, 1);
     assert!(v["errors"][0]["message"].as_str().unwrap().contains("not under"));
+}
+
+/// Constructs the first round of tests did not reach, each of which turned out
+/// to hide a defect: an aggregate has no one declared range, a sensitivity row
+/// names no statement, and a condition reaching outside its instance is filed
+/// under where its source is rather than under what it does.
+const SHAPES: &str = r#"
+module inner(input logic [7:0] a, output logic [7:0] y);
+  always_comb begin
+    if (shapes.dbg_en) y = a;      // a condition that leaves this instance
+    else               y = 8'h00;
+  end
+endmodule
+
+module shapes(input logic clk, dbg_en, input logic [7:0] a, b, c, d,
+              output logic [7:0] y, ext, output logic [7:0] r1, r2);
+  logic [7:0] mem [0:3];           // unpacked: no one declared range
+  logic [3:0][7:0] packed_arr;     // packed array: likewise
+
+  always_ff @(posedge clk) r1 <= d;
+  always_ff @(posedge clk) r2 <= d;
+
+  assign mem[0] = a;
+  assign packed_arr[0] = a;
+
+  // Two windows in one statement, and two more from elsewhere. None overlap.
+  assign {y[7:6], y[3:2]} = {a[1:0], b[1:0]};
+  assign y[5:4] = c[1:0];
+  assign y[1:0] = c[3:2];
+
+  inner u_in (.a(a), .y(ext));
+endmodule
+"#;
+
+fn shapes(test: &str) -> Option<Exported> {
+    exported("shapes", SHAPES, test)
+}
+
+#[test]
+fn an_aggregate_has_no_declared_range_and_says_so_instead_of_using_a_part() {
+    let Some(fx) = shapes("an_aggregate_has_no_declared_range") else { return };
+
+    // The first `[a:b]` of `logic [7:0] mem [0:3]` spans one element, not the
+    // object. Measuring a select against it would name bits of `mem[0]` while
+    // answering about `mem[2]` — an answer indistinguishable from a right one.
+    for signal in ["shapes.mem[2]", "shapes.packed_arr[2]"] {
+        let (v, code) = json_trace(&fx, &[signal]);
+        assert_eq!(code, 1, "{signal} was answered: {v}");
+        assert_eq!(v["errors"][0]["code"], "BAD_SELECT");
+        let said = v["errors"][0]["message"].as_str().unwrap();
+        assert!(said.contains("no single declared bit range"), "{said}");
+    }
+
+    // The whole object still answers.
+    let (v, code) = json_trace(&fx, &["shapes.mem"]);
+    assert_eq!(code, 0, "{v}");
+    assert!(!v["data"]["hops"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn every_procedure_triggering_on_a_clock_is_one_of_its_loads() {
+    let Some(fx) = shapes("every_procedure_triggering_on_a_clock") else { return };
+    let (v, _) = json_trace(&fx, &["shapes.clk", "--load"]);
+
+    // A sensitivity row belongs to a procedure's header and names no
+    // statement, so identifying rows by their statement alone collapses every
+    // flop clocked by one net into a single answer.
+    let hops = v["data"]["hops"].as_array().unwrap();
+    let sens: Vec<&serde_json::Value> =
+        hops.iter().filter(|h| h["kind"] == "sensitivity").collect();
+    assert_eq!(sens.len(), 2, "two flops, two clock pins: {hops:?}");
+
+    // Membership follows the netlist model: a flop's clock pin is a load of
+    // its clock, so a clock whose only answers are sensitivities has loads.
+    assert_eq!(v["data"]["status"], "resolved");
+}
+
+#[test]
+fn a_condition_reaching_outside_the_instance_still_gates_rather_than_drives() {
+    let Some(fx) = shapes("a_condition_reaching_outside_the_instance") else { return };
+    let (v, _) = json_trace(&fx, &["shapes.u_in.y"]);
+
+    let hops = v["data"]["hops"].as_array().unwrap();
+    for hop in hops {
+        // The export files this dependency under where its source is
+        // (`external`), which says nothing about it being a condition. Listed
+        // among the reads it would look like a value the statement uses.
+        let reads: Vec<&str> =
+            hop["signals"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+        assert!(!reads.iter().any(|s| s.contains("dbg_en")), "{reads:?}");
+
+        // It is on the gating level it came from, named as it was written.
+        let gates = hop["gates"].as_array().unwrap();
+        assert_eq!(gates[0]["kind"], "if");
+        let gate_reads: Vec<&str> =
+            gates[0]["reads"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+        assert!(
+            gate_reads.iter().any(|s| s.contains("dbg_en")),
+            "a condition reaching outside is still the condition: {gate_reads:?}"
+        );
+    }
+}
+
+#[test]
+fn disjoint_windows_of_one_statement_are_not_a_contest() {
+    let Some(fx) = shapes("disjoint_windows_of_one_statement") else { return };
+    let (v, _) = json_trace(&fx, &["shapes.y"]);
+
+    let hops = v["data"]["hops"].as_array().unwrap();
+    assert_eq!(hops.len(), 3);
+    let multi = hops
+        .iter()
+        .find(|h| h["bits"].as_array().is_some_and(|b| b.len() == 2))
+        .expect("the statement writing two windows keeps both");
+    let windows: Vec<&str> =
+        multi["bits"].as_array().unwrap().iter().map(|b| b.as_str().unwrap()).collect();
+    assert!(windows.contains(&"[7:6]") && windows.contains(&"[3:2]"), "{windows:?}");
+
+    // Four windows, none overlapping: a signal assembled from parts. Reporting
+    // one range spanning two of them would claim the bits between and make
+    // this read as a conflict.
+    assert_eq!(v["summary"]["multiple_drivers"], false);
+}
+
+#[test]
+fn a_name_inside_a_generate_block_is_correctable() {
+    const GEN: &str = r#"
+module gen(input logic clk, input logic a, output logic o);
+  for (genvar i = 0; i < 2; i++) begin : blk
+    logic inner;
+    assign inner = a;
+  end
+  assign o = blk[0].inner;
+endmodule
+"#;
+    let Some(fx) = exported("gen", GEN, "a_name_inside_a_generate_block") else { return };
+    let (v, code) = json_trace(&fx, &["gen.blk[0].innerX"]);
+
+    assert_eq!(code, 1);
+    // A generate level declares no instance of its own, so listing only its
+    // child nodes offers nothing — and this is the level where names are most
+    // often mistyped.
+    let details = &v["errors"][0]["details"];
+    let available: Vec<&str> =
+        details["available"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
+    assert!(available.contains(&"inner"), "{available:?}");
+    assert_eq!(details["close_matches"][0], "inner");
 }

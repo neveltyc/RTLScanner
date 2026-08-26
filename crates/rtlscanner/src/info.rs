@@ -42,6 +42,21 @@ pub struct Info {
     sources: Vec<(String, SourceState)>,
 }
 
+/// What a caller should know before trusting an answer from this database.
+///
+/// Every command that answers from these rows reports this, not just the one
+/// that reports the seal: a `no_driver_found` is read as "nothing drives it",
+/// and an export that skipped the procedure doing the driving looks exactly
+/// like that.
+pub fn trust_notes(seal: &DbInfo) -> Vec<Diagnostic> {
+    let info = Info {
+        path: PathBuf::new(),
+        seal: seal.clone(),
+        sources: Vec::new(),
+    };
+    notes(&info)
+}
+
 impl Info {
     fn stale(&self) -> usize {
         self.sources.iter().filter(|(_, s)| *s == SourceState::Stale).count()

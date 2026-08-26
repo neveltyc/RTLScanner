@@ -137,7 +137,6 @@ pub struct ArcRow {
     pub other_net_id: Option<i64>,
     pub other_inst_id: Option<i64>,
     pub other_name: Option<String>,
-    pub other_bits: BitSpan,
     /// How the other end was spelled when reached by a hierarchical name.
     pub other_ref: Option<String>,
     /// `driver_kind` or `load_kind`, carried through as the database's own
@@ -154,7 +153,6 @@ pub struct ArcRow {
     /// Whether the two ends correspond bit for bit. NULL where there is no
     /// second end to correspond with.
     pub map_exact: Option<bool>,
-    pub call_site_id: Option<i64>,
     pub file_path: Option<String>,
     pub src_line: Option<u32>,
 }
@@ -197,7 +195,8 @@ pub struct BranchRow {
 /// classified by role.
 #[derive(Debug, Clone)]
 pub struct RefRow {
-    pub net_id: i64,
+    /// The net, where the reference resolved to one this export names.
+    pub net_id: Option<i64>,
     pub net_name: String,
     pub bits: BitSpan,
     /// On a target: `written_by | release_target | alias_binding`. A release
@@ -358,13 +357,6 @@ pub fn net_by_name(c: &Connection, inst: i64, name: &str) -> Result<Option<NetRo
     })
 }
 
-pub fn net_of(c: &Connection, net_id: i64) -> Result<Option<NetRow>, String> {
-    let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_id = ?1");
-    c.query_row(&sql, [net_id], net_row).map(Some).or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_net")),
-    })
-}
 
 /// Every net of one occurrence, by name. What a caller offers when a name did
 /// not resolve.
@@ -476,17 +468,17 @@ pub fn arcs(c: &Connection, net: i64, dir: Direction) -> Result<Vec<ArcRow>, Str
         Direction::Driver => {
             "SELECT signal_lo, signal_hi, signal_exact, \
                     driver_net_id, driver_inst_id, driver_name, \
-                    driver_lo, driver_hi, driver_exact, driver_ref, \
+                    driver_ref, \
                     driver_kind, dep_id, stmt_id, conn_id, prim_id, term_id, NULL, \
-                    map_exact, call_site_id, file_path, src_line \
+                    map_exact, file_path, src_line \
              FROM v_driver WHERE signal_net_id = ?1"
         }
         Direction::Load => {
             "SELECT signal_lo, signal_hi, signal_exact, \
                     load_net_id, load_inst_id, load_name, \
-                    load_lo, load_hi, load_exact, load_ref, \
+                    load_ref, \
                     load_kind, dep_id, stmt_id, conn_id, NULL, term_id, proc_id, \
-                    map_exact, call_site_id, file_path, src_line \
+                    map_exact, file_path, src_line \
              FROM v_load WHERE signal_net_id = ?1"
         }
     };
@@ -498,20 +490,18 @@ pub fn arcs(c: &Connection, net: i64, dir: Direction) -> Result<Vec<ArcRow>, Str
                 other_net_id: r.get(3)?,
                 other_inst_id: r.get(4)?,
                 other_name: r.get(5)?,
-                other_bits: BitSpan::read(r.get(6)?, r.get(7)?, r.get(8)?),
-                other_ref: r.get(9)?,
-                kind: r.get(10)?,
+                other_ref: r.get(6)?,
+                kind: r.get(7)?,
                 dep_kind: None,
-                dep_id: r.get(11)?,
-                stmt_id: r.get(12)?,
-                conn_id: r.get(13)?,
-                prim_id: r.get(14)?,
-                term_id: r.get(15)?,
-                proc_id: r.get(16)?,
-                map_exact: r.get::<_, Option<i64>>(17)?.map(|v| v != 0),
-                call_site_id: r.get(18)?,
-                file_path: r.get(19)?,
-                src_line: line_of(r.get(20)?),
+                dep_id: r.get(8)?,
+                stmt_id: r.get(9)?,
+                conn_id: r.get(10)?,
+                prim_id: r.get(11)?,
+                term_id: r.get(12)?,
+                proc_id: r.get(13)?,
+                map_exact: r.get::<_, Option<i64>>(14)?.map(|v| v != 0),
+                file_path: r.get(15)?,
+                src_line: line_of(r.get(16)?),
             })
         })
         .map_err(|e| q(e, "v_driver/v_load"))?;
@@ -535,27 +525,6 @@ pub fn dep_kind(c: &Connection, dep_id: i64) -> Result<Option<(String, Option<i6
     })
 }
 
-/// The statement's targets, in written order.
-pub fn targets_of(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> {
-    let mut stmt = c
-        .prepare(
-            "SELECT net_id, net_name, lo, hi, is_exact, target_kind \
-             FROM v_stmt_target WHERE stmt_id = ?1 ORDER BY ordinal",
-        )
-        .map_err(|e| q(e, "v_stmt_target"))?;
-    let rows = stmt
-        .query_map([stmt_id], |r| {
-            Ok(RefRow {
-                net_id: r.get(0)?,
-                net_name: r.get(1)?,
-                bits: BitSpan::read(r.get(2)?, r.get(3)?, r.get(4)?),
-                kind: r.get(5)?,
-                branch_id: None,
-            })
-        })
-        .map_err(|e| q(e, "v_stmt_target"))?;
-    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_stmt_target"))
-}
 
 /// The statement's right-hand-side reads, in written order.
 pub fn operands_of(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> {
@@ -582,21 +551,36 @@ pub fn operands_of(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> 
 /// The nets a statement reads in the conditions that gate it, each tagged with
 /// the level it was read at.
 ///
-/// `expr_ref` is a base table this document names; there is no view over it.
-/// The complete answer to "what gates this statement" is these rows — not its
-/// `control` dependencies, since a gated statement that drives nothing has
+/// Two sources, and both are needed for the answer to be the whole one. A
+/// condition naming something in this instance is an `expr_ref` with role
+/// `control`; one reaching outside it — `if (top.dbg_en)` — is a `hier_ref`
+/// carrying the same `branch_id`, and reading only the first would report an
+/// externally gated statement as gated by nothing.
+///
+/// This is the complete answer to "what gates this statement", where its
+/// `control` dependencies are not: a gated statement that drives nothing has
 /// gating and no dependencies at all.
+///
+/// `expr_ref` and `hier_ref` are base tables, both named by the schema
+/// document; there is no view carrying a reference's branch.
 pub fn gating_reads(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> {
     let mut stmt = c
         .prepare(
-            "SELECT e.net_id, n.name, e.lo, e.hi, e.is_exact, e.branch_id \
-             FROM expr_ref e JOIN net n ON n.id = e.net_id \
-             WHERE e.stmt_id = ?1 AND e.role = 'control' ORDER BY e.ordinal",
+            "SELECT e.net_id, n.name, e.lo, e.hi, e.is_exact, e.branch_id, e.ordinal \
+               FROM expr_ref e JOIN net n ON n.id = e.net_id \
+              WHERE e.stmt_id = ?1 AND e.role = 'control' \
+              UNION ALL \
+             SELECT h.resolved_net_id, h.path, h.lo, h.hi, h.is_exact, h.branch_id, h.id \
+               FROM hier_ref h \
+              WHERE h.stmt_id = ?1 AND h.branch_id IS NOT NULL AND h.access = 'read' \
+              ORDER BY 7",
         )
         .map_err(|e| q(e, "expr_ref"))?;
     let rows = stmt
         .query_map([stmt_id], |r| {
             Ok(RefRow {
+                // An upward reference resolves to no net of this export; the
+                // path it was written as is the only name there is.
                 net_id: r.get(0)?,
                 net_name: r.get(1)?,
                 bits: BitSpan::read(r.get(2)?, r.get(3)?, r.get(4)?),

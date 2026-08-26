@@ -17,7 +17,7 @@ use clap::{Args, Parser, Subcommand};
 use designdb::{Db, Direction, bits, resolve};
 use serde_json::json;
 
-use envelope::{CommandError, ErrorCode, Rendered};
+use envelope::{CommandError, Diagnostic, ErrorCode, Rendered};
 
 #[derive(Parser)]
 #[command(name = "rtlscanner", version, about, long_about = None)]
@@ -86,15 +86,27 @@ fn main() -> ExitCode {
                 "top": args.top,
                 "strip_prefix": args.strip_prefix,
             });
-            let outcome = trace_command(&args);
-            envelope::render("trace", echo, &outcome, &[], args.json)
+            let (outcome, notes) = trace_command(&args);
+            envelope::render("trace", echo, &outcome, &notes, args.json)
         }
     };
     write_out(rendered)
 }
 
-fn trace_command(args: &TraceArgs) -> Result<trace::Trace, CommandError> {
+fn trace_command(args: &TraceArgs) -> (Result<trace::Trace, CommandError>, Vec<Diagnostic>) {
+    match traced(args) {
+        Ok((trace, notes)) => (Ok(trace), notes),
+        Err(e) => (Err(e), Vec::new()),
+    }
+}
+
+fn traced(args: &TraceArgs) -> Result<(trace::Trace, Vec<Diagnostic>), CommandError> {
     let db = open(&args.db)?;
+    // What the export could not reach is not visible in an answer's shape: a
+    // signal whose driving procedure was skipped reads as undriven.
+    let notes = designdb::schema::db_info(db.conn())
+        .map(|seal| info::trust_notes(&seal))
+        .unwrap_or_default();
     let anchor = resolve::anchor(db.conn(), args.top.as_deref(), args.strip_prefix.as_deref())
         .map_err(|e| CommandError::new(ErrorCode::NoTop, e))?;
 
@@ -112,17 +124,22 @@ fn trace_command(args: &TraceArgs) -> Result<trace::Trace, CommandError> {
     // is nothing to measure the select against.
     let (offsets, spelled) = match select {
         Some(sel) => {
+            // An aggregate has no one declared range for offsets to be mapped
+            // onto, so there is nothing to measure the select against. Saying
+            // so is the alternative to measuring it against a part.
             let decl = signal
                 .net
                 .data_type
                 .as_deref()
-                .and_then(bits::declared_range)
+                .and_then(|t| bits::declared_range(t, signal.net.width))
                 .ok_or_else(|| {
                     CommandError::new(
                         ErrorCode::BadSelect,
                         format!(
-                            "{} has no declared bit range to select from",
-                            signal.local
+                            "{} is {} and has no single declared bit range to select from; \
+                             trace the whole object",
+                            signal.local,
+                            signal.net.data_type.as_deref().unwrap_or("untyped")
                         ),
                     )
                 })?;
@@ -139,8 +156,9 @@ fn trace_command(args: &TraceArgs) -> Result<trace::Trace, CommandError> {
     };
 
     let dir = if args.load { Direction::Load } else { Direction::Driver };
-    trace::run(&db, &anchor, &signal, dir, offsets, spelled, args.control)
-        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))
+    let trace = trace::run(&db, &anchor, &signal, dir, offsets, spelled, args.control)
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+    Ok((trace, notes))
 }
 
 /// Split a trailing bit-select off the signal path.

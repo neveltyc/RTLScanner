@@ -49,6 +49,12 @@ pub enum HopKind {
     Terminal,
     /// A procedure triggers on it — a flop's clock pin is a load of its clock.
     Sensitivity,
+    /// A statement waits on it.
+    Wait,
+    /// A condition gates the target rather than supplying its value.
+    Control,
+    /// A call binds it to a subroutine's formal.
+    Call,
     /// A statement reads it but writes nothing this instance names: an
     /// assertion, a `$display`.
     Statement,
@@ -70,18 +76,28 @@ impl HopKind {
             HopKind::Trigger => "trigger",
             HopKind::Terminal => "terminal",
             HopKind::Sensitivity => "sensitivity",
+            HopKind::Wait => "wait",
+            HopKind::Control => "control",
+            HopKind::Call => "call",
             HopKind::Statement => "statement",
             HopKind::Other => "other",
         }
     }
 
-    /// Whether a hop of this kind says where a value comes from.
+    /// Whether a hop of this kind is a statement about where the value goes or
+    /// comes from, rather than about how much detail was asked for.
     ///
-    /// A sensitivity or a read is a fact about the signal, not a driver of it,
-    /// and an alias binds two names without either driving the other. Counting
-    /// them would make an undriven signal look resolved.
+    /// An alias binds two names into one object without either driving the
+    /// other, so an aliased net with no driver would otherwise read as
+    /// resolved. A condition is excluded for a different reason: `--control`
+    /// changes how much is displayed and must not change what the tool says
+    /// about the design.
+    ///
+    /// A sensitivity is NOT excluded. Membership follows the netlist model: a
+    /// flop's clock pin is a load of its clock, so a clock whose only answers
+    /// are sensitivities has loads.
     fn is_structural(self) -> bool {
-        !matches!(self, HopKind::Alias | HopKind::Sensitivity)
+        !matches!(self, HopKind::Alias | HopKind::Control)
     }
 }
 
@@ -121,9 +137,11 @@ pub struct Hop {
     line: Option<u32>,
     /// Whether the value crossed a hierarchy boundary to get here.
     boundary: bool,
-    /// Which bits of the traced signal this arc touches.
-    bits: Option<String>,
-    /// False where the range is an upper bound rather than the bits touched.
+    /// Which bits of the traced signal this hop's arcs touch. More than one
+    /// where a statement writes several windows: `{y[7:6], y[3:2]} = ...` is
+    /// two, and folding them into one range would claim the bits between.
+    spans: Vec<BitSpan>,
+    /// False where a range is an upper bound rather than the bits touched.
     bits_exact: bool,
     /// The full paths of the nets at the other end.
     signals: Vec<String>,
@@ -163,6 +181,9 @@ pub struct Trace {
     /// The bit range asked about, spelled in declared indices.
     bits: Option<String>,
     width: Option<i64>,
+    /// The signal's own declared range, which is what a span is spelled
+    /// against. `None` for a type that has no single one — an aggregate.
+    decl: Option<(i64, i64)>,
     hops: Vec<Hop>,
     /// Distinct sources driving the signal, by the thing that produced them.
     driver_count: usize,
@@ -219,7 +240,7 @@ impl CommandResult for Trace {
                     "file": h.file,
                     "line": h.line,
                     "boundary": h.boundary,
-                    "bits": h.bits,
+                    "bits": spell_spans(&h.spans, self.decl),
                     "bits_exact": h.bits_exact,
                     "signals": h.signals,
                     "assign_kind": h.assign_kind,
@@ -289,9 +310,14 @@ impl CommandResult for Trace {
             };
             out.push_str(&format!("  {:<18} {:<22} {text}\n", hop.kind.tag(), at));
 
-            if let Some(b) = &hop.bits {
+            if let Some(b) = spell_spans(&hop.spans, self.decl) {
                 let note = if hop.bits_exact { "" } else { " (upper bound)" };
-                out.push_str(&format!("      bits: {b}{note}\n"));
+                out.push_str(&format!("      bits: {}{note}\n", render_bits(&b)));
+            }
+            // Why the text is a placeholder is part of the answer: a file that
+            // has moved on names lines that are no longer these.
+            if hop.source_state != SourceState::Read {
+                out.push_str(&format!("      source: {}\n", hop.source_state.tag()));
             }
             if let Some(t) = &hop.timing {
                 let events: Vec<String> = t
@@ -368,10 +394,13 @@ pub fn run(
 
     let mut rows = schema::arcs(c, signal.net.net_id, dir)?;
     for row in &mut rows {
-        // The dependency's own kind is a per-row lookup, not a join: joining
-        // the two views makes SQLite materialise both.
-        if row.kind == "dataflow"
-            && let Some(dep) = row.dep_id
+        // Every dependency row, not only the ones `v_load` calls `dataflow`:
+        // `v_driver` reports a control dependency whose source is a
+        // hierarchical name as `external`, which says where the source is but
+        // not that it gates rather than drives. The kind is a per-row lookup
+        // and not a join, since joining the two views makes SQLite
+        // materialise both.
+        if let Some(dep) = row.dep_id
             && let Some((kind, prim)) = schema::dep_kind(c, dep)?
         {
             row.prim_id = row.prim_id.or(prim);
@@ -380,24 +409,26 @@ pub fn run(
     }
 
     let mut hops: Vec<Hop> = Vec::new();
-    for row in rows {
+    for (index, row) in rows.into_iter().enumerate() {
         if let Some((lo, hi)) = select
             && !row.signal_bits.may_touch(lo, hi)
         {
             continue;
         }
-        let dep_kind = row.dep_kind.as_deref();
-        // A condition reaches its target through a branch, not through a value.
-        // It is a real dependency and a noisy one, so it is asked for.
-        if !control && (row.kind == "control" || dep_kind == Some("control")) {
+        // A condition reaches its target through a branch, not through a
+        // value. The levels it came from are on the hop either way (`gates`),
+        // so listing the condition nets among the reads is asked for.
+        if !control && row.dep_kind.as_deref() == Some("control") {
             continue;
         }
-        let provenance = provenance_of(&row);
+        let provenance = provenance_of(&row, index);
         match hops.iter_mut().find(|h| h.provenance == provenance) {
             // One statement, one hop: `{a,b} = {x,y}` is two arcs of one
             // statement, and reporting it twice would count one driver twice.
             Some(existing) => merge(existing, &row, anchor, signal, sep, c)?,
-            None => hops.push(build_hop(c, &mut source, anchor, signal, &row, sep, dir)?),
+            None => {
+                hops.push(build_hop(c, &mut source, anchor, signal, &row, index, sep, dir)?)
+            }
         }
     }
 
@@ -406,29 +437,44 @@ pub fn run(
     });
 
     let (driver_count, conflicting) = count_drivers(&hops, dir);
-    let decl = signal.net.data_type.as_deref().and_then(bits::declared_range);
     Ok(Trace {
         signal: signal.path(&anchor.root_name, sep),
         direction: dir,
-        bits: spelled_bits.or_else(|| select.and_then(|(lo, hi)| {
-            BitSpan::Range { lo, hi, exact: true }.spell(decl)
-        })),
+        bits: spelled_bits,
         width: signal.net.width,
+        decl: declared_range_of(signal),
         hops,
         driver_count,
         conflicting,
     })
 }
 
-/// What identifies the thing behind an arc, so two arcs of one statement are
-/// one answer and two statements are two.
-fn provenance_of(row: &schema::ArcRow) -> String {
-    match (row.stmt_id, row.conn_id, row.prim_id, row.term_id) {
-        (Some(s), ..) => format!("s{s}"),
+/// What identifies one answer, so two arcs of one statement are one hop and
+/// two statements are two.
+///
+/// The role is part of it: a condition and a value are different facts about
+/// the same statement, and folding them together would present a gating net as
+/// something the statement reads for its value.
+///
+/// `index` distinguishes rows that name nothing else. A sensitivity row belongs
+/// to a procedure's header and carries no statement, so without it every flop
+/// clocked by one net would collapse into a single answer.
+fn declared_range_of(signal: &ResolvedSignal) -> Option<(i64, i64)> {
+    bits::declared_range(signal.net.data_type.as_deref()?, signal.net.width)
+}
+
+fn provenance_of(row: &schema::ArcRow, index: usize) -> String {
+    let role = match row.dep_kind.as_deref() {
+        Some("control") => ":control",
+        _ => "",
+    };
+    match (row.stmt_id, row.conn_id, row.prim_id, row.term_id, row.proc_id) {
+        (Some(s), ..) => format!("s{s}{role}"),
         (_, Some(c), ..) => format!("c{c}"),
-        (_, _, Some(p), _) => format!("p{p}"),
-        (_, _, _, Some(t)) => format!("t{t}"),
-        _ => format!("k{}", row.kind),
+        (_, _, Some(p), ..) => format!("p{p}"),
+        (_, _, _, Some(t), _) => format!("t{t}"),
+        (.., Some(p)) => format!("proc{p}"),
+        _ => format!("row{index}"),
     }
 }
 
@@ -457,7 +503,7 @@ fn count_drivers(hops: &[Hop], dir: Direction) -> (usize, bool) {
     for (i, a) in driving.iter().enumerate() {
         for b in &driving[i + 1..] {
             if a.source_key != b.source_key
-                && ranges_overlap(a.bits.as_deref(), b.bits.as_deref())
+                && a.spans.iter().any(|x| b.spans.iter().any(|y| x.overlaps(y)))
             {
                 contend = true;
             }
@@ -466,26 +512,25 @@ fn count_drivers(hops: &[Hop], dir: Direction) -> (usize, bool) {
     (sources.len(), contend)
 }
 
-/// Whether two spelled ranges can touch. `None` is the whole object, which
-/// overlaps everything.
-fn ranges_overlap(a: Option<&str>, b: Option<&str>) -> bool {
-    let parse = |s: Option<&str>| -> Option<(i64, i64)> {
-        let s = s?.trim_start_matches('[').trim_end_matches(']');
-        match s.split_once(':') {
-            Some((x, y)) => Some((x.parse().ok()?, y.parse().ok()?)),
-            None => s.parse().ok().map(|v| (v, v)),
-        }
-    };
-    match (parse(a), parse(b)) {
-        (Some((a1, a2)), Some((b1, b2))) => {
-            a1.min(a2) <= b1.max(b2) && b1.min(b2) <= a1.max(a2)
-        }
-        _ => true,
-    }
+/// The windows a hop touches, in declared indices. `None` where there is
+/// nothing to say: the whole object, or no declared range to anchor offsets
+/// against.
+fn spell_spans(spans: &[BitSpan], decl: Option<(i64, i64)>) -> Option<Vec<String>> {
+    let spelled: Vec<String> = spans.iter().filter_map(|s| s.spell(decl)).collect();
+    (!spelled.is_empty()).then_some(spelled)
+}
+
+/// Several windows read as a list; one reads as itself.
+fn render_bits(spelled: &[String]) -> String {
+    spelled.join(", ")
 }
 
 /// Add another arc of an already-reported statement: the ends differ, the
 /// statement does not.
+///
+/// Every field is folded rather than left at whichever arc arrived first —
+/// `arcs()` has no order that is a contract, and a statement that crosses a
+/// boundary in one of its arcs crosses one.
 fn merge(
     hop: &mut Hop,
     row: &schema::ArcRow,
@@ -499,17 +544,20 @@ fn merge(
     {
         hop.signals.push(path);
     }
-    // The widest range any of the statement's arcs touches, since the hop
-    // speaks for all of them.
-    let decl = signal.net.data_type.as_deref().and_then(bits::declared_range);
-    if let Some(spelled) = row.signal_bits.spell(decl)
-        && hop.bits.is_some()
-        && hop.bits.as_deref() != Some(&spelled)
-    {
-        hop.bits = None;
-        hop.bits_exact = false;
+    if !hop.spans.contains(&row.signal_bits) {
+        hop.spans.push(row.signal_bits);
     }
+    hop.bits_exact &= row.signal_bits.is_exact() && row.map_exact != Some(false);
+    hop.boundary |= crosses_boundary(row, signal);
     Ok(())
+}
+
+/// Whether an arc reached this signal from outside the instance it lives in.
+fn crosses_boundary(row: &schema::ArcRow, signal: &ResolvedSignal) -> bool {
+    row.kind == "connection"
+        || row.kind == "connection_expression"
+        || row.other_ref.is_some()
+        || row.other_inst_id.is_some_and(|i| i != signal.inst)
 }
 
 /// The full path of the net at the far end of an arc.
@@ -556,6 +604,7 @@ fn build_hop(
     anchor: &Anchor,
     signal: &ResolvedSignal,
     row: &schema::ArcRow,
+    index: usize,
     sep: char,
     dir: Direction,
 ) -> Result<Hop, String> {
@@ -578,7 +627,6 @@ fn build_hop(
         _ => (None, SourceState::Missing),
     };
 
-    let decl = signal.net.data_type.as_deref().and_then(bits::declared_range);
     let mut hop = Hop {
         kind,
         raw_kind,
@@ -587,13 +635,8 @@ fn build_hop(
         scope,
         file,
         line,
-        // A crossing and a hierarchical name both mean the value came from
-        // outside the instance the signal lives in.
-        boundary: row.kind == "connection"
-            || row.kind == "connection_expression"
-            || row.other_ref.is_some()
-            || row.other_inst_id.is_some_and(|i| i != signal.inst),
-        bits: row.signal_bits.spell(decl),
+        boundary: crosses_boundary(row, signal),
+        spans: vec![row.signal_bits],
         bits_exact: row.signal_bits.is_exact() && row.map_exact != Some(false),
         signals: far_path(c, anchor, row, sep)?.into_iter().collect(),
         assign_kind: stmt.as_ref().and_then(|s| s.assign_kind.clone()),
@@ -602,10 +645,10 @@ fn build_hop(
         gates: Vec::new(),
         unreachable: false,
         call_chain: Vec::new(),
-        provenance: provenance_of(row),
+        provenance: provenance_of(row, index),
         source_key: match stmt.as_ref().and_then(|s| s.proc_id) {
             Some(proc) => format!("proc{proc}"),
-            None => provenance_of(row),
+            None => provenance_of(row, index),
         },
     };
 
@@ -637,8 +680,17 @@ fn build_hop(
 
 /// Fold a row's kind into the word a caller reasons about.
 fn classify(row: &schema::ArcRow, stmt: Option<&schema::StatementRow>) -> HopKind {
-    let kind = row.dep_kind.as_deref().unwrap_or(row.kind.as_str());
-    match kind {
+    // A control dependency is one whichever word the view uses: `v_driver`
+    // folds one whose source is a hierarchical name into `external`, which says
+    // where the source is but not that it gates rather than drives.
+    if row.dep_kind.as_deref() == Some("control") {
+        return HopKind::Control;
+    }
+    // Otherwise the view's own word wins over the dependency's. It is the more
+    // specific of the two: a data dependency with no source is `constant`, a
+    // `system_task` or a `trigger`, and the dependency kind says only `data`.
+    match row.kind.as_str() {
+        "procedure" => return HopKind::Call,
         "connection" | "connection_expression" => return HopKind::Port,
         "terminal" => return HopKind::Terminal,
         "constant" => return HopKind::Constant,
@@ -647,7 +699,11 @@ fn classify(row: &schema::ArcRow, stmt: Option<&schema::StatementRow>) -> HopKin
         "trigger" => return HopKind::Trigger,
         "alias" => return HopKind::Alias,
         "primitive" => return HopKind::Gate,
-        "sensitivity" | "wait" => return HopKind::Sensitivity,
+        "sensitivity" => return HopKind::Sensitivity,
+        // The database keeps these apart and so does this: a procedure
+        // triggering on a net and a statement waiting for one are different
+        // things happening at different times.
+        "wait" => return HopKind::Wait,
         _ => {}
     }
     // Whatever kind the arc has, a statement that assigns nothing is not an

@@ -48,6 +48,17 @@ impl BitSpan {
         }
     }
 
+    /// Whether two spans can touch the same bit. The uncertain states can
+    /// touch anything, for the reason [`may_touch`](Self::may_touch) gives.
+    pub fn overlaps(&self, other: &BitSpan) -> bool {
+        match (self, other) {
+            (BitSpan::Range { lo, hi, .. }, other) | (other, BitSpan::Range { lo, hi, .. }) => {
+                other.may_touch(*lo, *hi)
+            }
+            _ => true,
+        }
+    }
+
     /// Whether a touch of this span is known bit for bit.
     pub fn is_exact(&self) -> bool {
         match self {
@@ -76,17 +87,27 @@ impl BitSpan {
     }
 }
 
-/// The declared range in a type's text, if it spells one.
+/// The declared range of a simple vector, if this type is one.
 ///
 /// `logic [7:0]` is (7, 0); `logic [0:7]` is (0, 7) and counts the other way.
-/// Only the first packed dimension is read: it is what a bit offset into a
-/// simple vector indexes, and an aggregate's own shape is not recoverable from
-/// one range anyway.
-pub fn declared_range(data_type: &str) -> Option<(i64, i64)> {
+/// Bit offsets index the flattened object, so a declared range can only be
+/// mapped onto them when it spans the whole of it — which is exactly what
+/// `width` checks. Without that guard the first `[a:b]` of
+/// `logic [3:0][7:0]`, of `logic [7:0] m [0:3]`, or of a packed struct's first
+/// member would be taken for the object's own range, and every select against
+/// it would name the wrong bits while looking like an answer.
+///
+/// The aggregates are not thereby unaddressable — they have no ONE declared
+/// range, so a caller is told there is nothing to measure a select against
+/// rather than measured against the wrong thing.
+pub fn declared_range(data_type: &str, width: Option<i64>) -> Option<(i64, i64)> {
     let open = data_type.find('[')?;
     let close = data_type[open..].find(']')? + open;
     let (left, right) = data_type[open + 1..close].split_once(':')?;
-    Some((left.trim().parse().ok()?, right.trim().parse().ok()?))
+    let (left, right): (i64, i64) = (left.trim().parse().ok()?, right.trim().parse().ok()?);
+
+    let spans = (left - right).abs() + 1;
+    (width? == spans).then_some((left, right))
 }
 
 /// Split a trailing bit-select off a leaf name: `data[7:0]` is (`data`, (7, 0)).
@@ -191,12 +212,24 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_range_comes_from_the_first_packed_dimension() {
-        assert_eq!(declared_range("logic[7:0]"), Some((7, 0)));
-        assert_eq!(declared_range("logic [0:7]"), Some((0, 7)));
-        assert_eq!(declared_range("logic[3:0][7:0]"), Some((3, 0)));
-        assert_eq!(declared_range("logic"), None);
-        assert_eq!(declared_range("logic[$]"), None);
+    fn only_a_simple_vector_has_a_range_bit_offsets_can_be_mapped_onto() {
+        assert_eq!(declared_range("logic[7:0]", Some(8)), Some((7, 0)));
+        assert_eq!(declared_range("logic [0:7]", Some(8)), Some((0, 7)));
+        assert_eq!(declared_range("logic signed[15:8]", Some(8)), Some((15, 8)));
+
+        // The first range of each of these spans a part, not the whole: taking
+        // it for the object's range would answer about the wrong bits.
+        assert_eq!(declared_range("logic[3:0][7:0]", Some(32)), None, "packed array");
+        assert_eq!(declared_range("logic[7:0]$[0:3]", Some(32)), None, "unpacked array");
+        assert_eq!(
+            declared_range("struct packed{logic[3:0] p;logic[11:0] q;}anon.s$1", Some(16)),
+            None,
+            "the first member's range is not the struct's"
+        );
+
+        assert_eq!(declared_range("logic", Some(1)), None);
+        assert_eq!(declared_range("logic[$]", Some(8)), None);
+        assert_eq!(declared_range("logic[7:0]", None), None, "no width to check against");
     }
 
     #[test]

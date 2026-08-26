@@ -20,11 +20,6 @@ pub fn segments(path: &str) -> Vec<&str> {
     path.split(SEPARATORS).filter(|s| !s.is_empty()).collect()
 }
 
-/// Which separator a path is written with, for spelling one back.
-pub fn separator_of(path: &str) -> char {
-    if path.contains('/') && !path.contains('.') { '/' } else { '.' }
-}
-
 /// Where the design sits, and what to strip off a path before looking in it.
 ///
 /// A path from a waveform tool is anchored at a testbench the design has never
@@ -176,8 +171,9 @@ fn walk(
                     node = child.node_id;
                     rest = tail;
                 }
-                // A black box or a gate: the walk stops here, which is a
-                // different fact from the name not existing.
+                // A black box or a gate. The export has none of its nets, so
+                // nothing below it resolves — reported like any name that is
+                // not there, since the caller's next move is the same.
                 _ => return Ok(None),
             },
             None => {
@@ -310,13 +306,31 @@ fn diagnose(
 }
 
 /// The scopes and nets a level holds, for a caller correcting a name.
+///
+/// A generate level declares no instance, so its nets belong to the instance
+/// around it under names carrying the generate segments. Walking up to that
+/// instance and stripping the prefix is what makes a name inside a generate
+/// block correctable at all.
 fn names_under(c: &rusqlite::Connection, node: i64) -> Result<Vec<String>, String> {
     let mut names: Vec<String> =
         schema::children_of(c, node)?.into_iter().map(|n| n.node_name).collect();
-    if let Some(node) = schema::node(c, node)?
-        && let Some(inst) = node.inst_id
-    {
-        names.extend(schema::nets_of_instance(c, inst)?.into_iter().map(|n| n.net_name));
+
+    let mut at = Some(node);
+    let mut prefix: Vec<String> = Vec::new();
+    while let Some(id) = at {
+        let Some(row) = schema::node(c, id)? else { break };
+        if let Some(inst) = row.inst_id {
+            let scope = prefix.join(".");
+            names.extend(schema::nets_of_instance(c, inst)?.into_iter().filter_map(|n| {
+                match scope.is_empty() {
+                    true => Some(n.net_name),
+                    false => n.net_name.strip_prefix(&format!("{scope}.")).map(str::to_string),
+                }
+            }));
+            break;
+        }
+        prefix.insert(0, row.node_name);
+        at = row.parent_node_id;
     }
     names.sort();
     names.dedup();
@@ -406,8 +420,6 @@ mod tests {
         assert_eq!(segments("tb.u_dut.q"), ["tb", "u_dut", "q"]);
         assert_eq!(segments("/top/u_dp0"), ["top", "u_dp0"]);
         assert_eq!(segments("").len(), 0);
-        assert_eq!(separator_of("/top/u_dp0"), '/');
-        assert_eq!(separator_of("top.u_dp0"), '.');
     }
 
     #[test]
