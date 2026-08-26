@@ -74,5 +74,5 @@ $ rtlscanner fanin top.out --comb --json design.db
     "widened": 0
   },
   "tool": "rtlscanner",
-  "version": "2.0.0-alpha.1"
+  "version": "1.0.0"
 }

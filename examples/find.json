@@ -34,5 +34,5 @@ $ rtlscanner find *ed --json design.db
     "truncated": false
   },
   "tool": "rtlscanner",
-  "version": "2.0.0-alpha.1"
+  "version": "1.0.0"
 }

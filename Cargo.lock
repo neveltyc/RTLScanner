@@ -128,7 +128,7 @@ checksum = "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570"
 
 [[package]]
 name = "designdb"
-version = "2.0.0-alpha.1"
+version = "1.0.0"
 dependencies = [
  "rusqlite",
 ]
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "rtlscanner"
-version = "2.0.0-alpha.1"
+version = "1.0.0"
 dependencies = [
  "clap",
  "designdb",

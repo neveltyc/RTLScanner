@@ -142,5 +142,5 @@ $ rtlscanner path top.a top.out --json design.db
     "length": 6
   },
   "tool": "rtlscanner",
-  "version": "2.0.0-alpha.1"
+  "version": "1.0.0"
 }
