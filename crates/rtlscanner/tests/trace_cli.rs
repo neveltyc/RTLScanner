@@ -108,8 +108,8 @@ fn the_two_arms_of_one_if_are_two_statements_and_one_driver() {
     assert_eq!(v["summary"]["drivers"], 1);
     assert_eq!(v["summary"]["multiple_drivers"], false);
 
-    // The arms are distinguishable, which is what v19's gating tree added: in
-    // v18 both carried the same condition and nothing said which side.
+    // The arms are distinguishable: nothing but `sense` says which side of
+    // the `if` a statement is on.
     let senses: Vec<&str> = hops.iter().map(|h| h["gates"][0]["sense"].as_str().unwrap()).collect();
     assert!(senses.contains(&"then") && senses.contains(&"else"), "{senses:?}");
     for hop in hops {

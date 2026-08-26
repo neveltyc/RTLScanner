@@ -1,16 +1,10 @@
 #!/usr/bin/env python3
 """Tests for `differ.py` — the harness that decides what a difference is.
 
-The differential itself needs the Python engine, its dependencies and an
-exporter, so it is a thing somebody runs once rather than a thing CI runs. Its
-judgement is not: every rule in `differ.py` waives a difference, and a rule that
-waives too much turns a gate that proves something into one that proves nothing.
-A run with no unexplained miss is the output of the rules as much as of the
-tool, so each rule is pinned from both sides — the shape it must classify, and
-the shape it must leave alone.
-
-The fixtures are the shapes the two engines actually produced on the corpus,
-with the line numbers and statement text they actually reported.
+Each waiver rule is pinned from both sides: the shape it must classify, and
+the shape it must leave alone. The fixtures are shapes the two engines
+actually produced on the corpus. These need neither the oracle nor an
+exporter:
 
     python3 tools/differential/test_differ.py
 """

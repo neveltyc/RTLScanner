@@ -1,27 +1,16 @@
 //! The invariants, on designs nobody wrote for this tool.
 //!
-//! The fixtures elsewhere are small enough to read whole, which is also what
-//! makes them agreeable: they hold the shapes I thought to write. A processor
-//! someone else wrote holds the ones I did not, and the worst defects so far
-//! were found by running these same properties over one — a bit-select cone
-//! that quietly lost a fifth of its edges on tinyriscv, and a state-element
-//! test that stopped one hop late across a port.
-//!
 //! Nothing here is an expected value. Every assertion is the walk checked
 //! against itself — fan-in against fan-out, a cone against a deeper one, a
 //! window against the whole object — so it holds of any design at all, and a
 //! failure is a defect rather than a design this test had not met.
 //!
-//! What that buys, and what it does not. A property comparing a walk to
-//! another walk is blind to a defect both walks share: a cone that lost every
-//! condition is still self-consistent, still monotone in depth, still dual.
-//! The load-bearing checks are the ones that put two *different commands*
-//! against each other — `first_hop_is_a_trace`, where a trace assembles its
-//! answer from the rows directly and a cone assembles it from the walk — and
-//! the one that asks the same question two ways, `containment`'s full-width
-//! window. Those are what a mutation has to survive; the rest bound how wrong
-//! an answer can be while staying coherent. The fixtures cover what neither
-//! reaches, on designs small enough to state the expected answer.
+//! A property comparing a walk to another walk is blind to a defect both
+//! walks share, so the load-bearing checks are the ones that compare
+//! different commands: `first_hop_is_a_trace`, where a trace assembles its
+//! answer from the rows and a cone from the walk, and `containment`'s
+//! full-width window. The fixtures cover what neither reaches, on designs
+//! small enough to state the expected answer.
 //!
 //! The RTL is not vendored: `RTLSCANNER_CORES` names a directory holding the
 //! checkouts, one subdirectory per core. Without it these say so and skip;
@@ -79,11 +68,9 @@ fn sources_under(path: &std::path::Path, into: &mut Vec<PathBuf>) {
 /// the whole list beats a prefix, which would be one module's worth.
 const SAMPLE: usize = 14;
 
-/// Multi-bit nets are sampled apart from the rest, because the invariant that
-/// needs them is the strongest one here and they are a minority: one stride
-/// over every net put five of them in front of the window check while five
-/// hundred went unasked, and a bit-select defect reintroduced on purpose
-/// survived it.
+/// Multi-bit nets are sampled apart from the rest: the window check needs
+/// them and they are a minority, so one stride over every net would leave
+/// most of them unasked.
 const WIDE_SAMPLE: usize = 20;
 
 /// Export one core, or `None` where the corpus or the exporter is absent.
@@ -237,9 +224,8 @@ fn containment(db: &Path, signal: &str) {
 
 /// A window covering every bit asks about the whole object.
 ///
-/// The cheapest invariant there is, and the one that catches a walk that emits
-/// an arc without following it — which on tinyriscv was a fifth of the edges of
-/// a fifth of the wide nets, and looked like an answer.
+/// The cheapest invariant there is, and the one that catches a walk that
+/// emits an arc without following it.
 fn every_bit_is_the_whole(db: &Path, signal: &str, width: u64) {
     let whole = arcs(&cone(db, "fanin", signal));
     let spelled = format!("{signal}[{}:0]", width - 1);

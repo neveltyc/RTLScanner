@@ -1,11 +1,10 @@
 //! The worked answers in `examples/`, and the check that they still are.
 //!
 //! An agent reading this repository should be able to see the shape of an
-//! answer without running anything, and a shape kept by hand drifts: the
-//! predecessor's examples were three versions behind and nothing said so. So
-//! they are generated from the binary in this tree, and this test regenerates
-//! them and compares — a change to an answer's shape either lands here as a
-//! diff or fails.
+//! answer without running anything, and a shape kept by hand drifts silently.
+//! So they are generated from the binary in this tree, and this test
+//! regenerates them and compares — a change to an answer's shape either lands
+//! here as a diff or fails.
 //!
 //! `make examples` runs this with `RTLSCANNER_WRITE_EXAMPLES=1` to rewrite them.
 
@@ -33,11 +32,10 @@ fn examples_dir() -> PathBuf {
 
 /// Every worked answer is at least a well-formed envelope.
 ///
-/// Checked without an exporter, so a run that cannot regenerate them still says
-/// something about them: the drift check below is the only thing standing
+/// Checked without an exporter, so a run that cannot regenerate them still
+/// says something about them: the drift check below is the only thing standing
 /// between these files and silent staleness, and it skips where no exporter is
-/// around. A test that does nothing and reports ok is what let the
-/// predecessor's examples fall three versions behind.
+/// around.
 #[test]
 fn the_worked_answers_are_envelopes() {
     const KEYS: [&str; 8] =

@@ -113,6 +113,5 @@ jobs:
           restore-keys: cargo-test-
 
       # Both resources present and both made mandatory: a run meant to cover
-      # the exporter and the cores must not pass by skipping them, which is
-      # how this project's predecessor shipped examples three versions stale.
+      # the exporter and the cores must not pass by skipping them.
       - run: make test-cores CORES=cores

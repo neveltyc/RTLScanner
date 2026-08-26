@@ -69,9 +69,8 @@ guessed at.
 ## The judgement, and its own tests
 
 Every rule in `differ.py` waives a difference, and a rule that waives too much
-turns a gate that proves something into one that proves nothing — which is what
-a review of the first version found in three of the four. So each is pinned
-from both sides, including the shapes that broke them: an unrelated block
+turns a gate that proves something into one that proves nothing. So each is
+pinned from both sides, including the shapes that broke them: an unrelated block
 further down the same module, a driver of a kind that cannot stand at a port,
 an operand outside the braces of a statement that has some, a source in another
 instance, and an oracle failure that is not the one it is documented to have.

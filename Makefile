@@ -6,9 +6,8 @@ DESIGNDB_BIN := $(DESIGNDB_DIR)/build/rtl-designdb
 build:
 	cargo build
 
-# --all-targets covers every compiled target and excludes doctests, of which
-# this workspace has none. The tests that need an exporter skip without one;
-# `make test-exporter` is the run that refuses to.
+# The tests that need an exporter skip without one; `make test-exporter` is
+# the run that refuses to.
 test:
 	cargo test --all-targets
 

@@ -22,10 +22,8 @@ use serde_json::json;
 
 use envelope::{CommandError, Diagnostic, ErrorCode, Rendered};
 
-/// The one help text, written by hand: `-h` and `--help` are the same view,
-/// and what it groups by is the command an option belongs to — the generated
-/// help can only say each thing once, under one command or repeated verbatim
-/// under all of them.
+/// The help, written by hand: one text for `-h` and `--help` alike, grouped
+/// by the command an option belongs to.
 const HELP: &str = concat!(
     "rtlscanner ",
     env!("CARGO_PKG_VERSION"),

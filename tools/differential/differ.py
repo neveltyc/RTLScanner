@@ -38,41 +38,11 @@ change that manufactures them shows up as a number that moved.
 
 ## The exemptions
 
-Four, each a rule rather than a list of blessed signals, and each a difference
-the rewrite meant to make:
-
-* `covers` — the oracle attributes a driver to the *construct* and this tool to
-  the *statement* inside it, so a line is covered by a line at or below it,
-  bounded by the next location the oracle itself named and in any case by
-  `endmodule`. Comparing lines for equality would fail on every procedure in
-  the corpus while both name the same block; leaving it unbounded would let an
-  unrelated block further down stand in for the right one.
-* `port_crossing` — the oracle attributes an input port to the formal's
-  declaration and says only that something outside drives it; this tool names
-  what is bound there, at the instantiation. What is waived is which end to
-  point at, so the tool's answer must at least be a kind of thing that can
-  stand at one. WHICH net is on the other side the oracle never says, and the
-  cone comparison checks it without exemption.
-* `concatenated` — the oracle joins every operand of a concatenation to every
-  target of one, and this tool follows the correspondence the database records.
-  `{r1, r2} <= {d, r1}` is two assignments the oracle reports as four edges.
-  The operand must be inside the braces and in the same instance as the
-  target, or `assign y = {a, b} | c;` losing `c` would be forgiven.
-* `EXEMPT_UNASKABLE` — the oracle cannot be asked about a signal inside a
-  generate block, by either spelling. Its own `find` lists them and its own
-  cones reach them; only the question is unavailable. Those are counted, not
-  dropped, because a question with no oracle answer is not evidence either way
-  — and only the two failures it is documented to have count, since waiving
-  every failure would let a timeout remove a whole family of questions.
-
-`test_differ.py` pins each from both sides: the shape it must classify, and the
-shape it must leave alone. A rule that waives too much turns a gate that proves
-something into one that proves nothing, and a green run is the output of the
-rules as much as of the tool.
-
-This is a one-shot migration gate — it retires when 2.0 ships, and the
-regression line after that is the golden tests plus the invariants, which need
-no oracle. `README.md` beside this file says how to run it.
+Four rules waive the differences the rewrite meant to make — `covers`,
+`port_crossing`, `concatenated` and `EXEMPT_UNASKABLE`; each says at its
+definition what it waives and what it must leave alone, and `test_differ.py`
+pins both sides. `README.md` beside this file says how to run the gate and
+when it retires.
 """
 
 import argparse
