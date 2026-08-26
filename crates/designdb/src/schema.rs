@@ -856,11 +856,15 @@ pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), St
     Ok((clocked, latch))
 }
 
-/// How many nets one occurrence declares. What a tree shows to say whether a
-/// level is worth descending into.
-pub fn net_count(c: &Connection, inst: i64) -> Result<i64, String> {
-    c.prepare_cached("SELECT count(*) FROM net WHERE inst_id = ?1")
-        .and_then(|mut s| s.query_row([inst], |r| r.get(0)))
+/// How many nets one level of the tree declares.
+///
+/// By scope, not by instance: a generate block declares nets of its own, and
+/// they belong to the instance around it. Counting by instance would give the
+/// generate level nothing and the instance everything, saying of both the
+/// opposite of what is there.
+pub fn net_count(c: &Connection, node: i64) -> Result<i64, String> {
+    c.prepare_cached("SELECT count(*) FROM net WHERE scope_node_id = ?1")
+        .and_then(|mut s| s.query_row([node], |r| r.get(0)))
         .map_err(|e| q(e, "net"))
 }
 
@@ -870,17 +874,27 @@ pub fn net_count(c: &Connection, inst: i64) -> Result<i64, String> {
 /// holds; a caller wanting to match a full path filters the answers. `limit`
 /// bounds the query itself rather than the answer — a pattern of `*` on a large
 /// design would otherwise read every net into memory to show twenty.
-pub fn nets_matching(c: &Connection, pattern: &str, limit: usize) -> Result<Vec<NetRow>, String> {
+pub fn nets_matching(
+    c: &Connection,
+    pattern: &str,
+    limit: usize,
+) -> Result<(Vec<NetRow>, bool), String> {
     let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_name GLOB ?1 ORDER BY net_id LIMIT ?2");
     let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_net"))?;
     let rows = stmt
         .query_map(rusqlite::params![pattern, limit as i64], net_row)
         .map_err(|e| q(e, "v_net"))?;
-    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_net"))
+    let found: Vec<NetRow> = rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_net"))?;
+    let hit_cap = found.len() >= limit;
+    Ok((found, hit_cap))
 }
 
 /// Tree levels whose own segment matches a glob.
-pub fn nodes_matching(c: &Connection, pattern: &str, limit: usize) -> Result<Vec<NodeRow>, String> {
+pub fn nodes_matching(
+    c: &Connection,
+    pattern: &str,
+    limit: usize,
+) -> Result<(Vec<NodeRow>, bool), String> {
     let sql = format!(
         "SELECT {NODE_COLS} FROM v_tree_node WHERE node_name GLOB ?1 ORDER BY node_id LIMIT ?2"
     );
@@ -888,7 +902,9 @@ pub fn nodes_matching(c: &Connection, pattern: &str, limit: usize) -> Result<Vec
     let rows = stmt
         .query_map(rusqlite::params![pattern, limit as i64], node_row)
         .map_err(|e| q(e, "v_tree_node"))?;
-    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_tree_node"))
+    let found: Vec<NodeRow> = rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_tree_node"))?;
+    let hit_cap = found.len() >= limit;
+    Ok((found, hit_cap))
 }
 
 /// Definitions whose name matches a glob, with how many times each elaborated.
@@ -896,7 +912,7 @@ pub fn modules_matching(
     c: &Connection,
     pattern: &str,
     limit: usize,
-) -> Result<Vec<(String, String, i64)>, String> {
+) -> Result<(Vec<(String, String, i64)>, bool), String> {
     let mut stmt = c
         .prepare_cached(
             "SELECT m.name, m.def_kind, count(i.id) FROM module m \
@@ -909,33 +925,49 @@ pub fn modules_matching(
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .map_err(|e| q(e, "module"))?;
-    rows.collect::<Result<_, _>>().map_err(|e| q(e, "module"))
+    let found: Vec<(String, String, i64)> =
+        rows.collect::<Result<_, _>>().map_err(|e| q(e, "module"))?;
+    let hit_cap = found.len() >= limit;
+    Ok((found, hit_cap))
 }
 
-/// The statements of one procedure that write one net, in execution order.
+/// The statements of one procedure that write one net, in execution order,
+/// each with the bits it writes.
 ///
-/// Which of several assignments to a variable is in effect is a matter of the
-/// order they run in and the conditions each sits under: a `y = '0` before a
-/// case is a default the later arms overwrite. The order is `sequence`, and
-/// deciding what it means is the reader's.
+/// Which of several assignments is in effect is a matter of the order they run
+/// in, the conditions each sits under, and which bits each touches — two
+/// statements writing disjoint halves do not overwrite one another at all. The
+/// order is `sequence`; deciding what it means is the reader's.
+///
+/// Two sources, because a write can leave the instance: `u.n = a` inside a
+/// procedure is a `hier_ref` with `access='write'` and no `stmt_target` row at
+/// all, so asking only the first would report a procedure that writes a signal
+/// twice as writing it never.
 pub fn procedure_writes(
     c: &Connection,
     proc_id: i64,
     net: i64,
-) -> Result<Vec<StatementRow>, String> {
-    // Qualified: the two views share several column names, and an unqualified
-    // list would be ambiguous where they overlap.
+) -> Result<Vec<(StatementRow, BitSpan)>, String> {
+    // Qualified: the joined views share several column names, and an
+    // unqualified list would be ambiguous where they overlap.
     let cols =
         STMT_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
     let sql = format!(
-        "SELECT {cols} FROM v_stmt s \
+        "SELECT {cols}, t.lo, t.hi, t.is_exact FROM v_stmt s \
            JOIN v_stmt_target t ON t.stmt_id = s.stmt_id \
           WHERE s.proc_id = ?1 AND t.net_id = ?2 AND t.target_kind = 'written_by' \
-          ORDER BY s.sequence"
+          UNION ALL \
+         SELECT {cols}, h.lo, h.hi, h.is_exact FROM v_stmt s \
+           JOIN hier_ref h ON h.stmt_id = s.stmt_id \
+          WHERE s.proc_id = ?1 AND h.resolved_net_id = ?2 AND h.access = 'write' \
+          ORDER BY sequence"
     );
     let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_stmt"))?;
     let rows = stmt
-        .query_map(rusqlite::params![proc_id, net], stmt_row)
+        .query_map(rusqlite::params![proc_id, net], |r| {
+            let bits = BitSpan::read(r.get(12)?, r.get(13)?, r.get(14)?);
+            Ok((stmt_row(r)?, bits))
+        })
         .map_err(|e| q(e, "v_stmt"))?;
     rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_stmt"))
 }

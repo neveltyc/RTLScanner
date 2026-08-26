@@ -17,7 +17,7 @@ $ rtlscanner tree --depth 0 --json design.db
         "depth": 0,
         "kind": "root",
         "module": "top",
-        "nets": 10,
+        "nets": 8,
         "path": "top"
       },
       {
@@ -25,7 +25,7 @@ $ rtlscanner tree --depth 0 --json design.db
         "depth": 1,
         "kind": "generate",
         "module": null,
-        "nets": 0,
+        "nets": 1,
         "path": "top.lane[0]"
       },
       {
@@ -33,7 +33,7 @@ $ rtlscanner tree --depth 0 --json design.db
         "depth": 1,
         "kind": "generate",
         "module": null,
-        "nets": 0,
+        "nets": 1,
         "path": "top.lane[1]"
       },
       {
@@ -60,6 +60,7 @@ $ rtlscanner tree --depth 0 --json design.db
   "errors": [],
   "status": "ok",
   "summary": {
+    "depth_truncated": false,
     "levels": 5,
     "limit": 200,
     "shown": 5,

@@ -26,29 +26,7 @@ $ rtlscanner trace top.muxed --json design.db
         "gates": [],
         "kind": "constant",
         "line": 22,
-        "procedure_writes": [
-          {
-            "is_this": true,
-            "line": 22,
-            "sequence": 0,
-            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
-            "unconditional": true
-          },
-          {
-            "is_this": false,
-            "line": 24,
-            "sequence": 1,
-            "statement": "2'b01: muxed = a;",
-            "unconditional": false
-          },
-          {
-            "is_this": false,
-            "line": 25,
-            "sequence": 2,
-            "statement": "2'b10: muxed = b;",
-            "unconditional": false
-          }
-        ],
+        "procedure": 0,
         "raw_kind": "always_comb",
         "scope": "top",
         "sequence": 0,
@@ -98,29 +76,7 @@ $ rtlscanner trace top.muxed --json design.db
         ],
         "kind": "procedural",
         "line": 24,
-        "procedure_writes": [
-          {
-            "is_this": false,
-            "line": 22,
-            "sequence": 0,
-            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
-            "unconditional": true
-          },
-          {
-            "is_this": true,
-            "line": 24,
-            "sequence": 1,
-            "statement": "2'b01: muxed = a;",
-            "unconditional": false
-          },
-          {
-            "is_this": false,
-            "line": 25,
-            "sequence": 2,
-            "statement": "2'b10: muxed = b;",
-            "unconditional": false
-          }
-        ],
+        "procedure": 0,
         "raw_kind": "always_comb",
         "scope": "top",
         "sequence": 1,
@@ -172,29 +128,7 @@ $ rtlscanner trace top.muxed --json design.db
         ],
         "kind": "procedural",
         "line": 25,
-        "procedure_writes": [
-          {
-            "is_this": false,
-            "line": 22,
-            "sequence": 0,
-            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
-            "unconditional": true
-          },
-          {
-            "is_this": false,
-            "line": 24,
-            "sequence": 1,
-            "statement": "2'b01: muxed = a;",
-            "unconditional": false
-          },
-          {
-            "is_this": true,
-            "line": 25,
-            "sequence": 2,
-            "statement": "2'b10: muxed = b;",
-            "unconditional": false
-          }
-        ],
+        "procedure": 0,
         "raw_kind": "always_comb",
         "scope": "top",
         "sequence": 2,
@@ -208,6 +142,37 @@ $ rtlscanner trace top.muxed --json design.db
           "proc_kind": "always_comb"
         },
         "unreachable": false
+      }
+    ],
+    "procedures": [
+      {
+        "proc_kind": "always_comb",
+        "writes": [
+          {
+            "bits": null,
+            "call_chain": [],
+            "line": 22,
+            "sequence": 0,
+            "statement": "muxed = 8'hFF;                 // a default the arms below overwrite",
+            "unconditional": true
+          },
+          {
+            "bits": null,
+            "call_chain": [],
+            "line": 24,
+            "sequence": 1,
+            "statement": "2'b01: muxed = a;",
+            "unconditional": false
+          },
+          {
+            "bits": null,
+            "call_chain": [],
+            "line": 25,
+            "sequence": 2,
+            "statement": "2'b10: muxed = b;",
+            "unconditional": false
+          }
+        ]
       }
     ],
     "signal": "top.muxed",

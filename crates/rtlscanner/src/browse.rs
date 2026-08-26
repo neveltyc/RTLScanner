@@ -14,6 +14,9 @@ use crate::envelope::CommandResult;
 /// One level of the elaborated tree, as a caller sees it.
 pub struct Level {
     path: String,
+    /// The segment's own name. Kept rather than cut off the path: an escaped
+    /// identifier may contain the separator, so a path does not split back.
+    name: String,
     /// `root | instance | generate | primitive | unresolved | package`. A trace
     /// that ends at an `unresolved` level ended at a black box, which is a
     /// different fact from ending at a signal nothing drives.
@@ -32,6 +35,9 @@ pub struct Tree {
     root: String,
     max_depth: Option<u32>,
     levels: Vec<Level>,
+    /// Whether the depth bound cut the walk short — there is more below what
+    /// is shown, and `--depth 0` reaches it.
+    deeper: bool,
     limit: usize,
 }
 
@@ -59,6 +65,9 @@ impl CommandResult for Tree {
             "levels": self.levels.len(),
             "shown": self.shown().len(),
             "truncated": self.levels.len() > self.limit,
+            // A separate fact from the output being clipped: what is below the
+            // depth bound was never walked, so no limit reaches it.
+            "depth_truncated": self.deeper,
             "limit": if self.limit == usize::MAX { 0 } else { self.limit },
         });
         (data, summary)
@@ -67,7 +76,7 @@ impl CommandResult for Tree {
     fn render_human(&self) -> String {
         let mut out = String::new();
         for level in self.shown() {
-            let name = level.path.rsplit('.').next().unwrap_or(&level.path);
+            let name = &level.name;
             let what = match (&level.module, level.kind.as_str()) {
                 (Some(m), _) => m.clone(),
                 (None, kind) => format!("({kind})"),
@@ -89,6 +98,12 @@ impl CommandResult for Tree {
                 self.levels.len()
             ));
         }
+        if self.deeper {
+            out.push_str(&format!(
+                "\nstopped at depth {}; --depth 0 for all\n",
+                self.max_depth.unwrap_or(0)
+            ));
+        }
         out
     }
 }
@@ -106,33 +121,43 @@ pub fn tree(
     limit: Option<i64>,
 ) -> Result<Tree, String> {
     let c = db.conn();
+    let Some(top) = schema::node(c, root)? else {
+        return Err(format!("no tree level with id {root}"));
+    };
     let mut levels = Vec::new();
+    let mut deeper = false;
     // Reversed on push so siblings come off in name order.
-    let mut stack = vec![(root, root_path.to_string(), 0u32)];
+    let mut stack = vec![(top, root_path.to_string(), 0u32)];
 
-    while let Some((node, path, depth)) = stack.pop() {
-        let Some(row) = schema::node(c, node)? else { continue };
-        let children = schema::children_of(c, node)?;
+    while let Some((row, path, depth)) = stack.pop() {
+        let children = schema::children_of(c, row.node_id)?;
         levels.push(Level {
             path: path.clone(),
+            name: row.node_name.clone(),
             kind: row.node_kind.clone(),
             module: row.module_name.clone().or(row.def_name.clone()),
             depth,
-            nets: match row.inst_id {
-                Some(inst) => schema::net_count(c, inst)?,
-                None => 0,
-            },
+            nets: schema::net_count(c, row.node_id)?,
             children: children.len(),
         });
         if max_depth.is_some_and(|max| depth >= max) {
+            // Stopping short is part of the answer: an answer that looked
+            // whole and was not is the one a caller cannot check.
+            deeper |= !children.is_empty();
             continue;
         }
         for child in children.into_iter().rev() {
             let below = format!("{path}.{}", child.node_name);
-            stack.push((child.node_id, below, depth + 1));
+            stack.push((child, below, depth + 1));
         }
     }
-    Ok(Tree { root: root_path.to_string(), max_depth, levels, limit: resolve_limit(limit) })
+    Ok(Tree {
+        root: root_path.to_string(),
+        max_depth,
+        levels,
+        deeper,
+        limit: resolve_limit(limit),
+    })
 }
 
 /// What a name search turned up.
@@ -141,8 +166,13 @@ pub struct Found {
     kind: Kind,
     hits: Vec<Hit>,
     /// Whether the query itself stopped early, which is a different fact from
-    /// the answer being clipped: what is beyond was never looked at.
+    /// the answer being clipped: what is beyond was never looked at, so no
+    /// limit reaches it.
     capped: bool,
+    /// Matches that lie under another top than the one chosen. They are real
+    /// and they are not addressable from here, so they are set aside and
+    /// counted rather than silently dropped.
+    outside_root: usize,
     limit: usize,
 }
 
@@ -188,6 +218,7 @@ impl CommandResult for Found {
             // The search stopped before the design ran out, so there may be
             // matches nobody has looked for yet.
             "capped": self.capped,
+            "outside_root": self.outside_root,
             "limit": if self.limit == usize::MAX { 0 } else { self.limit },
         });
         (data, summary)
@@ -196,9 +227,19 @@ impl CommandResult for Found {
     fn render_human(&self) -> String {
         let shown = &self.hits[..self.hits.len().min(self.limit)];
         let mut out = String::new();
+        if shown.is_empty() {
+            out.push_str(&format!("no {} matches '{}'\n", self.kind.tag(), self.pattern));
+        }
         for hit in shown {
+            // What a hit is, where that is not the kind asked for: a black box
+            // and a module read alike otherwise, and a trace ending in one is
+            // a different fact from ending in the other.
+            let what = match self.kind {
+                Kind::Net => String::new(),
+                _ => format!("  ({})", hit.what),
+            };
             out.push_str(&format!(
-                "  {}{}\n",
+                "  {}{what}{}\n",
                 hit.path,
                 hit.detail.as_deref().map(|d| format!("  {d}")).unwrap_or_default()
             ));
@@ -211,7 +252,16 @@ impl CommandResult for Found {
             ));
         }
         if self.capped {
-            out.push_str("note: the search stopped early; narrow the pattern to see the rest\n");
+            out.push_str(&format!(
+                "note: the search stopped after {SEARCH_CAP} matches; narrow the pattern \
+                 to see the rest\n"
+            ));
+        }
+        if self.outside_root > 0 {
+            out.push_str(&format!(
+                "note: {} match(es) lie under another top; --top names it\n",
+                self.outside_root
+            ));
         }
         out
     }
@@ -232,22 +282,29 @@ pub fn find(
     limit: Option<i64>,
 ) -> Result<Found, String> {
     let c = db.conn();
-    let hits = match kind {
+    let (hits, outside_root, capped) = match kind {
         Kind::Net => nets(c, anchor, pattern)?,
         Kind::Instance => instances(c, anchor, pattern)?,
-        Kind::Module => schema::modules_matching(c, pattern, SEARCH_CAP)?
-            .into_iter()
-            .map(|(name, def_kind, count)| Hit {
-                path: name,
-                what: def_kind,
-                detail: Some(format!("{count} occurrence(s)")),
-            })
-            .collect(),
+        Kind::Module => {
+            // A definition belongs to no top: it is the thing occurrences are
+            // made from, so none of them is out of scope.
+            let (rows, capped) = schema::modules_matching(c, pattern, SEARCH_CAP)?;
+            let hits = rows
+                .into_iter()
+                .map(|(name, def_kind, count)| Hit {
+                    path: name,
+                    what: def_kind,
+                    detail: Some(format!("{count} occurrence(s)")),
+                })
+                .collect();
+            (hits, 0, capped)
+        }
     };
     Ok(Found {
         pattern: pattern.to_string(),
         kind,
-        capped: hits.len() >= SEARCH_CAP,
+        capped,
+        outside_root,
         hits,
         limit: resolve_limit(limit),
     })
@@ -257,38 +314,60 @@ fn nets(
     c: &Connection,
     anchor: &designdb::resolve::Anchor,
     pattern: &str,
-) -> Result<Vec<Hit>, String> {
+) -> Result<(Vec<Hit>, usize, bool), String> {
+    let (rows, capped) = schema::nets_matching(c, pattern, SEARCH_CAP)?;
     let mut hits = Vec::new();
-    for row in schema::nets_matching(c, pattern, SEARCH_CAP)? {
-        let scope = crate::trace::instance_path(c, anchor, row.inst_id, '.')?;
+    let mut outside = 0;
+    for row in rows {
+        // A net under another top has a path, and not one that leads there
+        // from here. Offering it would break the property these two commands
+        // exist for: what `find` returns, the others accept.
+        let Some(scope) = scope_under(c, anchor, row.inst_id)? else {
+            outside += 1;
+            continue;
+        };
         hits.push(Hit {
             path: format!("{scope}.{}", row.net_name),
             what: "net".into(),
             detail: row.width.map(|w| format!("{} [{w} bit(s)]", row.decl_kind)),
         });
     }
-    Ok(hits)
+    Ok((hits, outside, capped))
+}
+
+/// The path of one instance under the chosen root, or `None` if it is not.
+fn scope_under(
+    c: &Connection,
+    anchor: &designdb::resolve::Anchor,
+    inst: i64,
+) -> Result<Option<String>, String> {
+    let Some(spine) = designdb::resolve::path_below_root(c, anchor.root, inst)? else {
+        return Ok(None);
+    };
+    let mut parts = vec![anchor.root_name.clone()];
+    parts.extend(spine);
+    Ok(Some(parts.join(".")))
 }
 
 fn instances(
     c: &Connection,
     anchor: &designdb::resolve::Anchor,
     pattern: &str,
-) -> Result<Vec<Hit>, String> {
+) -> Result<(Vec<Hit>, usize, bool), String> {
+    let (rows, capped) = schema::nodes_matching(c, pattern, SEARCH_CAP)?;
     let mut hits = Vec::new();
-    for row in schema::nodes_matching(c, pattern, SEARCH_CAP)? {
-        // A level below the chosen root belongs to another top, and naming it
-        // by a path that does not lead there would be worse than omitting it.
-        let Some(spine) = designdb::resolve::path_below_root(c, anchor.root, row.node_id)? else {
+    let mut outside = 0;
+    for row in rows {
+        // A level under another top is real and is not addressable from here.
+        let Some(path) = scope_under(c, anchor, row.node_id)? else {
+            outside += 1;
             continue;
         };
-        let mut parts = vec![anchor.root_name.clone()];
-        parts.extend(spine);
         hits.push(Hit {
-            path: parts.join("."),
+            path,
             what: row.node_kind.clone(),
             detail: row.module_name.clone().or(row.def_name.clone()),
         });
     }
-    Ok(hits)
+    Ok((hits, outside, capped))
 }

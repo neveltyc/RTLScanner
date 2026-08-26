@@ -28,7 +28,7 @@ $ rtlscanner trace top.packed_up --json design.db
         "gates": [],
         "kind": "continuous_assign",
         "line": 29,
-        "procedure_writes": [],
+        "procedure": null,
         "raw_kind": "assign",
         "scope": "top",
         "sequence": null,
@@ -52,7 +52,7 @@ $ rtlscanner trace top.packed_up --json design.db
         "gates": [],
         "kind": "continuous_assign",
         "line": 30,
-        "procedure_writes": [],
+        "procedure": null,
         "raw_kind": "assign",
         "scope": "top",
         "sequence": null,
@@ -65,6 +65,7 @@ $ rtlscanner trace top.packed_up --json design.db
         "unreachable": false
       }
     ],
+    "procedures": [],
     "signal": "top.packed_up",
     "status": "resolved",
     "width": 8

@@ -50,9 +50,16 @@ far the answer can be trusted.
 | What depends on it | `fanout <db> <path> …` | same |
 | Whether a route exists | `path <db> <from> <to> [--comb]` | `data.found`, `data.nodes[]` |
 
-Every command takes `--top <name>` where the design has several tops, and
-`--strip-prefix <scope>` to accept a path anchored at a testbench the design has
-never heard of.
+Every command except `info` takes `--top <name>` where the design has several
+tops, and `--strip-prefix <scope>` to accept a path anchored at a testbench the
+design has never heard of.
+
+`tree` shows three levels unless told otherwise; `summary.depth_truncated` says
+when that cut the walk short, and `--depth 0` reaches the rest. `find` stops
+after 5000 matches — `summary.capped` says so, and no `--limit` reaches past it;
+narrow the pattern instead. A net declared inside a generate block or a
+subroutine is named through it (`lane[0].sig`), so a bare name will not match
+one: try `*sig`.
 
 ## Working from a waveform finding
 
@@ -65,13 +72,18 @@ A waveform tool says *which signal, at what time, carrying what*. This says
    sits under and which arm of each, the events its procedure runs on, and the
    operands it reads.
 3. **Read `gates[]` against the values you have.** Each level says what it is
-   (`if`/`case`/`case_item`/`loop`), which arm (`sense`), which labels
-   (`labels`), and its priority among siblings (`ordinal`). With the values at
-   time T you can decide which arm ran — the tool will not decide it for you.
-4. **Read `procedure_writes[]` where it is present.** A procedure that assigns
-   the signal more than once lists all of them in execution order, marking the
-   one this hop is about and which are unconditional. A `y = '0` before a case
-   is a default the arms overwrite; later overwrites earlier.
+   (`if`/`case`/`case_item`/`case_default`/`loop`), which arm (`sense`), which
+   labels (`labels`), and its priority among siblings (`ordinal`). With the
+   values at time T you can decide which arm ran — the tool will not decide it
+   for you.
+4. **Read `data.procedures[]` where a procedure writes the signal more than
+   once.** Each entry lists its writes in execution order with the bits each
+   touches; a hop names its procedure by index (`hop.procedure`) and its own
+   place in it by `hop.sequence`. A `y = '0` before a case is a default the
+   arms overwrite — but *later overwrites earlier only where the two touch the
+   same bits*, and two writes to disjoint windows never meet. `unconditional`
+   means no condition gates that write; it does not by itself mean the write
+   held.
 5. **Follow `signals[]` into the next `trace`**, or ask `fanin` for the whole
    cone at once. Stop when `status` is `boundary_only` (the value comes from
    outside — the named signal is where to look next) or when a hop is
@@ -81,8 +93,9 @@ A waveform tool says *which signal, at what time, carrying what*. This says
 
 - `kind` — folded: `procedural`, `continuous_assign`, `port`, `constant`,
   `gate`, `alias`, `external`, `system_task`, `trigger`, `terminal`,
-  `sensitivity`, `control`, `call`, `other`. `raw_kind` is the database's own
-  word, which is finer and may be a word this list does not have.
+  `sensitivity`, `wait`, `statement`, `control`, `call`, `other`. `raw_kind` is
+  the database's own word, which is finer and may be a word this list does not
+  have.
 - `statement` and `source` — the quoted line, and whether it can be trusted.
   `source: "stale"` means the file has changed since the export: the line
   number is real, the text at it is not, and nothing is quoted.
@@ -126,7 +139,7 @@ A waveform tool says *which signal, at what time, carrying what*. This says
 | Code | What to do |
 |---|---|
 | `SIGNAL_NOT_FOUND` / `SCOPE_NOT_FOUND` | `details` has `close_matches`, `valid_prefix` and what is at that level. The next call is a correction, not a search. |
-| `BAD_SELECT` | An aggregate has no single declared range to select from. Trace the whole object. |
+| `BAD_SELECT` | Either an aggregate with no single declared range to select from — trace the whole object — or two options that ask for different things. The message says which. |
 | `NO_TOP` | Several tops; the message lists them. Pass `--top`. |
 | `DB_UNREADABLE` | Wrong schema version or not a database. Re-export with a matching `rtl-designdb`. |
 

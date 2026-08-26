@@ -267,7 +267,17 @@ fn traced(args: &TraceArgs) -> Result<(trace::Trace, Vec<Diagnostic>), CommandEr
         .map_err(|e| CommandError::new(ErrorCode::SignalNotFound, e))?
     {
         Ok(found) => found,
-        Err(u) => return Err(not_found(&args.signal, &u)),
+        Err(u) => {
+            let mut prefix = vec![anchor.root_name.clone()];
+            prefix.extend(u.valid_prefix.iter().cloned());
+            return Err(not_found(
+                ErrorCode::SignalNotFound,
+                &args.signal,
+                &prefix.join("."),
+                &u.failing_segment,
+                &u.candidates,
+            ));
+        }
     };
 
     // The declared range is what turns `[7:4]` into offsets. Without one there
@@ -341,29 +351,39 @@ fn open(path: &PathBuf) -> Result<Db, CommandError> {
     })
 }
 
+/// How many names an error offers. A level of a large design has thousands,
+/// and an agent that mistyped one should not be handed the whole design to
+/// read back.
+const SHOWN: usize = 20;
+
 /// A name that did not resolve, with what is at the level it stopped in.
 ///
 /// The details are the correction: the next call is a fix rather than a search,
 /// which is the difference between an agent recovering and an agent guessing.
-fn not_found(asked: &str, u: &resolve::Unresolved) -> CommandError {
-    const SHOWN: usize = 20;
-    let close = resolve::close_matches(&u.failing_segment, &u.candidates, 5);
+/// Every command spells them the same way — `valid_prefix` a path, `available`
+/// what is at it — or a caller would need one parser per error code.
+fn not_found(code: ErrorCode, asked: &str, prefix: &str, missing: &str, here: &[String]) -> CommandError {
+    let close = resolve::close_matches(missing, here, 5);
     let hint = if close.is_empty() {
         String::new()
     } else {
         format!("; did you mean: {}", close.join(", "))
     };
+    let what = match code {
+        ErrorCode::ScopeNotFound => "a scope",
+        _ => "a signal",
+    };
     CommandError::new(
-        ErrorCode::SignalNotFound,
-        format!("'{asked}' does not name a signal: '{}' is not there{hint}", u.failing_segment),
+        code,
+        format!("'{asked}' does not name {what}: '{missing}' is not there{hint}"),
     )
     .with_details(json!({
-        "signal": asked,
-        "valid_prefix": u.valid_prefix,
-        "failing_segment": u.failing_segment,
+        "asked": asked,
+        "valid_prefix": prefix,
+        "failing_segment": missing,
         "close_matches": close,
-        "available": u.candidates.iter().take(SHOWN).collect::<Vec<_>>(),
-        "available_truncated": u.candidates.len() > SHOWN,
+        "available": here.iter().take(SHOWN).collect::<Vec<_>>(),
+        "available_truncated": here.len() > SHOWN,
     }))
 }
 
@@ -407,7 +427,17 @@ fn signal_of(
         .map_err(|e| CommandError::new(ErrorCode::SignalNotFound, e))?
     {
         Ok(found) => found,
-        Err(u) => return Err(not_found(spelled, &u)),
+        Err(u) => {
+            let mut prefix = vec![anchor.root_name.clone()];
+            prefix.extend(u.valid_prefix.iter().cloned());
+            return Err(not_found(
+                ErrorCode::SignalNotFound,
+                spelled,
+                &prefix.join("."),
+                &u.failing_segment,
+                &u.candidates,
+            ));
+        }
     };
     let window = match select {
         None => None,
@@ -580,18 +610,13 @@ fn scope_node(
                     .into_iter()
                     .map(|n| n.node_name)
                     .collect();
-                let close = resolve::close_matches(segment, &here, 5);
-                return Err(CommandError::new(
+                return Err(not_found(
                     ErrorCode::ScopeNotFound,
-                    format!("'{scope}' does not name a scope: '{segment}' is not there"),
-                )
-                .with_details(json!({
-                    "scope": scope,
-                    "valid_prefix": walked.join("."),
-                    "failing_segment": segment,
-                    "close_matches": close,
-                    "children": here,
-                })));
+                    scope,
+                    &walked.join("."),
+                    segment,
+                    &here,
+                ));
             }
         }
     }

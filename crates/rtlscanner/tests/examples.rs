@@ -31,6 +31,28 @@ fn examples_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
+/// Every worked answer is at least a well-formed envelope.
+///
+/// Checked without an exporter, so a run that cannot regenerate them still says
+/// something about them: the drift check below is the only thing standing
+/// between these files and silent staleness, and it skips where no exporter is
+/// around. A test that does nothing and reports ok is what let the
+/// predecessor's examples fall three versions behind.
+#[test]
+fn the_worked_answers_are_envelopes() {
+    const KEYS: [&str; 8] =
+        ["command", "data", "diagnostics", "errors", "status", "summary", "tool", "version"];
+    for (name, _) in QUESTIONS {
+        let path = examples_dir().join(format!("{name}.json"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}"));
+        let body = text.split_once("\n\n").expect("a command line, then its answer").1;
+        let v: serde_json::Value =
+            serde_json::from_str(body).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(v.as_object().unwrap().keys().collect::<Vec<_>>(), KEYS, "{name}");
+        assert_eq!(v["status"], "ok", "{name}");
+    }
+}
+
 #[test]
 fn the_worked_answers_are_what_the_tool_answers() {
     let Some(exporter) = exporter("the_worked_answers") else { return };
@@ -52,7 +74,8 @@ fn the_worked_answers_are_what_the_tool_answers() {
         .expect("running rtl-designdb");
     assert!(out.status.success(), "export failed: {}", String::from_utf8_lossy(&out.stderr));
 
-    let writing = std::env::var("RTLSCANNER_WRITE_EXAMPLES").is_ok();
+    // Spelled as the other switches are: set to anything but `0`.
+    let writing = std::env::var("RTLSCANNER_WRITE_EXAMPLES").is_ok_and(|v| v != "0");
     let mut stale = Vec::new();
 
     for (name, argv) in QUESTIONS {
@@ -84,6 +107,8 @@ fn the_worked_answers_are_what_the_tool_answers() {
     assert!(
         stale.is_empty(),
         "these worked answers no longer match what the tool answers: {stale:?}\n\
-         If the change was meant, run `make examples`."
+         If the change was meant, run `make examples`. If RTL_DESIGNDB points at \
+         a different build of the exporter, the difference may be its identity \
+         rather than this tool's behaviour."
     );
 }

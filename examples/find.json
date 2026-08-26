@@ -29,6 +29,7 @@ $ rtlscanner find *ed --json design.db
     "capped": false,
     "hits": 1,
     "limit": 200,
+    "outside_root": 0,
     "shown": 1,
     "truncated": false
   },

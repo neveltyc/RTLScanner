@@ -41,7 +41,7 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
         ],
         "kind": "procedural",
         "line": 12,
-        "procedure_writes": [],
+        "procedure": null,
         "raw_kind": "always_ff",
         "scope": "top.u_core",
         "sequence": 0,
@@ -62,6 +62,7 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
         "unreachable": false
       }
     ],
+    "procedures": [],
     "signal": "top.u_core.sum",
     "status": "resolved",
     "width": 8

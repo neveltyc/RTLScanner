@@ -186,24 +186,31 @@ fn a_procedure_that_writes_a_signal_more_than_once_says_in_what_order() {
     let hops = v["data"]["hops"].as_array().unwrap();
     assert_eq!(hops.len(), 3, "a default and two arms");
 
+    // Which assignment held is a fact about the procedure, not about the one
+    // statement being looked at, so it is stated once. Repeating it on every
+    // hop would square a wide case: three hundred arms, three hundred lists.
+    let procedures = v["data"]["procedures"].as_array().unwrap();
+    assert_eq!(procedures.len(), 1);
+    assert_eq!(procedures[0]["proc_kind"], "always_comb");
+    let writes = procedures[0]["writes"].as_array().unwrap();
+    assert_eq!(writes.len(), 3, "{writes:?}");
+
+    // In execution order.
+    let order: Vec<i64> = writes.iter().map(|w| w["sequence"].as_i64().unwrap()).collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
+
+    // The default is the one nothing gates. That it comes first and is ungated
+    // is what says the arms overwrite it — the reader draws that conclusion;
+    // the answer supplies the order, the conditions and the bits.
+    assert_eq!(writes[0]["unconditional"], true);
+    assert_eq!(writes[1]["unconditional"], false);
+    assert_eq!(writes[2]["unconditional"], false);
+
+    // A hop names its procedure, and its own place in it by `sequence`.
     for hop in hops {
-        // Every hop carries the same list: which assignment held is a fact
-        // about the procedure, not about the one statement being looked at.
-        let writes = hop["procedure_writes"].as_array().unwrap();
-        assert_eq!(writes.len(), 3, "{writes:?}");
-
-        // In execution order, and exactly one of them is the hop's own.
-        let order: Vec<i64> =
-            writes.iter().map(|w| w["sequence"].as_i64().unwrap()).collect();
-        assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
-        assert_eq!(writes.iter().filter(|w| w["is_this"] == true).count(), 1);
-
-        // The default is the one nothing gates. That it comes first and is
-        // unconditional is what says the arms overwrite it — the reader draws
-        // that conclusion; the answer supplies the order and the conditions.
-        assert_eq!(writes[0]["unconditional"], true);
-        assert_eq!(writes[1]["unconditional"], false);
-        assert_eq!(writes[2]["unconditional"], false);
+        assert_eq!(hop["procedure"], 0);
+        let mine = hop["sequence"].as_i64().unwrap();
+        assert!(order.contains(&mine), "{mine} is one of {order:?}");
     }
 }
 
@@ -214,9 +221,9 @@ fn a_single_write_needs_no_ordering() {
 
     // One assignment is the statement already reported; listing it again as
     // "the order it ran in" would say nothing.
-    let hop = &v["data"]["hops"][0];
-    assert_eq!(hop["procedure_writes"].as_array().unwrap().len(), 0);
-    assert_eq!(hop["kind"], "procedural");
+    assert_eq!(v["data"]["procedures"].as_array().unwrap().len(), 0);
+    assert_eq!(v["data"]["hops"][0]["kind"], "procedural");
+    assert!(v["data"]["hops"][0]["procedure"].is_null());
 }
 
 #[test]
@@ -264,4 +271,56 @@ fn a_cold_start_reaches_a_driver_without_knowing_a_name_first() {
     let (cone, code) = json_of(&["fanin", "--json", db, feeds, "--depth", "0", "--limit", "0"]);
     assert_eq!(code, 0, "what a trace names, a cone accepts: {cone}");
     assert!(cone["summary"]["edges"].as_u64().unwrap() > 0);
+}
+
+#[test]
+fn two_writes_to_disjoint_windows_do_not_overwrite_one_another() {
+    const SLICED: &str = r#"
+module sliced(input logic [7:0] a, b, output logic [7:0] y);
+  always_comb begin
+    y[7:4] = a[3:0];
+    y[3:0] = b[7:4];
+  end
+endmodule
+"#;
+    let Some(fx) = exported("sliced", SLICED, "two_writes_to_disjoint_windows") else { return };
+    let (v, _) = json_of(&["trace", "--json", fx.db.to_str().unwrap(), "sliced.y"]);
+
+    let writes = v["data"]["procedures"][0]["writes"].as_array().unwrap();
+    assert_eq!(writes.len(), 2);
+
+    // Both are ungated, and a reader told only that would conclude the second
+    // overwrites the first. The bits are what says otherwise: they never meet.
+    assert!(writes.iter().all(|w| w["unconditional"] == true));
+    let windows: Vec<&str> = writes.iter().map(|w| w["bits"].as_str().unwrap()).collect();
+    assert_eq!(windows, ["[7:4]", "[3:0]"]);
+}
+
+#[test]
+fn a_write_that_leaves_the_instance_is_still_one_of_the_procedure_s() {
+    const OUTWARD: &str = r#"
+module sink(input logic clk, output logic n);
+  always_ff @(posedge clk) n <= 1'b0;
+endmodule
+
+module outward(input logic clk, s, a, b, output logic o);
+  sink u_sink (.clk(clk), .n());
+  always_comb begin
+    u_sink.n = a;             // written by name, from outside the instance
+    if (s) u_sink.n = b;
+  end
+  assign o = u_sink.n;
+endmodule
+"#;
+    let Some(fx) = exported("outward", OUTWARD, "a_write_that_leaves_the_instance") else {
+        return;
+    };
+    let (v, _) = json_of(&["trace", "--json", fx.db.to_str().unwrap(), "outward.u_sink.n"]);
+
+    // Such a write is a `hier_ref`, not a statement target, and asking only for
+    // targets reported a procedure that writes the signal twice as writing it
+    // never — while the hops beside it said otherwise.
+    let procedures = v["data"]["procedures"].as_array().unwrap();
+    assert_eq!(procedures.len(), 1, "the always_comb writes it twice: {procedures:?}");
+    assert_eq!(procedures[0]["writes"].as_array().unwrap().len(), 2);
 }
