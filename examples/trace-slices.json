@@ -81,5 +81,5 @@ $ rtlscanner trace top.packed_up --json design.db
     "structural_hops": 2
   },
   "tool": "rtlscanner",
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

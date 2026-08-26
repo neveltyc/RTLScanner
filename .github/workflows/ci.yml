@@ -12,9 +12,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# The build and the static checks only. The test suite — `make test`, and
+# `make test-cores` with the exporter and the pinned cores — is run locally;
+# crates/rtlscanner/tests/real_cores.rs names the corpus and its pins.
 jobs:
-  check:
-    name: check
+  build:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -29,89 +32,8 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: cargo-check-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-check-
+          key: cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-build-
 
+      - run: make build
       - run: make check
-
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 500M
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      # The exporter is what turns RTL into the databases the tests read, so
-      # the suite cannot cover its own subject without one. It is built here
-      # rather than downloaded because the kit has no release to download yet.
-      - name: Install build tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ninja-build ccache
-
-      - name: Read the exporter's pin
-        id: pin
-        run: echo "sha=$(git rev-parse HEAD:extern/RTLDebugDBKit)" >> "$GITHUB_OUTPUT"
-
-      # slang is a large dependency of the exporter and its pin is exact, so
-      # the key is the submodule commit: the cache is reused until the pin
-      # moves. The CPM cache holds slang's source; ccache holds its objects,
-      # which is where the time goes.
-      - name: Cache the exporter's dependency sources
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/CPM
-          key: cpm-${{ steps.pin.outputs.sha }}
-          restore-keys: cpm-
-
-      - name: Cache the exporter's objects
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/.ccache
-          key: ccache-${{ steps.pin.outputs.sha }}-${{ github.run_id }}
-          restore-keys: ccache-${{ steps.pin.outputs.sha }}-
-
-      - name: Build the exporter
-        run: |
-          cmake -S extern/RTLDebugDBKit -B extern/RTLDebugDBKit/build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCPM_SOURCE_CACHE="$HOME/.cache/CPM" \
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-          cmake --build extern/RTLDebugDBKit/build -j"$(nproc)"
-
-      # Two processors nobody wrote for this tool. Pinned, because a corpus
-      # that moves turns an invariant failure into a question about which
-      # commit it was. Shallow at the pin: the tests read the RTL, not the
-      # history.
-      - name: Fetch the real cores
-        run: |
-          fetch() {
-            mkdir -p "cores/$1"
-            git -C "cores/$1" init -q
-            git -C "cores/$1" remote add origin "$2"
-            git -C "cores/$1" fetch -q --depth 1 origin "$3"
-            git -C "cores/$1" checkout -q FETCH_HEAD
-          }
-          fetch picorv32 https://github.com/YosysHQ/picorv32.git \
-            87c89acc18994c8cf9a2311e871818e87d304568
-          fetch tinyriscv https://github.com/liangkangnan/tinyriscv.git \
-            7cb8c8aa0676a27bacb574a80ac20a3c4508c939
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-            target
-          key: cargo-test-${{ hashFiles('Cargo.lock') }}
-          restore-keys: cargo-test-
-
-      # Both resources present and both made mandatory: a run meant to cover
-      # the exporter and the cores must not pass by skipping them.
-      - run: make test-cores CORES=cores

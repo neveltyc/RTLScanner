@@ -7,28 +7,25 @@ based on [Keep a Changelog](https://keepachangelog.com/); this project uses
 This record starts at 1.0.0, the first release of the Rust rewrite. What came
 before it was a Python program, archived at `v0.1.0` through `v0.5.0`.
 
-## [Unreleased]
+## [1.0.1] — 2026-08-27
 
-Hardening. The suite gets a CI that runs it, two processors nobody wrote for
-this tool to run the invariants over, and one comparison against the engine
-this one replaced — asked once, to establish that the rewrite kept every answer
-the predecessor gave.
+Hardening. The suite gets two processors nobody wrote for this tool to run the
+invariants over, one comparison against the engine this one replaced — asked
+once, to establish that the rewrite kept every answer the predecessor gave —
+and a CI that builds and lints every push. And the tool gets a `--help`.
 
 ### Added
-- **Continuous integration** (`.github/workflows/ci.yml`). There was none: the
-  tests that go through the exporter skip without one, `make test` is the run
-  that lets them, and nothing was running the run that does not. The workflow
-  builds `rtl-designdb` from the pinned submodule — the kit has no release to
-  download yet — caching slang's source and objects against that pin, then runs
-  `make check` and `make test-cores`.
+- **Continuous integration** (`.github/workflows/ci.yml`): the build and
+  `make check`, on every push to main and every pull request. The test suite
+  is not in it yet, and is run locally.
 - **`make test-cores CORES=<dir>`**, the strictest run: the whole suite with
   both the exporter and a corpus of real processors made mandatory. It adds the
-  invariants over picorv32 and tinyriscv — fetched shallow at pinned commits
-  rather than vendored — with no expected values anywhere: fan-in against
-  fan-out, a bounded cone inside an unbounded one, a full-width window against
-  no window, one hop against a trace, a clipped answer's counts against the
-  whole. The fixtures cover what those cannot reach, which is a defect two
-  walks share.
+  invariants over picorv32 and tinyriscv — checkouts at the commits pinned in
+  the test's own header, not vendored — with no expected values anywhere:
+  fan-in against fan-out, a bounded cone inside an unbounded one, a full-width
+  window against no window, one hop against a trace, a clipped answer's counts
+  against the whole. The fixtures cover what those cannot reach, which is a
+  defect two walks share.
 - **A path may name a modport view.** `b.mst.vld`, `b.vld` and `u_p.p.vld` are
   one net; all resolve, and the answer gives the net's own path. The database
   records no modport declaration, so this rests on the `modport` a port taking

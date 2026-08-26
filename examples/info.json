@@ -47,5 +47,5 @@ $ rtlscanner info --json design.db
     "sources_stale": 0
   },
   "tool": "rtlscanner",
-  "version": "1.0.0"
+  "version": "1.0.1"
 }

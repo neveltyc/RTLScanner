@@ -13,11 +13,17 @@
 //! small enough to state the expected answer.
 //!
 //! The RTL is not vendored: `RTLSCANNER_CORES` names a directory holding the
-//! checkouts, one subdirectory per core. Without it these say so and skip;
-//! `RTLSCANNER_REQUIRE_CORES=1` turns that skip into a failure, which is what
-//! `make test-cores` and CI set. The upstreams and the commits they are pinned
-//! to are in `.github/workflows/ci.yml`, which is what fetches them — naming
-//! them here as well would be two places to keep agreeing.
+//! checkouts, one subdirectory per core, at these commits — pinned, because a
+//! corpus that moves turns an invariant failure into a question about which
+//! commit it was:
+//!
+//! * `picorv32`  — https://github.com/YosysHQ/picorv32
+//!   at 87c89acc18994c8cf9a2311e871818e87d304568
+//! * `tinyriscv` — https://github.com/liangkangnan/tinyriscv
+//!   at 7cb8c8aa0676a27bacb574a80ac20a3c4508c939
+//!
+//! Without the directory these say so and skip; `RTLSCANNER_REQUIRE_CORES=1`
+//! turns that skip into a failure, which is what `make test-cores` sets.
 
 mod common;
 

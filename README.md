@@ -109,8 +109,9 @@ says which command answers which question and how to read what comes back.
 they need no exporter; the few that must see what the current producer writes
 skip without one, and `make test-exporter` builds it and makes them mandatory.
 `make test-cores CORES=<dir>` adds the invariants over real processors — two
-checkouts under that directory, which CI fetches at pinned commits — and makes
-those mandatory too; it is the run CI does.
+checkouts under that directory, at the commits pinned in
+`crates/rtlscanner/tests/real_cores.rs` — and makes those mandatory too.
+CI builds and runs `make check`; the test runs are local, for now.
 
 `make check` runs clippy and rustfmt; `make sync-ddl` re-extracts the DDL the
 fixtures build from, and refuses to leave it disagreeing with the schema version
