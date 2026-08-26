@@ -12,6 +12,17 @@
 //! window against the whole object — so it holds of any design at all, and a
 //! failure is a defect rather than a design this test had not met.
 //!
+//! What that buys, and what it does not. A property comparing a walk to
+//! another walk is blind to a defect both walks share: a cone that lost every
+//! condition is still self-consistent, still monotone in depth, still dual.
+//! The load-bearing checks are the ones that put two *different commands*
+//! against each other — `first_hop_is_a_trace`, where a trace assembles its
+//! answer from the rows directly and a cone assembles it from the walk — and
+//! the one that asks the same question two ways, `containment`'s full-width
+//! window. Those are what a mutation has to survive; the rest bound how wrong
+//! an answer can be while staying coherent. The fixtures cover what neither
+//! reaches, on designs small enough to state the expected answer.
+//!
 //! The RTL is not vendored: `RTLSCANNER_CORES` names a directory holding the
 //! checkouts, one subdirectory per core. Without it these say so and skip;
 //! `RTLSCANNER_REQUIRE_CORES=1` turns that skip into a failure, which is what
@@ -68,6 +79,13 @@ fn sources_under(path: &std::path::Path, into: &mut Vec<PathBuf>) {
 /// the whole list beats a prefix, which would be one module's worth.
 const SAMPLE: usize = 14;
 
+/// Multi-bit nets are sampled apart from the rest, because the invariant that
+/// needs them is the strongest one here and they are a minority: one stride
+/// over every net put five of them in front of the window check while five
+/// hundred went unasked, and a bit-select defect reintroduced on purpose
+/// survived it.
+const WIDE_SAMPLE: usize = 20;
+
 /// Export one core, or `None` where the corpus or the exporter is absent.
 fn exported(core: &Core, test: &str) -> Option<PathBuf> {
     let exporter = exporter(test)?;
@@ -115,14 +133,26 @@ fn ask(db: &Path, cmd: &str, args: &[&str]) -> Value {
     v
 }
 
-/// A cone as its edge set, which is what the invariants compare.
-fn arcs(v: &Value) -> Vec<(String, String)> {
+/// A cone as its edge set. An edge is its two ends, what kind of arc it is and
+/// which bits of each end it touches — the duality check compares all of it,
+/// since two walks agreeing on the pair of names while disagreeing about the
+/// arc between them is a disagreement.
+type Arc = (String, String, String, String, String);
+
+fn arcs(v: &Value) -> Vec<Arc> {
+    let text = |e: &Value, k: &str| e[k].as_str().unwrap_or("").to_string();
     v["data"]["edges"]
         .as_array()
         .unwrap()
         .iter()
         .map(|e| {
-            (e["source"].as_str().unwrap().to_string(), e["target"].as_str().unwrap().to_string())
+            (
+                text(e, "source"),
+                text(e, "target"),
+                text(e, "kind"),
+                text(e, "source_bits"),
+                text(e, "target_bits"),
+            )
         })
         .collect()
 }
@@ -133,15 +163,25 @@ fn cone(db: &Path, dir: &str, signal: &str) -> Value {
 }
 
 /// Every net of the design, with its width, in the design's own order.
+///
+/// A net whose type has no bits at all — an event, a string — carries no width
+/// and counts as one, which only decides whether the window check asks about
+/// it.
 fn nets(db: &Path) -> Vec<(String, u64)> {
-    ask(db, "find", &["*", "--limit", "0"])["data"]["hits"]
+    let found = ask(db, "find", &["*", "--limit", "0"]);
+    // `find` stops after its own cap and says so. Which nets went unasked is
+    // worth knowing when reading a green run.
+    if found["summary"]["capped"] == true {
+        eprintln!("NOTE: find capped at {} of this design's nets", found["summary"]["hits"]);
+    }
+    found["data"]["hits"]
         .as_array()
         .unwrap()
         .iter()
         .map(|h| {
-            let detail = h["detail"].as_str().unwrap();
-            let width = detail
-                .split_once('[')
+            let width = h["detail"]
+                .as_str()
+                .and_then(|d| d.split_once('['))
                 .and_then(|(_, r)| r.split_once(' '))
                 .and_then(|(n, _)| n.parse().ok())
                 .unwrap_or(1);
@@ -150,12 +190,16 @@ fn nets(db: &Path) -> Vec<(String, u64)> {
         .collect()
 }
 
-/// `SAMPLE` nets spread over the design.
-fn sampled(db: &Path) -> Vec<(String, u64)> {
-    let all = nets(db);
-    assert!(all.len() > SAMPLE, "a core has more nets than the sample");
-    let stride = all.len() / SAMPLE;
-    all.into_iter().step_by(stride).take(SAMPLE).collect()
+/// `want` of `from`, spread evenly rather than taken off the front — a prefix
+/// would be one module's worth.
+fn spread(from: Vec<(String, u64)>, want: usize) -> Vec<(String, u64)> {
+    if from.len() <= want {
+        return from;
+    }
+    // Ceiling division, so the stride reaches the end of the list instead of
+    // running out partway and taking a prefix of it.
+    let stride = from.len().div_ceil(want);
+    from.into_iter().step_by(stride).collect()
 }
 
 /// Fan-in and fan-out read one relation. Asking both and comparing is the only
@@ -164,18 +208,19 @@ fn sampled(db: &Path) -> Vec<(String, u64)> {
 fn duality(db: &Path, signal: &str) {
     // The first hop only: a source's own fan-out is a separate walk, and the
     // point is made by the arcs that touch the net asked about.
-    for (src, tgt) in arcs(&ask(db, "fanin", &[signal, "--depth", "1", "--limit", "0"])) {
-        let out = arcs(&cone(db, "fanout", &src));
+    for arc in arcs(&ask(db, "fanin", &[signal, "--depth", "1", "--limit", "0"])) {
+        let out = arcs(&cone(db, "fanout", &arc.0));
         assert!(
-            out.contains(&(src.clone(), tgt.clone())),
-            "fan-in of {signal} has {src} -> {tgt}; fan-out of {src} does not"
+            out.contains(&arc),
+            "fan-in of {signal} has {arc:?}; fan-out of {} does not",
+            arc.0
         );
     }
 }
 
-/// A deeper walk keeps what a shallower one found, a combinational walk is
-/// part of the unbounded one, and a window is part of the whole object.
-fn containment(db: &Path, signal: &str, width: u64) {
+/// A deeper walk keeps what a shallower one found, and a combinational walk is
+/// part of the unbounded one.
+fn containment(db: &Path, signal: &str) {
     let shallow = arcs(&ask(db, "fanin", &[signal, "--depth", "2", "--limit", "0"]));
     let whole = arcs(&cone(db, "fanin", signal));
     for edge in &shallow {
@@ -188,13 +233,15 @@ fn containment(db: &Path, signal: &str, width: u64) {
         // does not, so every edge of it is an edge of the other.
         assert!(whole.contains(edge), "the unbounded cone of {signal} lacks {edge:?} from --comb");
     }
+}
 
-    if width < 2 {
-        return;
-    }
-    // A window covering every bit asks about the whole object. The cheapest
-    // invariant there is, and the one that caught a walk emitting an arc it
-    // never followed.
+/// A window covering every bit asks about the whole object.
+///
+/// The cheapest invariant there is, and the one that catches a walk that emits
+/// an arc without following it — which on tinyriscv was a fifth of the edges of
+/// a fifth of the wide nets, and looked like an answer.
+fn every_bit_is_the_whole(db: &Path, signal: &str, width: u64) {
+    let whole = arcs(&cone(db, "fanin", signal));
     let spelled = format!("{signal}[{}:0]", width - 1);
     let (v, code) = json_of(&[
         "fanin",
@@ -207,9 +254,14 @@ fn containment(db: &Path, signal: &str, width: u64) {
         "0",
     ]);
     if code != 0 {
-        // An aggregate has no one declared range to measure a select against,
-        // and says so. Any other refusal is not a thing this asked for.
+        // BAD_SELECT is the answer to two spellings this cannot make: an
+        // aggregate, which has no one declared range to measure against, and a
+        // net whose range does not start at zero, which `[w-1:0]` misspells.
+        // Both leave this net unchecked, so both are counted rather than
+        // passed over — a check that quietly does not run is one that reports
+        // ok for the wrong reason.
         assert_eq!(v["errors"][0]["code"], "BAD_SELECT", "{spelled}: {v}");
+        eprintln!("NOTE: {signal} has no zero-based declared range; window unchecked");
         return;
     }
     let every_bit = arcs(&v);
@@ -223,31 +275,46 @@ fn containment(db: &Path, signal: &str, width: u64) {
 
 /// One hop of a cone and a trace are the same question asked twice.
 ///
-/// `--no-control` because the two commands differ on what a condition is:
-/// a trace carries the conditions gating each statement in that statement's
-/// `gates`, so its `signals` are the values alone, while a cone makes them
-/// arcs of their own and has them on by default. The data half is the half
-/// both spell the same way.
+/// The one check here that is not a walk compared to itself: a trace assembles
+/// its answer from the rows a signal names, a cone assembles it from the walk,
+/// and a defect in the walk shows up as a disagreement rather than as a
+/// smaller answer that is still consistent with itself.
+///
+/// Asked twice over, because the two commands differ on what a condition is: a
+/// trace files the conditions gating a statement under that statement's
+/// `gates` unless `--control` is given, while a cone makes them arcs of their
+/// own and has them on by default. `--no-control` compares the data half;
+/// `--control` on both sides compares the whole, which is what notices a walk
+/// that stopped following conditions at all.
 fn first_hop_is_a_trace(db: &Path, signal: &str) {
-    let mut from_cone: Vec<String> =
-        arcs(&ask(db, "fanin", &[signal, "--depth", "1", "--limit", "0", "--no-control"]))
-            .into_iter()
-            .map(|(s, _)| s)
+    for (cone_args, trace_args) in [
+        (["--depth", "1", "--limit", "0", "--no-control"].as_slice(), [].as_slice()),
+        (["--depth", "1", "--limit", "0"].as_slice(), ["--control"].as_slice()),
+    ] {
+        let mut argv = vec![signal];
+        argv.extend(cone_args);
+        let mut from_cone: Vec<String> =
+            arcs(&ask(db, "fanin", &argv)).into_iter().map(|a| a.0).collect();
+        from_cone.sort();
+        from_cone.dedup();
+
+        let mut argv = vec![signal];
+        argv.extend(trace_args);
+        let mut from_trace: Vec<String> = ask(db, "trace", &argv)["data"]["hops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|h| h["signals"].as_array().unwrap())
+            .map(|s| s.as_str().unwrap().to_string())
             .collect();
-    from_cone.sort();
-    from_cone.dedup();
+        from_trace.sort();
+        from_trace.dedup();
 
-    let mut from_trace: Vec<String> = ask(db, "trace", &[signal])["data"]["hops"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .flat_map(|h| h["signals"].as_array().unwrap())
-        .map(|s| s.as_str().unwrap().to_string())
-        .collect();
-    from_trace.sort();
-    from_trace.dedup();
-
-    assert_eq!(from_cone, from_trace, "one hop of {signal}'s cone is its trace");
+        assert_eq!(
+            from_cone, from_trace,
+            "one hop of {signal}'s cone is its trace, asked with {trace_args:?}"
+        );
+    }
 }
 
 /// A clipped answer counts the whole cone and stays a graph.
@@ -268,7 +335,7 @@ fn clipping_is_honest(db: &Path, signal: &str) {
             .iter()
             .map(|n| n["path"].as_str().unwrap())
             .collect();
-        for (src, tgt) in arcs(answer) {
+        for (src, tgt, ..) in arcs(answer) {
             assert!(shown.contains(&src.as_str()), "{signal}: {src} is an endpoint and not a node");
             assert!(shown.contains(&tgt.as_str()), "{signal}: {tgt} is an endpoint and not a node");
         }
@@ -285,11 +352,18 @@ fn sweep(core: &Core, test: &str) {
     assert_eq!(info["data"]["schema_version"], 19);
     assert_eq!(info["data"]["top"], core.top);
 
-    for (signal, width) in sampled(&db) {
+    let all = nets(&db);
+    assert!(all.len() > SAMPLE, "a design with fewer nets than the sample is not a core");
+    for (signal, _) in spread(all.clone(), SAMPLE) {
         duality(&db, &signal);
-        containment(&db, &signal, width);
+        containment(&db, &signal);
         first_hop_is_a_trace(&db, &signal);
         clipping_is_honest(&db, &signal);
+    }
+    let wide: Vec<(String, u64)> = all.into_iter().filter(|(_, w)| *w > 1).collect();
+    assert!(!wide.is_empty(), "a core has multi-bit nets");
+    for (signal, width) in spread(wide, WIDE_SAMPLE) {
+        every_bit_is_the_whole(&db, &signal, width);
     }
 }
 

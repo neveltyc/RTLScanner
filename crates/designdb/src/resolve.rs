@@ -180,7 +180,7 @@ fn walk(
                 if !folded.is_empty() {
                     return Ok(None);
                 }
-                match detour(c, node, inst, first)? {
+                match detour(c, root, node, inst, first)? {
                     None => break,
                     Some(None) => return Ok(None),
                     Some(Some(next)) => {
@@ -231,13 +231,14 @@ fn walk(
 /// must take the same ones: a segment the walk crossed is not the segment that
 /// failed, and an error naming it sends the caller to correct the wrong word.
 ///
-/// `None` is no detour. `Some(None)` is one with nothing behind it — an
-/// interface array segment the export does not resolve per occurrence.
+/// `None` is no detour. `Some(None)` is one with nothing behind it — a
+/// synthesized interface shape the export could put no occurrence against.
 /// `Some(Some(node))` is where to carry on, which for a modport is the node
 /// already there: a modport views an interface's nets without holding any, so
 /// `b.mst.vld` and `b.vld` name one net and only the second is its name.
 fn detour(
     c: &rusqlite::Connection,
+    root: i64,
     node: i64,
     inst: i64,
     segment: &str,
@@ -245,7 +246,24 @@ fn detour(
     // An interface port is a scope in a path but a terminal in the database,
     // so a member reference through one goes to the interface it is bound to.
     if let Some(term) = schema::interface_terminal(c, inst, segment)? {
-        return Ok(Some(schema::iface_target(c, term.term_id)?.flatten()));
+        let bound = schema::iface_targets(c, term.term_id)?;
+        // An array port binds one interface per element. Which of them
+        // `q.vld` means is not in the path, and answering about the first
+        // would name `barr[0]`'s net under a name that does not say so.
+        if bound.len() > 1 {
+            let mut named: Vec<String> = Vec::new();
+            for target in bound.iter().flatten() {
+                if let Some(spine) = path_below_root(c, root, *target)? {
+                    named.push(spine.join("."));
+                }
+            }
+            return Err(err(format!(
+                "'{segment}' binds {} interfaces ({}); name the one you mean",
+                bound.len(),
+                named.join(", ")
+            )));
+        }
+        return Ok(Some(bound.into_iter().next().flatten()));
     }
     Ok(schema::names_modport(c, inst, segment)?.then_some(Some(node)))
 }
@@ -319,7 +337,7 @@ fn diagnose(
             // from one either.
             None => match inst {
                 None => None,
-                Some(at) => match detour(c, node, at, segment)? {
+                Some(at) => match detour(c, anchor.root, node, at, segment)? {
                     Some(Some(next)) => Some((next, Some(next))),
                     _ => None,
                 },

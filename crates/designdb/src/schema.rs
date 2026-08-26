@@ -430,23 +430,24 @@ pub fn names_modport(c: &Connection, inst: i64, name: &str) -> Result<bool, Stri
     .map_err(|e| q(e, "net_conn"))
 }
 
-/// The interface instance a terminal is bound to.
+/// The interfaces a terminal is bound to, in declaration order.
 ///
-/// Three outcomes, and the middle one matters: `None` is no interface binding,
-/// `Some(None)` is a binding with no per-occurrence instance behind it (an
-/// interface array segment the export does not resolve), and only
-/// `Some(Some(id))` is somewhere to continue.
-pub fn iface_target(c: &Connection, term_id: i64) -> Result<Option<Option<i64>>, String> {
-    c.query_row(
-        "SELECT outer_intf_inst_id FROM v_net_conn WHERE term_id = ?1 AND conn_kind = 'interface'",
-        [term_id],
-        |r| r.get::<_, Option<i64>>(0),
-    )
-    .map(Some)
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_net_conn")),
-    })
+/// Empty is no interface binding. `None` in a slot is a binding the export
+/// could put no occurrence against — a synthesized shape — and is not somewhere
+/// to continue. An ARRAY port has one slot per element, each naming the element
+/// that segment binds, so more than one answer here is a path that has not said
+/// which element it means.
+pub fn iface_targets(c: &Connection, term_id: i64) -> Result<Vec<Option<i64>>, String> {
+    let mut stmt = c
+        .prepare_cached(
+            "SELECT outer_intf_inst_id FROM v_net_conn \
+              WHERE term_id = ?1 AND conn_kind = 'interface' ORDER BY ordinal",
+        )
+        .map_err(|e| q(e, "v_net_conn"))?;
+    stmt.query_map([term_id], |r| r.get::<_, Option<i64>>(0))
+        .map_err(|e| q(e, "v_net_conn"))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| q(e, "v_net_conn"))
 }
 
 const STMT_COLS: &str = "stmt_id, inst_id, proc_id, sequence, stmt_kind, construct, \

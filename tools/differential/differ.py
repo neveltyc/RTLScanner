@@ -30,7 +30,7 @@ recorded decision rather than a regression.
 ## The direction, and why it is not symmetric
 
 A miss — an oracle fact this tool does not have — fails. An extra does not: the
-rewrite was undertaken to answer more, and §10 of the implementation plan lists
+rewrite was undertaken to answer more, and `README.md` beside this file lists
 what more. But an extra is not free either, since a walk that invents endpoints
 also produces extras: they are counted, and `--max-extra` pins the count, so a
 change that manufactures them shows up as a number that moved.
@@ -41,20 +41,28 @@ Four, each a rule rather than a list of blessed signals, and each a difference
 the rewrite meant to make:
 
 * `covers` — the oracle attributes a driver to the *construct* and this tool to
-  the *statement* inside it, so a line is covered by a line at or below it
-  within the same module. Comparing lines for equality would fail on every
-  procedure in the corpus while both name the same block.
+  the *statement* inside it, so a line is covered by a line at or below it,
+  bounded by the next location the oracle itself named and in any case by
+  `endmodule`. Comparing lines for equality would fail on every procedure in
+  the corpus while both name the same block; leaving it unbounded would let an
+  unrelated block further down stand in for the right one.
 * `port_crossing` — the oracle attributes an input port to the formal's
   declaration and says only that something outside drives it; this tool names
-  what is bound there, the parent's net or the constant tied to it, at the
-  instantiation.
+  what is bound there, at the instantiation. What is waived is which end to
+  point at, so the tool's answer must at least be a kind of thing that can
+  stand at one. WHICH net is on the other side the oracle never says, and the
+  cone comparison checks it without exemption.
 * `concatenated` — the oracle joins every operand of a concatenation to every
   target of one, and this tool follows the correspondence the database records.
   `{r1, r2} <= {d, r1}` is two assignments the oracle reports as four edges.
+  The operand must be inside the braces and in the same instance as the
+  target, or `assign y = {a, b} | c;` losing `c` would be forgiven.
 * `EXEMPT_UNASKABLE` — the oracle cannot be asked about a signal inside a
   generate block, by either spelling. Its own `find` lists them and its own
   cones reach them; only the question is unavailable. Those are counted, not
-  dropped, because a question with no oracle answer is not evidence either way.
+  dropped, because a question with no oracle answer is not evidence either way
+  — and only the two failures it is documented to have count, since waiving
+  every failure would let a timeout remove a whole family of questions.
 
 `test_differ.py` pins each from both sides: the shape it must classify, and the
 shape it must leave alone. A rule that waives too much turns a gate that proves
@@ -85,6 +93,14 @@ ORACLE_UNBOUNDED = 64
 PATH_SAMPLE = 6
 
 EXEMPT_UNASKABLE = "the oracle refuses the question"
+
+# What "refuses" means. The oracle cannot be asked about a signal inside a
+# generate block — its own `find` lists them and its own cones reach them, but
+# neither spelling of the path resolves — and it says so in one of two ways.
+# Any OTHER failure of the oracle is a failure to compare, not a difference to
+# waive: a timeout or an internal error on a family of questions would
+# otherwise remove that family from the gate and leave a number nothing pins.
+ORACLE_NOT_FOUND = re.compile(r"^(signal|scope) '[^']*' not found")
 EXEMPT_PORT_END = "a port's drive, named at what is connected rather than at the declaration"
 EXEMPT_CONCAT = "a concatenation's bit correspondence, which the oracle joins end to end"
 
@@ -220,17 +236,31 @@ def scanner_sites(answer):
     return {s for s in map(site, answer["data"]["hops"]) if s}
 
 
+# What can stand at an instantiation as an input port's drive. The parent's
+# net reached across the boundary, a constant tied to it, a reference the
+# export could not resolve, or the edge of the design.
+BOUND_AT_A_PORT = {"port", "constant", "external", "terminal"}
+
+
 def port_crossing(old, new):
     """Whether the two are naming one port's drive from opposite ends.
 
     The oracle attributes an input port to the formal's declaration inside the
     module and says only that something outside drives it. This tool names what
-    is actually bound there: the parent's net across a `port` hop, or the
-    constant tied to it, at the instantiation. Both answer the same question and
-    this tool answers it more exactly, so what is required is that it found a
-    driver at all — not that it agreed about which end to point at.
+    is actually bound there — the parent's net across a `port` hop, or the
+    constant tied to it — at the instantiation. Both answer the same question
+    and this tool answers it more exactly, so what is waived is *which end to
+    point at*, and what is required is a driver of a kind that can be at one.
+
+    WHICH net is on the other side is not waived and is not checked here: the
+    oracle's driver object does not name it, so this comparison has nothing to
+    check it against. It is checked, without exemption, by the cone comparison
+    — the oracle's `fanin` of that same port net carries the edge from the
+    parent's net, and a walk that named the wrong one loses it there.
     """
-    return old.get("source") == "input_port" and bool(new["data"]["hops"])
+    return old.get("source") == "input_port" and any(
+        h.get("kind") in BOUND_AT_A_PORT for h in new["data"]["hops"]
+    )
 
 
 def load_target(hop, scope):
@@ -257,25 +287,57 @@ def concatenated(edge, texts):
     losing an operand a miss, as it should be.
     """
     source, target = edge
-    name = source.rsplit(".", 1)[-1]
+    scope, name = source.rsplit(".", 1)[0], source.rsplit(".", 1)[-1]
+    # The two ends of a concatenation are named in one statement, so they are
+    # in one instance. Statement text carries local names, and a leaf alone
+    # would let `u1.a` answer for `u2.a`.
+    if scope != target.rsplit(".", 1)[0]:
+        return False
     return any(
-        "{" in text and re.search(rf"\b{re.escape(name)}\b", text)
+        any(re.search(rf"\b{re.escape(name)}\b", g) for g in braced(text))
         for text in texts(target)
     )
 
 
-def covers(wanted, have, spans):
+def braced(text):
+    """The contents of each top-level `{…}` in a statement, nesting flattened.
+
+    Only what is inside the braces: `assign y = {a, b} | c;` loses `c` to an
+    ordinary dropped operand, not to a correspondence this tool resolved, and
+    a rule keyed on the statement merely containing a brace would forgive it.
+    """
+    groups, depth, buf = [], 0, ""
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                groups.append(buf)
+                buf = ""
+        elif depth:
+            buf += ch
+    return groups
+
+
+def covers(wanted, have, spans, others=()):
     """Whether some location in `have` is the oracle's location `wanted`.
 
     The oracle names the construct that drives a signal — an `always_comb`
     header, an `assign` — and this tool names the statement inside it, which is
     the same code one level down and therefore at or below that line. So a line
-    covers a line above it, bounded by the end of the module: past `endmodule`
-    the two are talking about different code however few lines lie between.
+    covers a line above it.
+
+    Twice bounded, because "at or below" alone would let any later statement in
+    the module stand in for the right one. A construct ends where the next one
+    the oracle named for this signal begins, and in any case at `endmodule`.
+    `others` is the oracle's own locations for this signal and direction.
     """
     path, line = wanted
     _, last = enclosing(spans.get(path, []), line)
-    return any(f == path and line <= l <= last for f, l in have)
+    below = [l for f, l in others if f == path and l > line]
+    ceiling = min(below) - 1 if below else last
+    return any(f == path and line <= l <= ceiling for f, l in have)
 
 
 # ------------------------------------------------------------------ comparing
@@ -283,6 +345,10 @@ def covers(wanted, have, spans):
 class Report:
     def __init__(self):
         self.checked = 0
+        # Of those, the ones with an oracle fact to look for. A comparison
+        # against an empty answer is a question asked, not evidence gathered,
+        # and counting only the total would overstate what the run establishes.
+        self.substantive = 0
         self.misses = []
         self.exempt = Counter()
         # Kept, not just counted: a pinned count that moved is only actionable
@@ -292,11 +358,17 @@ class Report:
     def compare(self, what, wanted, have):
         """`have` must hold everything in `wanted`; extras are recorded."""
         self.checked += 1
+        self.substantive += bool(wanted)
         self.misses.extend((what, fact) for fact in sorted(wanted - have))
         self.extras.extend((what, fact) for fact in sorted(have - wanted))
 
-    def refused(self):
-        self.exempt[EXEMPT_UNASKABLE] += 1
+    def refused(self, error):
+        """The oracle did not answer. Only the failure it is documented to have
+        is a difference; anything else is the comparison not happening."""
+        if ORACLE_NOT_FOUND.match(error):
+            self.exempt[EXEMPT_UNASKABLE] += 1
+            return True
+        return False
 
 
 def signals_of(answer):
@@ -391,7 +463,8 @@ def check_design(args, design, report):
     for i, (_, argv, label) in enumerate(asked):
         old = oracle[i]
         if old.failed:
-            report.refused()
+            if not report.refused(old.get("error", "")):
+                report.misses.append((label, f"the oracle failed: {old.get('error')}"))
             continue
         # `--control` on a trace because the oracle counts a condition read as
         # a load and this tool files it under the statement's gates unless
@@ -405,6 +478,7 @@ def check_design(args, design, report):
 
         if argv[0] == "path":
             report.checked += 1
+            report.substantive += bool(old["data"]["found"])
             if old["data"]["found"] and not new["data"]["found"]:
                 report.misses.append((label, "a route the oracle found"))
         elif argv[0] == "trace":
@@ -414,9 +488,10 @@ def check_design(args, design, report):
                 have = scanner_sites(answer)
                 report.checked += 1
                 wanted = {s for s in map(site, hops) if s}
+                report.substantive += bool(wanted)
                 for hop in hops:
                     where = site(hop)
-                    if where and covers(where, have, spans):
+                    if where and covers(where, have, spans, wanted):
                         continue
                     written = load_target(hop, hop.get("scope_path", ""))
                     if port_crossing(hop, answer):
@@ -431,7 +506,7 @@ def check_design(args, design, report):
                 report.extras.extend(
                     (f"{label} [{direction}]", h)
                     for h in sorted(have)
-                    if not any(covers(w, {h}, spans) for w in wanted)
+                    if not any(covers(w, {h}, spans, wanted) for w in wanted)
                 )
         else:
             old_edges = cone_edges(old)
@@ -473,7 +548,10 @@ def main():
         check_design(args, design, report)
         print(f"{design.name:22} {len(report.misses) - before:3} miss(es)", flush=True)
 
-    print(f"\n{report.checked} comparison(s), {len(report.extras)} extra fact(s)")
+    print(
+        f"\n{report.checked} comparison(s), {report.substantive} of them with an "
+        f"oracle fact to find, {len(report.extras)} extra fact(s)"
+    )
     for reason, n in sorted(report.exempt.items()):
         print(f"  {n:5} exempt: {reason}")
     if args.show_extras:

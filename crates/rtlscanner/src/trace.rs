@@ -235,8 +235,19 @@ pub struct Trace {
 }
 
 impl Trace {
+    /// Hops the verdict rests on: everything but an alias and a condition.
+    ///
+    /// Reported beside the total because the two differ exactly where the
+    /// verdict would otherwise read as a denial of what is in the same answer:
+    /// a net read only by `if` conditions has hops and no structural load, and
+    /// `no_load_found` next to two of them is a contradiction to anything that
+    /// keys off one number.
+    fn structural(&self) -> Vec<&Hop> {
+        self.hops.iter().filter(|h| h.kind.is_structural()).collect()
+    }
+
     fn status(&self) -> &'static str {
-        let structural: Vec<&Hop> = self.hops.iter().filter(|h| h.kind.is_structural()).collect();
+        let structural = self.structural();
         if structural.is_empty() {
             match self.direction {
                 Direction::Driver => "no_driver_found",
@@ -325,6 +336,7 @@ impl CommandResult for Trace {
         let summary = json!({
             "status": self.status(),
             "hops": self.hops.len(),
+            "structural_hops": self.structural().len(),
             "drivers": self.driver_count,
             "multiple_drivers": self.conflicting,
         });
@@ -347,7 +359,14 @@ impl CommandResult for Trace {
             }
             _ => format!("{}", self.hops.len()),
         };
-        out.push_str(&format!("{}s: {count} ({})\n", self.direction.tag(), self.status()));
+        // Where a condition is the only answer, saying so is the difference
+        // between "nothing reads this" and "nothing reads its value".
+        let structural = self.structural().len();
+        let aside = match structural == self.hops.len() {
+            true => String::new(),
+            false => format!(", {structural} of them structural"),
+        };
+        out.push_str(&format!("{}s: {count} ({}{aside})\n", self.direction.tag(), self.status()));
         if self.conflicting {
             out.push_str("  ! drivers overlap: more than one writes the same bits\n");
         }

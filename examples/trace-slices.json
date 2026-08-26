@@ -77,7 +77,8 @@ $ rtlscanner trace top.packed_up --json design.db
     "drivers": 2,
     "hops": 2,
     "multiple_drivers": false,
-    "status": "resolved"
+    "status": "resolved",
+    "structural_hops": 2
   },
   "tool": "rtlscanner",
   "version": "1.0.0"

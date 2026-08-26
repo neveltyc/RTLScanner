@@ -64,7 +64,15 @@ one: try `*sig`.
 A modport view is a level of a path with no object behind it: `b.mst.vld` and
 `b.vld` are one net, and so is `u_p.p.vld` through the port that takes the
 view. All three resolve, and the answer gives the net's own path — which is the
-one `find` returns and the one to use again.
+one `find` returns and the one to use again. An interface port that binds an
+array is the exception: `q.vld` has not said which element, so it is refused
+with the elements named rather than answered about the first.
+
+`trace`'s `summary` carries two counts and they are not the same: `hops` is
+everything the answer holds, `structural_hops` is what `status` rests on. They
+differ only where an alias or — under `--control` — a condition is the answer,
+so `no_load_found` with `hops: 2` and `structural_hops: 0` means the net is
+read as a condition and never for its value.
 
 ## Working from a waveform finding
 

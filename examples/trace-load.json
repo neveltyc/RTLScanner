@@ -74,7 +74,8 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
     "drivers": 0,
     "hops": 1,
     "multiple_drivers": false,
-    "status": "resolved"
+    "status": "resolved",
+    "structural_hops": 1
   },
   "tool": "rtlscanner",
   "version": "1.0.0"

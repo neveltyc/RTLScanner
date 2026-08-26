@@ -58,6 +58,15 @@ class Covering(unittest.TestCase):
         self.assertTrue(differ.covers(("d.sv", 21), {("d.sv", 21)}, SPANS))
         self.assertFalse(differ.covers(("d.sv", 21), {("d.sv", 22)}, SPANS))
 
+    def test_the_next_construct_the_oracle_named_ends_this_one(self):
+        # Two constructs in one module drive this signal, at 5 and at 15. A
+        # statement at 16 belongs to the second, and standing in for the first
+        # would forgive a driver attributed to an unrelated block.
+        oracle = {("d.sv", 5), ("d.sv", 15)}
+        self.assertTrue(differ.covers(("d.sv", 5), {("d.sv", 7)}, SPANS, oracle))
+        self.assertFalse(differ.covers(("d.sv", 5), {("d.sv", 16)}, SPANS, oracle))
+        self.assertTrue(differ.covers(("d.sv", 15), {("d.sv", 16)}, SPANS, oracle))
+
 
 class ModuleSpans(unittest.TestCase):
     def test_a_module_runs_from_its_header_to_its_end(self):
@@ -92,6 +101,13 @@ class ThePortEnd(unittest.TestCase):
         # An `always_comb` the tool put at the wrong line stays a miss; only
         # the port end is a matter of which end to point at.
         old = {"source": "procedural", "file": "d.sv", "line": 21}
+        self.assertFalse(differ.port_crossing(old, self.answer([hop(30, kind="procedural")])))
+
+    def test_an_answer_that_could_not_be_at_a_port_is_a_miss(self):
+        # A procedural assignment is not a thing that stands at an
+        # instantiation, so an input port answered that way is the walk
+        # answering a different question, not the same one from the other end.
+        old = {"source": "input_port", "file": "d.sv", "line": 8}
         self.assertFalse(differ.port_crossing(old, self.answer([hop(30, kind="procedural")])))
 
 
@@ -129,6 +145,57 @@ class TheConcatenation(unittest.TestCase):
     def test_a_name_inside_a_longer_word_is_not_that_name(self):
         texts = self.texts(**{"m.y": ["assign y = {data, sel};"]})
         self.assertFalse(differ.concatenated(("m.a", "m.y"), texts))
+
+    def test_an_operand_outside_the_braces_is_a_miss(self):
+        # The statement holds a concatenation, but `c` is not in it: losing `c`
+        # is an ordinary dropped operand, and a rule keyed on the statement
+        # merely containing a brace would forgive it.
+        texts = self.texts(**{"m.y": ["assign y = {a, b} | c;"]})
+        self.assertTrue(differ.concatenated(("m.a", "m.y"), texts))
+        self.assertFalse(differ.concatenated(("m.c", "m.y"), texts))
+
+    def test_a_source_in_another_instance_is_a_miss(self):
+        # Statement text carries local names; the leaf alone would let one
+        # instance's `a` answer for another's.
+        texts = self.texts(**{"m.u1.y": ["assign y = {a, b};"]})
+        self.assertTrue(differ.concatenated(("m.u1.a", "m.u1.y"), texts))
+        self.assertFalse(differ.concatenated(("m.u2.a", "m.u1.y"), texts))
+
+
+class Braces(unittest.TestCase):
+    def test_only_what_is_inside_the_braces(self):
+        self.assertEqual(differ.braced("assign y = {a, b} | c;"), ["a, b"])
+
+    def test_nesting_flattens_into_the_outer_group(self):
+        # A nested concatenation is still operands of the outer one, and which
+        # nesting level a name sits at decides nothing here.
+        self.assertEqual(differ.braced("y = {a, {b, c}};"), ["a, b, c"])
+
+    def test_no_braces_is_no_groups(self):
+        self.assertEqual(differ.braced("assign y = a + b;"), [])
+
+
+class TheOracleRefusing(unittest.TestCase):
+    """Only the failure the oracle is documented to have is a difference."""
+
+    def test_a_signal_it_cannot_name_is_the_documented_refusal(self):
+        r = differ.Report()
+        # The two spellings of a generate-block net, and what each comes back
+        # with. Neither resolves, and both are the oracle's own limit.
+        self.assertTrue(r.refused(
+            "signal 'lane[0].copy' not found in scope 'top'; signals here: clk, a"))
+        self.assertTrue(r.refused(
+            "scope 'top.lane[0]' not found; deepest valid prefix: 'top'; scopes under top: u_core"))
+        self.assertEqual(sum(r.exempt.values()), 2)
+
+    def test_any_other_failure_is_the_comparison_not_happening(self):
+        # A timeout or an internal error would otherwise take a whole family of
+        # questions out of the gate and leave a count nothing pins.
+        r = differ.Report()
+        self.assertFalse(r.refused("timed out after 3600s"))
+        self.assertFalse(r.refused("internal error: unhandled symbol kind"))
+        self.assertFalse(r.refused(""))
+        self.assertEqual(sum(r.exempt.values()), 0)
 
 
 class TheLoadTarget(unittest.TestCase):

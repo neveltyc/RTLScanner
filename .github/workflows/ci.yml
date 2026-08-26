@@ -79,7 +79,7 @@ jobs:
         run: |
           cmake -S extern/RTLDebugDBKit -B extern/RTLDebugDBKit/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCPM_SOURCE_CACHE=~/.cache/CPM \
+            -DCPM_SOURCE_CACHE="$HOME/.cache/CPM" \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build extern/RTLDebugDBKit/build -j"$(nproc)"

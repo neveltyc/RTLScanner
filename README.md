@@ -99,7 +99,6 @@ is a usage error on stderr with exit 2, before any command runs.
 crates/designdb     the v19 reader: version gate, contract views, digests
 crates/rtlscanner   the CLI: envelope, commands
 extern/RTLDebugDBKit  the producer, pinned to the schema version above
-doc/                design and the plan it follows
 tools/differential  the one-shot gate against the engine this replaced
 ```
 

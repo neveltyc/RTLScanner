@@ -525,3 +525,71 @@ fn a_segment_that_is_not_a_view_is_still_a_name_that_is_not_there() {
     assert_eq!(details["valid_prefix"], "modports.b.mst");
     assert_eq!(details["close_matches"][0], "vld");
 }
+
+#[test]
+fn a_signal_read_only_by_conditions_says_so_rather_than_reading_as_unread() {
+    const GATED: &str = r#"
+module gated(input logic clk, en, input logic [7:0] d, output logic [7:0] q);
+  always_ff @(posedge clk) if (en) q <= d;
+endmodule
+"#;
+    let Some(fx) = exported("gated", GATED, "a_signal_read_only_by_conditions") else { return };
+
+    // `en` gates a statement and feeds no value, so it has no structural load:
+    // the verdict must not move because `--control` was passed, or the flag
+    // would be deciding what the tool says about the design rather than how
+    // much of it is shown.
+    let (v, _) = json_trace(&fx, &["gated.en", "--load", "--control"]);
+    assert_eq!(v["data"]["status"], "no_load_found");
+    assert_eq!(v["summary"]["hops"], 1, "the condition is an answer: {v}");
+
+    // Which leaves two numbers in one summary that would contradict each other
+    // silently. The one the verdict rests on is reported beside the total.
+    assert_eq!(v["summary"]["structural_hops"], 0);
+
+    // A net that is read for its value has both counts equal, so an ordinary
+    // answer is unchanged by any of this.
+    let (v, _) = json_trace(&fx, &["gated.d", "--load", "--control"]);
+    assert_eq!(v["data"]["status"], "resolved");
+    assert_eq!(v["summary"]["structural_hops"], v["summary"]["hops"]);
+}
+
+#[test]
+fn an_interface_port_binding_an_array_says_which_ones_rather_than_picking() {
+    const ARRAY: &str = r#"
+interface bus_if;
+  logic vld;
+  modport slv (input vld);
+endinterface
+
+module arr_user(bus_if.slv q[2]);
+  logic seen;
+  assign seen = q[0].vld | q[1].vld;
+endmodule
+
+module arrays(output logic o);
+  bus_if barr[2]();
+  arr_user u_a (.q(barr));
+  assign o = u_a.seen;
+endmodule
+"#;
+    let Some(fx) = exported("arrays", ARRAY, "an_interface_port_binding_an_array") else { return };
+
+    // The port binds one interface per element, so `q.vld` has not said which
+    // net it means. Answering about the first would name `barr[0]`'s net under
+    // a path that does not say `barr[0]` — the shape of a wrong answer that
+    // looks like a right one.
+    for asked in ["arrays.u_a.q.vld", "arrays.u_a.q.slv.vld"] {
+        let (v, code) = json_trace(&fx, &[asked]);
+        assert_eq!(code, 1, "{asked}: {v}");
+        let message = v["errors"][0]["message"].as_str().unwrap();
+        assert!(message.contains("binds 2 interfaces"), "{asked}: {message}");
+        // Naming them is what makes the next call a fix rather than a search.
+        assert!(message.contains("barr[0]") && message.contains("barr[1]"), "{message}");
+    }
+
+    // And the element's own path answers, which is what the message says to use.
+    let (v, code) = json_trace(&fx, &["arrays.barr[0].vld"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["signal"], "arrays.barr[0].vld");
+}

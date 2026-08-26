@@ -186,7 +186,8 @@ $ rtlscanner trace top.muxed --json design.db
     "drivers": 1,
     "hops": 3,
     "multiple_drivers": false,
-    "status": "resolved"
+    "status": "resolved",
+    "structural_hops": 3
   },
   "tool": "rtlscanner",
   "version": "1.0.0"

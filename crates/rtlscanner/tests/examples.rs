@@ -74,6 +74,14 @@ fn the_worked_answers_are_what_the_tool_answers() {
         .expect("running rtl-designdb");
     assert!(out.status.success(), "export failed: {}", String::from_utf8_lossy(&out.stderr));
 
+    // Which commit of the exporter wrote this database. It is not a shape,
+    // and it moves on every upstream commit whether or not anything a worked
+    // answer shows has changed — so it is rewritten like the paths are, and
+    // the version that IS a shape, `tool_version`, is compared as it stands.
+    let (panel, _, _) = run(&["info", "--json", db.to_str().unwrap()]);
+    let panel: serde_json::Value = serde_json::from_str(&panel).expect("an info envelope");
+    let revision = panel["data"]["producer"]["revision"].as_str().expect("a revision").to_owned();
+
     // Spelled as the other switches are: set to anything but `0`.
     let writing = std::env::var("RTLSCANNER_WRITE_EXAMPLES").is_ok_and(|v| v != "0");
     let mut stale = Vec::new();
@@ -85,12 +93,13 @@ fn the_worked_answers_are_what_the_tool_answers() {
         assert!(stderr.is_empty(), "{name}: {stderr}");
         assert_eq!(code, 0, "{name} failed: {stdout}");
 
-        // Where this ran is not where a reader will run it: the paths are the
-        // one part of an answer that cannot be stable, and are the only part
-        // rewritten.
+        // Where this ran is not where a reader will run it, and which build of
+        // the exporter ran is not what these show. Those two are the parts of
+        // an answer that cannot be stable, and are the only parts rewritten.
         let answer = stdout
             .replace(db.to_str().unwrap(), "design.db")
-            .replace(&format!("{}/", dir.display()), "");
+            .replace(&format!("{}/", dir.display()), "")
+            .replace(&revision, "<the pinned exporter>");
         let shown = format!("$ rtlscanner {} --json design.db\n\n{answer}", argv.join(" "));
 
         let path = dir.join(format!("{name}.json"));
@@ -107,8 +116,6 @@ fn the_worked_answers_are_what_the_tool_answers() {
     assert!(
         stale.is_empty(),
         "these worked answers no longer match what the tool answers: {stale:?}\n\
-         If the change was meant, run `make examples`. If RTL_DESIGNDB points at \
-         a different build of the exporter, the difference may be its identity \
-         rather than this tool's behaviour."
+         If the change was meant, run `make examples`."
     );
 }
