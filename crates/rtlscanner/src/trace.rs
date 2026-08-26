@@ -354,10 +354,7 @@ impl CommandResult for Trace {
         out.push('\n');
 
         for hop in &self.hops {
-            let text = hop
-                .statement
-                .clone()
-                .unwrap_or_else(|| format!("<{}>", hop.raw_kind));
+            let text = hop.statement.clone().unwrap_or_else(|| format!("<{}>", hop.raw_kind));
             let at = match (&hop.file, hop.line) {
                 (Some(f), Some(l)) => {
                     format!("{}:{l}", f.rsplit('/').next().unwrap_or(f))
@@ -384,8 +381,11 @@ impl CommandResult for Trace {
                         None => net.clone(),
                     })
                     .collect();
-                let list =
-                    if events.is_empty() { String::new() } else { format!(" @({})", events.join(", ")) };
+                let list = if events.is_empty() {
+                    String::new()
+                } else {
+                    format!(" @({})", events.join(", "))
+                };
                 out.push_str(&format!("      timing: {}{list}\n", t.proc_kind));
             }
             for g in &hop.gates {
@@ -401,10 +401,13 @@ impl CommandResult for Trace {
                 out.push_str(&format!("      in procedure #{}\n", index + 1));
             }
             for s in &hop.signals {
-                out.push_str(&format!("      {}: {s}\n", match self.direction {
-                    Direction::Driver => "from",
-                    Direction::Load => "to",
-                }));
+                out.push_str(&format!(
+                    "      {}: {s}\n",
+                    match self.direction {
+                        Direction::Driver => "from",
+                        Direction::Load => "to",
+                    }
+                ));
             }
         }
 
@@ -438,7 +441,8 @@ impl CommandResult for Trace {
 
 /// One gating level in a sentence, for the terminal view.
 fn describe_gate(g: &Gate) -> String {
-    let reads = if g.reads.is_empty() { String::new() } else { format!(" [{}]", g.reads.join(", ")) };
+    let reads =
+        if g.reads.is_empty() { String::new() } else { format!(" [{}]", g.reads.join(", ")) };
     let body = match g.kind.as_str() {
         "if" => format!("if{}", g.sense.as_deref().map(|s| format!(" ({s})")).unwrap_or_default()),
         "case" => format!("{} selector", g.case_kind.as_deref().unwrap_or("case")),
@@ -510,15 +514,11 @@ pub fn run(
             // One statement, one hop: `{a,b} = {x,y}` is two arcs of one
             // statement, and reporting it twice would count one driver twice.
             Some(existing) => merge(existing, &row, anchor, signal, sep, c)?,
-            None => {
-                hops.push(build_hop(c, &mut source, anchor, signal, &row, index, sep, dir)?)
-            }
+            None => hops.push(build_hop(c, &mut source, anchor, signal, &row, index, sep, dir)?),
         }
     }
 
-    hops.sort_by(|a, b| {
-        (&a.scope, a.line, &a.statement).cmp(&(&b.scope, b.line, &b.statement))
-    });
+    hops.sort_by(|a, b| (&a.scope, a.line, &a.statement).cmp(&(&b.scope, b.line, &b.statement)));
 
     let (driver_count, conflicting) = count_drivers(&hops, dir);
     let decl = declared_range_of(signal);
@@ -659,7 +659,11 @@ fn far_path(
         // the only name there is.
         return Ok(row.other_ref.clone());
     };
-    Ok(Some(instance_path(c, anchor, inst, sep)? + &sep.to_string() + &name.replace('.', &sep.to_string())))
+    Ok(Some(
+        instance_path(c, anchor, inst, sep)?
+            + &sep.to_string()
+            + &name.replace('.', &sep.to_string()),
+    ))
 }
 
 /// The path of one instance, from the root.
@@ -825,10 +829,7 @@ pub fn raw_kind_of(
 }
 
 /// What makes the statement's procedure run.
-fn timing_of(
-    c: &Connection,
-    stmt: &schema::StatementRow,
-) -> Result<Option<Timing>, String> {
+fn timing_of(c: &Connection, stmt: &schema::StatementRow) -> Result<Option<Timing>, String> {
     let Some(proc_id) = stmt.proc_id else { return Ok(None) };
     let Some(proc_kind) = schema::proc_kind(c, proc_id)? else { return Ok(None) };
     let events = schema::events_of_procedure(c, proc_id)?
@@ -850,10 +851,10 @@ fn procedures_of(
     decl: Option<(i64, i64)>,
 ) -> Result<Vec<Procedure>, String> {
     let mut procedures: Vec<(i64, Procedure)> = Vec::new();
-    for index in 0..hops.len() {
-        let Some(proc_id) = hops[index].proc_id else { continue };
+    for hop in hops.iter_mut() {
+        let Some(proc_id) = hop.proc_id else { continue };
         if let Some(at) = procedures.iter().position(|(id, _)| *id == proc_id) {
-            hops[index].procedure = Some(at);
+            hop.procedure = Some(at);
             continue;
         }
         let rows = schema::procedure_writes(c, proc_id, signal.net.net_id)?;
@@ -885,7 +886,7 @@ fn procedures_of(
                 },
             });
         }
-        hops[index].procedure = Some(procedures.len());
+        hop.procedure = Some(procedures.len());
         procedures.push((proc_id, Procedure { proc_kind, writes }));
     }
     Ok(procedures.into_iter().map(|(_, p)| p).collect())
@@ -893,10 +894,7 @@ fn procedures_of(
 
 /// The conditions a statement sits under, outermost first, and whether any of
 /// them is already decided against.
-fn gates_of(
-    c: &Connection,
-    stmt: &schema::StatementRow,
-) -> Result<(Vec<Gate>, bool), String> {
+fn gates_of(c: &Connection, stmt: &schema::StatementRow) -> Result<(Vec<Gate>, bool), String> {
     let Some(branch_id) = stmt.branch_id else { return Ok((Vec::new(), false)) };
     let chain = schema::branch_chain(c, branch_id)?;
     let reads = schema::gating_reads(c, stmt.stmt_id)?;

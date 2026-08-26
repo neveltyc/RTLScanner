@@ -1,0 +1,5 @@
+# The style this tree was already written in. Without a file, `cargo fmt` uses
+# defaults that split every wide-but-readable expression, and `make check`'s
+# format gate could never pass — which is what it had been doing.
+max_width = 100
+use_small_heuristics = "Max"

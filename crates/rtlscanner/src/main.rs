@@ -13,7 +13,7 @@ mod info;
 mod trace;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
@@ -330,7 +330,7 @@ fn split_signal<'a>(
     db: &Db,
     anchor: &resolve::Anchor,
     signal: &'a str,
-) -> Result<(&'a str, Option<(i64, i64)>), CommandError> {
+) -> Result<(&'a str, bits::Select), CommandError> {
     let whole = resolve::resolve(db.conn(), anchor, signal)
         .map_err(|e| CommandError::new(ErrorCode::SignalNotFound, e))?;
     if whole.is_ok() {
@@ -340,7 +340,7 @@ fn split_signal<'a>(
     Ok((name, select))
 }
 
-fn open(path: &PathBuf) -> Result<Db, CommandError> {
+fn open(path: &Path) -> Result<Db, CommandError> {
     Db::open(path).map_err(|e| {
         let code = match e {
             designdb::OpenError::NotFound { .. } => ErrorCode::InputNotFound,
@@ -362,7 +362,13 @@ const SHOWN: usize = 20;
 /// which is the difference between an agent recovering and an agent guessing.
 /// Every command spells them the same way — `valid_prefix` a path, `available`
 /// what is at it — or a caller would need one parser per error code.
-fn not_found(code: ErrorCode, asked: &str, prefix: &str, missing: &str, here: &[String]) -> CommandError {
+fn not_found(
+    code: ErrorCode,
+    asked: &str,
+    prefix: &str,
+    missing: &str,
+    here: &[String],
+) -> CommandError {
     let close = resolve::close_matches(missing, here, 5);
     let hint = if close.is_empty() {
         String::new()
@@ -406,7 +412,6 @@ fn write_all(w: &mut impl Write, s: &str) -> std::io::Result<()> {
     w.write_all(s.as_bytes())?;
     w.flush()
 }
-
 
 /// Open the database and choose the root, which every command does first.
 fn design(common: &Common) -> Result<(Db, resolve::Anchor), CommandError> {
@@ -532,7 +537,8 @@ fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>),
     // A route search is bounded by finding the route, not by a hop count: a
     // default depth here would report "no path" for one that is simply longer
     // than the default, which is the answer a caller is least able to check.
-    let bounds = cone::Bounds { max_depth: args.walk.depth.filter(|d| *d > 0), ..args.walk.bounds() };
+    let bounds =
+        cone::Bounds { max_depth: args.walk.depth.filter(|d| *d > 0), ..args.walk.bounds() };
     let route = cone::find_path(&db, &anchor, &from, &to, bounds)
         .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
 

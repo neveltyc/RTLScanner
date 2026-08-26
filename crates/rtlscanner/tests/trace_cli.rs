@@ -34,7 +34,9 @@ fn basic(test: &str) -> Option<Exported> {
 
 #[test]
 fn a_signal_assembled_from_slices_names_each_driver_with_its_bits() {
-    let Some(fx) = basic("a_signal_assembled_from_slices_names_each_driver_with_its_bits") else { return };
+    let Some(fx) = basic("a_signal_assembled_from_slices_names_each_driver_with_its_bits") else {
+        return;
+    };
     let (v, code) = json_trace(&fx, &["basic.y"]);
 
     assert_eq!(code, 0);
@@ -49,8 +51,7 @@ fn a_signal_assembled_from_slices_names_each_driver_with_its_bits() {
     }
     // `bits` is a list: a statement may write more than one window, and one
     // range spanning them would claim the bits in between.
-    let bits: Vec<&str> =
-        hops.iter().map(|h| h["bits"][0].as_str().unwrap()).collect();
+    let bits: Vec<&str> = hops.iter().map(|h| h["bits"][0].as_str().unwrap()).collect();
     assert!(bits.contains(&"[7:4]") && bits.contains(&"[3:0]"), "{bits:?}");
 
     // Two drivers writing disjoint halves is a signal assembled from parts,
@@ -61,7 +62,9 @@ fn a_signal_assembled_from_slices_names_each_driver_with_its_bits() {
 
 #[test]
 fn a_bit_select_narrows_to_the_driver_that_writes_those_bits() {
-    let Some(fx) = basic("a_bit_select_narrows_to_the_driver_that_writes_those_bits") else { return };
+    let Some(fx) = basic("a_bit_select_narrows_to_the_driver_that_writes_those_bits") else {
+        return;
+    };
 
     let (upper, _) = json_trace(&fx, &["basic.y[7:4]"]);
     let hops = upper["data"]["hops"].as_array().unwrap();
@@ -80,7 +83,10 @@ fn a_bit_select_narrows_to_the_driver_that_writes_those_bits() {
 
 #[test]
 fn a_select_outside_the_declared_range_is_an_error_with_its_own_code() {
-    let Some(fx) = basic("a_select_outside_the_declared_range_is_an_error_with_its_own_code") else { return };
+    let Some(fx) = basic("a_select_outside_the_declared_range_is_an_error_with_its_own_code")
+    else {
+        return;
+    };
     let (v, code) = json_trace(&fx, &["basic.y[99]"]);
 
     assert_eq!(code, 1);
@@ -90,7 +96,9 @@ fn a_select_outside_the_declared_range_is_an_error_with_its_own_code() {
 
 #[test]
 fn the_two_arms_of_one_if_are_two_statements_and_one_driver() {
-    let Some(fx) = basic("the_two_arms_of_one_if_are_two_statements_and_one_driver") else { return };
+    let Some(fx) = basic("the_two_arms_of_one_if_are_two_statements_and_one_driver") else {
+        return;
+    };
     let (v, _) = json_trace(&fx, &["basic.u_leaf.q"]);
 
     let hops = v["data"]["hops"].as_array().unwrap();
@@ -102,8 +110,7 @@ fn the_two_arms_of_one_if_are_two_statements_and_one_driver() {
 
     // The arms are distinguishable, which is what v19's gating tree added: in
     // v18 both carried the same condition and nothing said which side.
-    let senses: Vec<&str> =
-        hops.iter().map(|h| h["gates"][0]["sense"].as_str().unwrap()).collect();
+    let senses: Vec<&str> = hops.iter().map(|h| h["gates"][0]["sense"].as_str().unwrap()).collect();
     assert!(senses.contains(&"then") && senses.contains(&"else"), "{senses:?}");
     for hop in hops {
         assert_eq!(hop["gates"][0]["kind"], "if");
@@ -236,7 +243,10 @@ fn each_case_arm_carries_its_own_labels_and_its_priority() {
 
 #[test]
 fn an_arm_a_constant_condition_rules_out_is_reported_and_not_counted() {
-    let Some(fx) = gating("an_arm_a_constant_condition_rules_out_is_reported_and_not_counted") else { return };
+    let Some(fx) = gating("an_arm_a_constant_condition_rules_out_is_reported_and_not_counted")
+    else {
+        return;
+    };
     let (v, _) = json_trace(&fx, &["gating.q"]);
     let hops = v["data"]["hops"].as_array().unwrap();
 
@@ -244,8 +254,7 @@ fn an_arm_a_constant_condition_rules_out_is_reported_and_not_counted() {
     // view shows the statement, and a database that had pruned it would leave
     // the reader wondering where it went. What the answer adds is the verdict.
     assert_eq!(hops.len(), 2);
-    let dead: Vec<&serde_json::Value> =
-        hops.iter().filter(|h| h["unreachable"] == true).collect();
+    let dead: Vec<&serde_json::Value> = hops.iter().filter(|h| h["unreachable"] == true).collect();
     assert_eq!(dead.len(), 1, "ENABLE is 0, so the then arm cannot run");
     assert_eq!(dead[0]["gates"][0]["sense"], "then");
     assert_eq!(dead[0]["gates"][0]["static_taken"], 0);
@@ -256,7 +265,9 @@ fn an_arm_a_constant_condition_rules_out_is_reported_and_not_counted() {
 
 #[test]
 fn a_loop_publishes_the_iteration_space_behind_an_inexact_range() {
-    let Some(fx) = gating("a_loop_publishes_the_iteration_space_behind_an_inexact_range") else { return };
+    let Some(fx) = gating("a_loop_publishes_the_iteration_space_behind_an_inexact_range") else {
+        return;
+    };
     let (v, _) = json_trace(&fx, &["gating.rev"]);
     let hop = &v["data"]["hops"][0];
 
@@ -277,7 +288,9 @@ fn a_loop_publishes_the_iteration_space_behind_an_inexact_range() {
 
 #[test]
 fn a_waveform_path_resolves_once_its_testbench_prefix_is_named() {
-    let Some(fx) = basic("a_waveform_path_resolves_once_its_testbench_prefix_is_named") else { return };
+    let Some(fx) = basic("a_waveform_path_resolves_once_its_testbench_prefix_is_named") else {
+        return;
+    };
     // A path from a waveform tool is anchored at a testbench the design has
     // never heard of. The design cannot recognise that scope, so the caller
     // states it.
@@ -436,4 +449,79 @@ endmodule
         details["available"].as_array().unwrap().iter().map(|s| s.as_str().unwrap()).collect();
     assert!(available.contains(&"inner"), "{available:?}");
     assert_eq!(details["close_matches"][0], "inner");
+}
+
+/// A modport view is a level of a path with no object behind it: two modules
+/// meet on the interface's own nets, and only those nets have names.
+const MODPORT: &str = r#"
+interface bus_if;
+  logic vld, rdy;
+  logic [7:0] data;
+  modport mst (output vld, output data, input rdy);
+  modport slv (input vld, input data, output rdy);
+endinterface
+
+module producer(bus_if.mst p);
+  assign p.vld  = 1'b1;
+  assign p.data = 8'hA5;
+endmodule
+
+module consumer(bus_if.slv c);
+  assign c.rdy = c.vld;
+endmodule
+
+module modports(input logic clk, output logic seen);
+  bus_if b();
+  producer u_p (.p(b));
+  consumer u_c (.c(b));
+  always_ff @(posedge clk) seen <= b.rdy;
+endmodule
+"#;
+
+fn modports(test: &str) -> Option<Exported> {
+    exported("modports", MODPORT, test)
+}
+
+#[test]
+fn a_path_through_a_modport_view_names_the_interface_s_own_net() {
+    let Some(fx) = modports("a_path_through_a_modport_view") else { return };
+    let (canonical, code) = json_trace(&fx, &["modports.b.vld"]);
+    assert_eq!(code, 0, "{canonical}");
+
+    // Spelled through the view a waveform or a designer writes it with, and
+    // through the port that declares the view. Both are the same net, and the
+    // answer says which net that is rather than echoing the spelling.
+    for asked in ["modports.b.mst.vld", "modports.u_p.p.mst.vld", "modports.u_p.p.vld"] {
+        let (v, code) = json_trace(&fx, &[asked]);
+        assert_eq!(code, 0, "{asked}: {v}");
+        assert_eq!(v["data"]["signal"], "modports.b.vld", "{asked}");
+        assert_eq!(v["data"]["hops"], canonical["data"]["hops"], "{asked}");
+    }
+
+    // The other view of the same interface, whose driver is in the other
+    // module: the view named does not change which net is behind it.
+    let (v, code) = json_trace(&fx, &["modports.b.slv.rdy"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["signal"], "modports.b.rdy");
+}
+
+#[test]
+fn a_segment_that_is_not_a_view_is_still_a_name_that_is_not_there() {
+    let Some(fx) = modports("a_segment_that_is_not_a_view") else { return };
+
+    // Crossing a level with nothing behind it is only right for a name the
+    // design gives a view. Anything else is a wrong name, and answering about
+    // the net one level down would answer a question nobody asked.
+    let (v, code) = json_trace(&fx, &["modports.b.nope.vld"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["errors"][0]["details"]["failing_segment"], "nope");
+
+    // And a name mistyped after a view names the mistyped word: a segment the
+    // walk crossed is not the segment that failed.
+    let (v, code) = json_trace(&fx, &["modports.b.mst.vldd"]);
+    assert_eq!(code, 1, "{v}");
+    let details = &v["errors"][0]["details"];
+    assert_eq!(details["failing_segment"], "vldd");
+    assert_eq!(details["valid_prefix"], "modports.b.mst");
+    assert_eq!(details["close_matches"][0], "vld");
 }

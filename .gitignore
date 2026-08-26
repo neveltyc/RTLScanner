@@ -2,3 +2,4 @@
 AGENTS.md
 CLAUDE.md
 doc/dev/
+__pycache__/

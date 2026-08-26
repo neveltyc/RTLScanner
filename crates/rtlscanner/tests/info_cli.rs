@@ -6,9 +6,9 @@
 
 mod common;
 
-use common::{Exported, exported, json_of, run, scanner, tmp};
+use common::{Exported, exported, json_of, scanner, tmp};
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use designdb::{SCHEMA_VERSION, open::fixture};
@@ -19,13 +19,15 @@ const RTL: &str = "module info_cli(input logic clk, input logic d, output logic 
                    endmodule\n";
 
 /// The JSON envelope of `info --json <db>`.
-fn info_json(db: &PathBuf) -> (Value, i32) {
+fn info_json(db: &Path) -> (Value, i32) {
     json_of(&["info", "--json", db.to_str().unwrap()])
 }
 
 #[test]
 fn info_reports_the_seal_of_a_freshly_exported_database() {
-    let Some(Exported { db, .. }) = exported("info_cli", RTL, "info_reports_the_seal") else { return };
+    let Some(Exported { db, .. }) = exported("info_cli", RTL, "info_reports_the_seal") else {
+        return;
+    };
     let (v, code) = info_json(&db);
 
     assert_eq!(code, 0);
@@ -44,8 +46,11 @@ fn info_reports_the_seal_of_a_freshly_exported_database() {
 
 #[test]
 fn editing_the_rtl_makes_the_export_stale_without_making_it_an_error() {
-    let Some(Exported { db, rtl, .. }) = exported("info_cli", RTL, "editing_the_rtl_makes_it_stale")
-    else { return };
+    let Some(Exported { db, rtl, .. }) =
+        exported("info_cli", RTL, "editing_the_rtl_makes_it_stale")
+    else {
+        return;
+    };
     std::fs::write(&rtl, format!("{RTL}// a line the export never saw\n")).unwrap();
 
     let (v, code) = info_json(&db);
@@ -79,7 +84,9 @@ fn a_partial_export_names_what_it_fell_short_of() {
     // A skipped procedure contributes no drivers at all, which reads as an
     // undriven signal rather than as an error, so it gets its own note.
     let notes = v["diagnostics"].as_array().unwrap();
-    assert!(notes.iter().any(|n| n["message"].as_str().unwrap().contains("procedure(s) were skipped")));
+    assert!(
+        notes.iter().any(|n| n["message"].as_str().unwrap().contains("procedure(s) were skipped"))
+    );
 }
 
 #[test]
@@ -98,8 +105,12 @@ fn a_truncated_recursion_is_told_apart_from_a_construct_the_export_declined() {
 
     assert_eq!(code, 0);
     assert_eq!(v["data"]["analysis"]["status"], "complete");
-    let notes: Vec<&str> =
-        v["diagnostics"].as_array().unwrap().iter().map(|n| n["message"].as_str().unwrap()).collect();
+    let notes: Vec<&str> = v["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["message"].as_str().unwrap())
+        .collect();
     assert!(
         notes.iter().any(|n| n.contains("hierarchy stops at 7")),
         "a truncated tree must be reported: {notes:?}"

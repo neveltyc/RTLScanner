@@ -56,11 +56,7 @@ fn a_tree_says_what_the_design_is_made_of() {
         .unwrap()
         .iter()
         .map(|l| {
-            (
-                l["path"].as_str().unwrap(),
-                l["kind"].as_str().unwrap(),
-                l["depth"].as_u64().unwrap(),
-            )
+            (l["path"].as_str().unwrap(), l["kind"].as_str().unwrap(), l["depth"].as_u64().unwrap())
         })
         .collect();
 
@@ -166,14 +162,8 @@ fn find_can_look_for_instances_and_definitions_instead() {
     assert!(v["data"]["hits"][0]["detail"].as_str().unwrap().contains("1 occurrence"));
 
     // Asking for both at once asks for two different things.
-    let (v, code) = json_of(&[
-        "find",
-        "--json",
-        fx.db.to_str().unwrap(),
-        "*",
-        "--instances",
-        "--modules",
-    ]);
+    let (v, code) =
+        json_of(&["find", "--json", fx.db.to_str().unwrap(), "*", "--instances", "--modules"]);
     assert_eq!(code, 1);
     assert_eq!(v["errors"][0]["code"], "BAD_SELECT");
 }

@@ -88,8 +88,7 @@ fn fan_in_and_fan_out_are_the_same_relation_read_the_other_way() {
     // whichever of them is wrong — which is the point of asking both.
     let into_y = cone(&fx, "fanin", &["pipe.y", "--depth", "0", "--limit", "0"]);
     for (src, tgt) in arcs(&into_y) {
-        let out_of_src =
-            cone(&fx, "fanout", &[&src, "--depth", "0", "--limit", "0"]);
+        let out_of_src = cone(&fx, "fanout", &[&src, "--depth", "0", "--limit", "0"]);
         assert!(
             arcs(&out_of_src).contains(&(src.clone(), tgt.clone())),
             "fan-in has {src} -> {tgt}; fan-out of {src} does not"
@@ -287,7 +286,8 @@ fn conditions_are_dependencies_and_are_told_apart_from_values() {
     let Some(fx) = pipe("conditions_are_dependencies") else { return };
 
     let all = cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--limit", "0"]);
-    let without = cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--no-control", "--limit", "0"]);
+    let without =
+        cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--no-control", "--limit", "0"]);
 
     // `en` gates the assignment. It is a real dependency — the value would not
     // be there without it — and a different kind from `d`, which supplies it.
@@ -318,7 +318,10 @@ endmodule
     let upper = cone(&fx, "fanin", &["slices.y[7:4]", "--depth", "0", "--limit", "0"]);
     let reached = nodes(&upper);
     assert!(reached.iter().any(|n| n == "slices.hi"), "{reached:?}");
-    assert!(!reached.iter().any(|n| n == "slices.lo"), "the other half feeds other bits: {reached:?}");
+    assert!(
+        !reached.iter().any(|n| n == "slices.lo"),
+        "the other half feeds other bits: {reached:?}"
+    );
 
     let whole = cone(&fx, "fanin", &["slices.y", "--depth", "0", "--limit", "0"]);
     // A window can only narrow: the bits asked about are some of the bits.
@@ -500,7 +503,7 @@ endmodule
     assert_eq!(v["data"]["found"], true, "there is plainly a route: {v}");
     let route: Vec<&str> =
         v["data"]["nodes"].as_array().unwrap().iter().map(|n| n.as_str().unwrap()).collect();
-    assert!(route.iter().any(|n| *n == "shared.m"), "through the shared variable: {route:?}");
+    assert!(route.contains(&"shared.m"), "through the shared variable: {route:?}");
 }
 
 #[test]

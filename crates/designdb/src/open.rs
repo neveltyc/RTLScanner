@@ -86,7 +86,10 @@ impl Db {
                 });
             }
             Err(e) => {
-                return Err(OpenError::NotFound { path: path.to_path_buf(), reason: e.to_string() });
+                return Err(OpenError::NotFound {
+                    path: path.to_path_buf(),
+                    reason: e.to_string(),
+                });
             }
         }
 
@@ -100,10 +103,7 @@ impl Db {
             // whichever query happens to run first.
             c.query_row("PRAGMA schema_version", [], |r| r.get::<_, i64>(0)).map(|_| c)
         })
-        .map_err(|e| OpenError::NotADatabase {
-            path: path.to_path_buf(),
-            reason: e.to_string(),
-        })?;
+        .map_err(|e| OpenError::NotADatabase { path: path.to_path_buf(), reason: e.to_string() })?;
 
         let db = Db { conn, path: path.to_path_buf() };
         db.check_version()?;
@@ -133,9 +133,7 @@ impl Db {
     /// given `--top`, so its absence is ordinary; every other key of the seal is
     /// required, and a missing one means the file is not what it claims.
     pub fn meta(&self, key: &str) -> Option<String> {
-        self.conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
-            .ok()
+        self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).ok()
     }
 
     /// Every source file the export read, with its SHA-256, in path order.

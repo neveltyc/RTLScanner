@@ -1,7 +1,7 @@
 DESIGNDB_DIR := extern/RTLDebugDBKit
 DESIGNDB_BIN := $(DESIGNDB_DIR)/build/rtl-designdb
 
-.PHONY: build test test-exporter check designdb sync-ddl examples
+.PHONY: build test test-exporter test-cores check designdb sync-ddl examples
 
 build:
 	cargo build
@@ -16,6 +16,15 @@ test:
 # meant to cover them must not pass by not running them.
 test-exporter: $(DESIGNDB_BIN)
 	RTL_DESIGNDB=$(abspath $(DESIGNDB_BIN)) RTLSCANNER_REQUIRE_EXPORTER=1 \
+		cargo test --all-targets
+
+# The strictest run: the invariants over real cores as well. CORES is a
+# directory holding their checkouts, one per core — which ones, and what the
+# exporter is told about each, is in crates/rtlscanner/tests/real_cores.rs.
+test-cores: $(DESIGNDB_BIN)
+	@test -n "$(CORES)" || { echo "set CORES=<directory holding the core checkouts>"; exit 1; }
+	RTL_DESIGNDB=$(abspath $(DESIGNDB_BIN)) RTLSCANNER_REQUIRE_EXPORTER=1 \
+		RTLSCANNER_CORES=$(abspath $(CORES)) RTLSCANNER_REQUIRE_CORES=1 \
 		cargo test --all-targets
 
 # Regenerate the worked answers in examples/. They are the shape of an answer

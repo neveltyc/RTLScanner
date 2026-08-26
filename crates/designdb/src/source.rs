@@ -112,12 +112,16 @@ mod tests {
         let sv = dir.join("dut.sv");
         std::fs::write(&sv, rtl).unwrap();
         let path = dir.join("design.db");
-        write_db(&path, crate::SCHEMA_VERSION, &[&format!(
-            "INSERT INTO src_file(id, path, digest) VALUES (1, '{}', '{}');
+        write_db(
+            &path,
+            crate::SCHEMA_VERSION,
+            &[&format!(
+                "INSERT INTO src_file(id, path, digest) VALUES (1, '{}', '{}');
              INSERT INTO file(id, path, src_file_id) VALUES (1, 'dut.sv', 1);",
-            sv.display(),
-            digest::sha256_hex(rtl.as_bytes())
-        )]);
+                sv.display(),
+                digest::sha256_hex(rtl.as_bytes())
+            )],
+        );
         Db::open(&path).unwrap()
     }
 

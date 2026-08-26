@@ -119,9 +119,8 @@ impl CommandResult for ConeResult {
         let (edges, nodes) = self.shown();
         let named: std::collections::HashMap<i64, (String, Option<(i64, i64)>)> =
             self.cone.nodes.iter().map(|n| (n.net, (n.path.clone(), n.decl))).collect();
-        let net_of = |net: i64| {
-            named.get(&net).cloned().unwrap_or_else(|| (format!("<net {net}>"), None))
-        };
+        let net_of =
+            |net: i64| named.get(&net).cloned().unwrap_or_else(|| (format!("<net {net}>"), None));
 
         let data = json!({
             "start": self.cone.start,
@@ -155,10 +154,10 @@ impl CommandResult for ConeResult {
 
     fn render_human(&self) -> String {
         let (edges, nodes) = self.shown();
-        let named: std::collections::HashMap<i64, (&str, Option<(i64, i64)>)> =
-            self.cone.nodes.iter().map(|n| (n.net, (n.path.as_str(), n.decl))).collect();
-        let name = |net: i64| named.get(&net).map(|(p, _)| *p).unwrap_or("<net>");
-        let decl = |net: i64| named.get(&net).and_then(|(_, d)| *d);
+        let named: std::collections::HashMap<i64, &Node> =
+            self.cone.nodes.iter().map(|n| (n.net, n)).collect();
+        let name = |net: i64| named.get(&net).map(|n| n.path.as_str()).unwrap_or("<net>");
+        let decl = |net: i64| named.get(&net).and_then(|n| n.decl);
 
         let mut out = String::new();
         let word = match self.cone.direction {
@@ -191,7 +190,8 @@ impl CommandResult for ConeResult {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-            let note = if marks.is_empty() { String::new() } else { format!("  [{}]", marks.join(", ")) };
+            let note =
+                if marks.is_empty() { String::new() } else { format!("  [{}]", marks.join(", ")) };
             // Each end's bits against its own declared range: the two are
             // different objects and rarely declared alike.
             let spell = |span: &designdb::BitSpan, net: i64| {
@@ -239,7 +239,8 @@ pub struct PathResult {
 
 impl CommandResult for PathResult {
     fn to_json(&self) -> (Value, Value) {
-        let name = |net: i64| self.names.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
+        let name =
+            |net: i64| self.names.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
         let route = self.route.as_deref().unwrap_or_default();
         let net_of = |id: i64| (name(id), None);
 
@@ -267,7 +268,8 @@ impl CommandResult for PathResult {
     }
 
     fn render_human(&self) -> String {
-        let name = |net: i64| self.names.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
+        let name =
+            |net: i64| self.names.get(&net).cloned().unwrap_or_else(|| format!("<net {net}>"));
         let mut out = format!("path: {} -> {}\n", self.from, self.to);
         let Some(route) = &self.route else {
             // Not an error: two nets with no route between them is a fact

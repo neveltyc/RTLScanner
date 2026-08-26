@@ -65,6 +65,13 @@ is in the answer.
 what the design is made of, and where a name lives. What `find` returns, every
 other command accepts.
 
+A path may also be spelled the way a designer or a waveform writes it. A
+modport view is a level of a path with nothing behind it — `b.mst.vld` and
+`b.vld` are one net — so the view is crossed and the answer gives the net's own
+path. Where the design has several tops, `--top` says which; where a path comes
+from a waveform anchored at a testbench the design has never heard of,
+`--strip-prefix` says how much of it is not the design's.
+
 `fanin` and `fanout` follow those hops outward, and `path` reads the walk
 backwards to give one route. A cone stops where the caller says: after so many
 hops, or — with `--comb` — at the state elements that end the cycle, latches
@@ -93,6 +100,7 @@ crates/designdb     the v19 reader: version gate, contract views, digests
 crates/rtlscanner   the CLI: envelope, commands
 extern/RTLDebugDBKit  the producer, pinned to the schema version above
 doc/                design and the plan it follows
+tools/differential  the one-shot gate against the engine this replaced
 ```
 
 An agent driving this tool should read [skill/SKILL.md](skill/SKILL.md), which
@@ -101,6 +109,10 @@ says which command answers which question and how to read what comes back.
 `make test` runs the tests. Most build their database from the kit's own DDL, so
 they need no exporter; the few that must see what the current producer writes
 skip without one, and `make test-exporter` builds it and makes them mandatory.
+`make test-cores CORES=<dir>` adds the invariants over real processors — two
+checkouts under that directory, which CI fetches at pinned commits — and makes
+those mandatory too; it is the run CI does.
+
 `make check` runs clippy and rustfmt; `make sync-ddl` re-extracts the DDL the
 fixtures build from, and refuses to leave it disagreeing with the schema version
 this reader accepts; `make examples` regenerates the worked answers.

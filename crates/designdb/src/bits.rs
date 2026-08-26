@@ -27,9 +27,11 @@ impl BitSpan {
     /// Read the (lo, hi, exact) triple a row carries.
     pub fn read(lo: Option<i64>, hi: Option<i64>, exact: Option<i64>) -> BitSpan {
         match (lo, hi) {
-            (Some(lo), Some(hi)) => {
-                BitSpan::Range { lo: lo.max(0) as u64, hi: hi.max(0) as u64, exact: exact != Some(0) }
-            }
+            (Some(lo), Some(hi)) => BitSpan::Range {
+                lo: lo.max(0) as u64,
+                hi: hi.max(0) as u64,
+                exact: exact != Some(0),
+            },
             // NULL bits: exact tells "the whole of it" from "inside it,
             // somewhere". A row with neither is the whole object.
             _ if exact == Some(0) => BitSpan::Unknown,
@@ -110,11 +112,16 @@ pub fn declared_range(data_type: &str, width: Option<i64>) -> Option<(i64, i64)>
     (width? == spans).then_some((left, right))
 }
 
+/// A bit-select as a caller wrote it, in the declared range's own coordinates —
+/// `[i]` arrives as `(i, i)`. `None` is the whole object, which is a different
+/// thing from a declared range and is why this is not spelled the same way.
+pub type Select = Option<(i64, i64)>;
+
 /// Split a trailing bit-select off a leaf name: `data[7:0]` is (`data`, (7, 0)).
 ///
 /// A non-numeric index is left alone — `mem[i]` is a name this tool cannot
 /// resolve a range for, and guessing would answer about the wrong bits.
-pub fn split_select(leaf: &str) -> (&str, Option<(i64, i64)>) {
+pub fn split_select(leaf: &str) -> (&str, Select) {
     let Some(open) = leaf.rfind('[') else { return (leaf, None) };
     if !leaf.ends_with(']') {
         return (leaf, None);
@@ -193,16 +200,14 @@ mod tests {
         // spent a column keeping.
         assert_eq!(BitSpan::read(None, None, Some(1)), BitSpan::Whole);
         assert_eq!(BitSpan::read(None, None, Some(0)), BitSpan::Unknown);
-        assert_eq!(BitSpan::read(Some(3), Some(7), Some(1)), BitSpan::Range {
-            lo: 3,
-            hi: 7,
-            exact: true
-        });
-        assert_eq!(BitSpan::read(Some(0), Some(15), Some(0)), BitSpan::Range {
-            lo: 0,
-            hi: 15,
-            exact: false
-        });
+        assert_eq!(
+            BitSpan::read(Some(3), Some(7), Some(1)),
+            BitSpan::Range { lo: 3, hi: 7, exact: true }
+        );
+        assert_eq!(
+            BitSpan::read(Some(0), Some(15), Some(0)),
+            BitSpan::Range { lo: 0, hi: 15, exact: false }
+        );
     }
 
     #[test]
@@ -267,7 +272,10 @@ mod tests {
         let decl = Some((15, 8));
         assert_eq!(BitSpan::Range { lo: 7, hi: 7, exact: true }.spell(decl).unwrap(), "[15]");
         assert_eq!(BitSpan::Range { lo: 0, hi: 3, exact: true }.spell(decl).unwrap(), "[11:8]");
-        assert_eq!(BitSpan::Range { lo: 0, hi: 7, exact: true }.spell(Some((0, 7))).unwrap(), "[7:0]");
+        assert_eq!(
+            BitSpan::Range { lo: 0, hi: 7, exact: true }.spell(Some((0, 7))).unwrap(),
+            "[7:0]"
+        );
 
         // Nothing to say about the whole object, and nothing safe to say
         // without a declared range to anchor the offsets against.

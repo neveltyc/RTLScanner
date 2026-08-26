@@ -75,7 +75,7 @@ pub fn anchor(
             err(format!("no top named '{name}'; this database has: {}", have.join(", ")))
         })?,
         (None, 1) => &roots[0],
-        (None, 0) => return Err(err("this database elaborated no top".to_string())),
+        (None, 0) => return Err(err("this database elaborated no top")),
         (None, _) => {
             let have: Vec<&str> = roots.iter().map(|r| r.node_name.as_str()).collect();
             return Err(err(format!(
@@ -101,9 +101,9 @@ pub fn strip_prefix<'a>(anchor: &Anchor, path: &'a str) -> Result<&'a str, Strin
     if anchor.strip_prefix.is_empty() {
         return Ok(path);
     }
-    let rest = path.strip_prefix(anchor.strip_prefix.as_str()).ok_or_else(|| {
-        err(format!("'{path}' is not under '{}'", anchor.strip_prefix))
-    })?;
+    let rest = path
+        .strip_prefix(anchor.strip_prefix.as_str())
+        .ok_or_else(|| err(format!("'{path}' is not under '{}'", anchor.strip_prefix)))?;
     match rest.chars().next() {
         None => Ok(""),
         Some(c) if SEPARATORS.contains(&c) => Ok(&rest[c.len_utf8()..]),
@@ -177,21 +177,24 @@ fn walk(
                 _ => return Ok(None),
             },
             None => {
-                // Not a level of the tree. An interface port is a scope in a
-                // path but a terminal in the database, so a member reference
-                // through one detours to the interface it is bound to.
                 if !folded.is_empty() {
                     return Ok(None);
                 }
-                let Some(term) = schema::interface_terminal(c, inst, first)? else { break };
-                let Some(Some(target)) = schema::iface_target(c, term.term_id)? else {
-                    return Ok(None);
-                };
-                let Some(spine) = path_below_root(c, root, target)? else { return Ok(None) };
-                below = spine;
-                node = target;
-                inst = target;
-                rest = tail;
+                match detour(c, node, inst, first)? {
+                    None => break,
+                    Some(None) => return Ok(None),
+                    Some(Some(next)) => {
+                        if next != node {
+                            let Some(spine) = path_below_root(c, root, next)? else {
+                                return Ok(None);
+                            };
+                            below = spine;
+                            node = next;
+                            inst = next;
+                        }
+                        rest = tail;
+                    }
+                }
             }
         }
     }
@@ -220,6 +223,31 @@ fn walk(
         }
     }
     Ok(None)
+}
+
+/// Where a segment that is not a level of the tree carries on from.
+///
+/// Two detours, and they belong here rather than in `walk` because `diagnose`
+/// must take the same ones: a segment the walk crossed is not the segment that
+/// failed, and an error naming it sends the caller to correct the wrong word.
+///
+/// `None` is no detour. `Some(None)` is one with nothing behind it — an
+/// interface array segment the export does not resolve per occurrence.
+/// `Some(Some(node))` is where to carry on, which for a modport is the node
+/// already there: a modport views an interface's nets without holding any, so
+/// `b.mst.vld` and `b.vld` name one net and only the second is its name.
+fn detour(
+    c: &rusqlite::Connection,
+    node: i64,
+    inst: i64,
+    segment: &str,
+) -> Result<Option<Option<i64>>, String> {
+    // An interface port is a scope in a path but a terminal in the database,
+    // so a member reference through one goes to the interface it is bound to.
+    if let Some(term) = schema::interface_terminal(c, inst, segment)? {
+        return Ok(Some(schema::iface_target(c, term.term_id)?.flatten()));
+    }
+    Ok(schema::names_modport(c, inst, segment)?.then_some(Some(node)))
 }
 
 /// What a path did not resolve to, with enough of the design to correct it.
@@ -276,6 +304,7 @@ fn diagnose(
     segments: &[&str],
 ) -> Result<Unresolved, String> {
     let mut node = anchor.root;
+    let mut inst = schema::node(c, anchor.root)?.and_then(|n| n.inst_id);
     let mut valid = Vec::new();
 
     for (i, segment) in segments.iter().enumerate() {
@@ -284,9 +313,22 @@ fn diagnose(
         if i + 1 == segments.len() {
             break;
         }
-        match schema::child_node(c, node, segment)? {
-            Some(child) => {
-                node = child.node_id;
+        let crossed = match schema::child_node(c, node, segment)? {
+            Some(child) => Some((child.node_id, child.inst_id)),
+            // A generate level has no instance, and `walk` takes no detour
+            // from one either.
+            None => match inst {
+                None => None,
+                Some(at) => match detour(c, node, at, segment)? {
+                    Some(Some(next)) => Some((next, Some(next))),
+                    _ => None,
+                },
+            },
+        };
+        match crossed {
+            Some((next_node, next_inst)) => {
+                node = next_node;
+                inst = next_inst;
                 valid.push((*segment).to_string());
             }
             None => {
@@ -491,7 +533,9 @@ mod tests {
         assert!(u.candidates.contains(&"q".to_string()));
         assert_eq!(close_matches("qq", &u.candidates, 5), ["q"]);
 
-        let Err(u) = resolve(db.conn(), &a, "top.u_dpX.q").unwrap() else { panic!("'u_dpX' resolved") };
+        let Err(u) = resolve(db.conn(), &a, "top.u_dpX.q").unwrap() else {
+            panic!("'u_dpX' resolved")
+        };
         assert_eq!(u.valid_prefix, Vec::<String>::new());
         assert_eq!(u.failing_segment, "u_dpX");
         assert!(u.candidates.contains(&"u_dp0".to_string()));

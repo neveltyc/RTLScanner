@@ -4,6 +4,10 @@
 //! and `RTLSCANNER_REQUIRE_EXPORTER=1` turns that skip into a failure so a run
 //! meant to cover these cannot pass by not running them.
 
+// Every integration test binary compiles this module separately, so helpers
+// only some of them call are dead code in the rest.
+#![allow(dead_code)]
+
 use std::path::PathBuf;
 use std::process::Command;
 

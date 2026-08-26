@@ -151,6 +151,9 @@ struct Site {
     depth: u32,
 }
 
+/// A net's design path, its width, and the range its bits are spelled against.
+type Spelling = (String, Option<i64>, Option<(i64, i64)>);
+
 /// What the walk needs to know about a net, asked once each.
 #[derive(Default)]
 struct Facts {
@@ -167,7 +170,7 @@ struct Facts {
     /// apart by this chain, and entering a nested call means arriving at a
     /// site whose parent is where the walk already is.
     call_parent: Option<HashMap<i64, Option<i64>>>,
-    path: HashMap<i64, (String, Option<i64>, Option<(i64, i64)>)>,
+    path: HashMap<i64, Spelling>,
     /// Source paths, shared rather than copied per edge: a module's every
     /// statement names one file, and a cone crosses thousands of statements.
     files: HashMap<String, Rc<str>>,
@@ -260,21 +263,14 @@ impl Facts {
 
     /// The net's design path, its width, and the range its bits are spelled
     /// against.
-    fn path(
-        &mut self,
-        c: &Connection,
-        anchor: &Anchor,
-        net: i64,
-    ) -> Result<(String, Option<i64>, Option<(i64, i64)>), String> {
+    fn path(&mut self, c: &Connection, anchor: &Anchor, net: i64) -> Result<Spelling, String> {
         if let Some(known) = self.path.get(&net) {
             return Ok(known.clone());
         }
         let found = match schema::net_of(c, net)? {
             Some(row) => {
-                let decl = row
-                    .data_type
-                    .as_deref()
-                    .and_then(|t| bits::declared_range(t, row.width));
+                let decl =
+                    row.data_type.as_deref().and_then(|t| bits::declared_range(t, row.width));
                 let scope = match self.scope.get(&row.inst_id) {
                     Some(known) => known.clone(),
                     None => {
@@ -310,12 +306,8 @@ pub fn walk(
     let mut depth_of: HashMap<i64, u32> = HashMap::new();
     let mut widened = 0usize;
 
-    let mut frontier = vec![Site {
-        net: start.net.net_id,
-        ctx: None,
-        window: window.unwrap_or(WHOLE),
-        depth: 0,
-    }];
+    let mut frontier =
+        vec![Site { net: start.net.net_id, ctx: None, window: window.unwrap_or(WHOLE), depth: 0 }];
     depth_of.insert(start.net.net_id, 0);
 
     // One level at a time, and one query per level rather than one per site:
@@ -357,8 +349,7 @@ pub fn walk(
                 if is_control && !bounds.control {
                     continue;
                 }
-                if site.window != WHOLE
-                    && !row.signal_bits.may_touch(site.window.0, site.window.1)
+                if site.window != WHOLE && !row.signal_bits.may_touch(site.window.0, site.window.1)
                 {
                     continue;
                 }
@@ -438,12 +429,8 @@ pub fn walk(
 
                 let next_window = match site.window {
                     WHOLE => WHOLE,
-                    w => match bits::cross(
-                        Some(w),
-                        row.signal_bits,
-                        row.other_bits,
-                        row.map_exact,
-                    ) {
+                    w => match bits::cross(Some(w), row.signal_bits, row.other_bits, row.map_exact)
+                    {
                         Some(carried) => carried,
                         None => {
                             // The correspondence broke, so the question widens
@@ -472,7 +459,7 @@ pub fn walk(
         nodes.push(Node { net: *net, path, depth: *depth, width, decl, clocked, latch });
     }
     nodes.sort_by(|a, b| (a.depth, &a.path).cmp(&(b.depth, &b.path)));
-    edges.sort_by(|a, b| (a.depth, a.line, a.source, a.target).cmp(&(b.depth, b.line, b.source, b.target)));
+    edges.sort_by_key(|e| (e.depth, e.line, e.source, e.target));
 
     Ok(Cone {
         start: start.path(&anchor.root_name, '.'),
@@ -491,11 +478,7 @@ pub fn walk(
 /// one call's condition and another's argument — a combination no execution
 /// makes. Module-level rows always pass; a call may be entered from outside
 /// it, and left the way it was entered.
-fn admissible(
-    parent: &HashMap<i64, Option<i64>>,
-    row_site: Option<i64>,
-    ctx: Option<i64>,
-) -> bool {
+fn admissible(parent: &HashMap<i64, Option<i64>>, row_site: Option<i64>, ctx: Option<i64>) -> bool {
     match (row_site, ctx) {
         // A module-level row belongs to no call and passes always; a walk not
         // inside a call may enter any.
@@ -531,7 +514,6 @@ fn next_ctx(
     }
     Ok(if facts.body_local(c, far)? { Some(site) } else { None })
 }
-
 
 /// A directed path from `start` to `goal`, or none where there is no route.
 ///
@@ -581,4 +563,3 @@ pub fn find_path(
     route.reverse();
     Ok(Some(route))
 }
-

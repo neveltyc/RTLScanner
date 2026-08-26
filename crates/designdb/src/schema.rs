@@ -303,7 +303,8 @@ fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<NodeRow> {
 /// The elaborated tops, in id order. A package is parentless too, and is not
 /// one of these.
 pub fn roots(c: &Connection) -> Result<Vec<NodeRow>, String> {
-    let sql = format!("SELECT {NODE_COLS} FROM v_tree_node WHERE node_kind = 'root' ORDER BY node_id");
+    let sql =
+        format!("SELECT {NODE_COLS} FROM v_tree_node WHERE node_kind = 'root' ORDER BY node_id");
     let mut stmt = c.prepare(&sql).map_err(|e| q(e, "v_tree_node"))?;
     let rows = stmt.query_map([], node_row).map_err(|e| q(e, "v_tree_node"))?;
     rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_tree_node"))
@@ -311,21 +312,20 @@ pub fn roots(c: &Connection) -> Result<Vec<NodeRow>, String> {
 
 pub fn node(c: &Connection, node_id: i64) -> Result<Option<NodeRow>, String> {
     let sql = format!("SELECT {NODE_COLS} FROM v_tree_node WHERE node_id = ?1");
-    c.prepare_cached(&sql)
-        .and_then(|mut s| s.query_row([node_id], node_row))
-        .map(Some).or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_tree_node")),
-    })
+    c.prepare_cached(&sql).and_then(|mut s| s.query_row([node_id], node_row)).map(Some).or_else(
+        |e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(q(e, "v_tree_node")),
+        },
+    )
 }
 
 /// One path segment down. Two siblings of one name is a path that has stopped
 /// resolving uniquely, and the export counts them: guessing between them would
 /// answer about whichever came first.
 pub fn child_node(c: &Connection, parent: i64, name: &str) -> Result<Option<NodeRow>, String> {
-    let sql = format!(
-        "SELECT {NODE_COLS} FROM v_tree_node WHERE parent_node_id = ?1 AND node_name = ?2"
-    );
+    let sql =
+        format!("SELECT {NODE_COLS} FROM v_tree_node WHERE parent_node_id = ?1 AND node_name = ?2");
     let mut stmt = c.prepare(&sql).map_err(|e| q(e, "v_tree_node"))?;
     let mut found = stmt
         .query_map(rusqlite::params![parent, name], node_row)
@@ -370,7 +370,6 @@ pub fn net_by_name(c: &Connection, inst: i64, name: &str) -> Result<Option<NetRo
     })
 }
 
-
 /// Every net of one occurrence, by name. What a caller offers when a name did
 /// not resolve.
 pub fn nets_of_instance(c: &Connection, inst: i64) -> Result<Vec<NetRow>, String> {
@@ -407,6 +406,28 @@ pub fn interface_terminal(
         rusqlite::Error::QueryReturnedNoRows => Ok(None),
         e => Err(q(e, "v_term")),
     })
+}
+
+/// Whether `name` is a modport of the interface `inst` is an instance of.
+///
+/// A modport is a view of an interface's nets, so a path may name one where no
+/// scope of that name exists. Nothing records the declaration: the only trace
+/// of a modport is the `modport` a port that views it carries, so a view no
+/// port anywhere takes on this interface is one this cannot recognise. The
+/// unit is the interface's module, not this instance, because a modport
+/// belongs to the interface rather than to one elaboration of it.
+pub fn names_modport(c: &Connection, inst: i64, name: &str) -> Result<bool, String> {
+    c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM net_conn c \
+           JOIN term t ON t.id = c.term_id \
+           JOIN inst i ON i.id = c.outer_intf_inst_id \
+          WHERE t.modport = ?2 \
+            AND i.module_id = (SELECT module_id FROM inst WHERE id = ?1))",
+        rusqlite::params![inst, name],
+        |r| r.get::<_, i64>(0),
+    )
+    .map(|n| n != 0)
+    .map_err(|e| q(e, "net_conn"))
 }
 
 /// The interface instance a terminal is bound to.
@@ -450,12 +471,12 @@ fn stmt_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatementRow> {
 
 pub fn statement(c: &Connection, stmt_id: i64) -> Result<Option<StatementRow>, String> {
     let sql = format!("SELECT {STMT_COLS} FROM v_stmt WHERE stmt_id = ?1");
-    c.prepare_cached(&sql)
-        .and_then(|mut s| s.query_row([stmt_id], stmt_row))
-        .map(Some).or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_stmt")),
-    })
+    c.prepare_cached(&sql).and_then(|mut s| s.query_row([stmt_id], stmt_row)).map(Some).or_else(
+        |e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(q(e, "v_stmt")),
+        },
+    )
 }
 
 /// Which way an arc points, and so which of the two views carries it.
@@ -529,7 +550,8 @@ fn arcs_batch(c: &Connection, ids: &[i64], dir: Direction) -> Result<Vec<ArcRow>
         }
     };
     let places = format!("({})", vec!["?"; ids.len()].join(","));
-    let mut stmt = c.prepare_cached(&(sql.to_string() + &places)).map_err(|e| q(e, "v_driver/v_load"))?;
+    let mut stmt =
+        c.prepare_cached(&(sql.to_string() + &places)).map_err(|e| q(e, "v_driver/v_load"))?;
     let rows = stmt
         .query_map(rusqlite::params_from_iter(ids), |r| {
             Ok(ArcRow {
@@ -568,12 +590,11 @@ pub fn dep_kind(c: &Connection, dep_id: i64) -> Result<Option<(String, Option<i6
     c.prepare_cached("SELECT dep_kind, prim_id FROM v_net_dep WHERE dep_id = ?1")
         .and_then(|mut s| s.query_row([dep_id], |r| Ok((r.get(0)?, r.get(1)?))))
         .map(Some)
-    .or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_net_dep")),
-    })
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(q(e, "v_net_dep")),
+        })
 }
-
 
 /// The statement's right-hand-side reads, in written order.
 pub fn operands_of(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> {
@@ -761,11 +782,11 @@ pub fn call_chain(c: &Connection, call_site_id: i64) -> Result<Vec<CallSiteRow>,
 /// rather than by a name.
 pub fn net_of(c: &Connection, net_id: i64) -> Result<Option<NetRow>, String> {
     let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_id = ?1");
-    c.prepare_cached(&sql)
-        .and_then(|mut s| s.query_row([net_id], net_row))
-        .map(Some).or_else(|e| match e {
-        rusqlite::Error::QueryReturnedNoRows => Ok(None),
-        e => Err(q(e, "v_net")),
+    c.prepare_cached(&sql).and_then(|mut s| s.query_row([net_id], net_row)).map(Some).or_else(|e| {
+        match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            e => Err(q(e, "v_net")),
+        }
     })
 }
 
@@ -808,7 +829,11 @@ pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), St
     for row in rows {
         let (net, kind) = row.map_err(|e| q(e, "net_dep"))?;
         // `always_latch` holds a level; the other two run on an edge.
-        if kind == "always_latch" { latch.insert(net) } else { clocked.insert(net) };
+        if kind == "always_latch" {
+            latch.insert(net)
+        } else {
+            clocked.insert(net)
+        };
     }
 
     // The crossings that carry the whole object, as one sorted array of both
@@ -879,7 +904,8 @@ pub fn nets_matching(
     pattern: &str,
     limit: usize,
 ) -> Result<(Vec<NetRow>, bool), String> {
-    let sql = format!("SELECT {NET_COLS} FROM v_net WHERE net_name GLOB ?1 ORDER BY net_id LIMIT ?2");
+    let sql =
+        format!("SELECT {NET_COLS} FROM v_net WHERE net_name GLOB ?1 ORDER BY net_id LIMIT ?2");
     let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_net"))?;
     let rows = stmt
         .query_map(rusqlite::params![pattern, limit as i64], net_row)
@@ -907,12 +933,16 @@ pub fn nodes_matching(
     Ok((found, hit_cap))
 }
 
+/// A definition's name, what kind of definition it is, and how many times it
+/// elaborated.
+pub type ModuleMatch = (String, String, i64);
+
 /// Definitions whose name matches a glob, with how many times each elaborated.
 pub fn modules_matching(
     c: &Connection,
     pattern: &str,
     limit: usize,
-) -> Result<(Vec<(String, String, i64)>, bool), String> {
+) -> Result<(Vec<ModuleMatch>, bool), String> {
     let mut stmt = c
         .prepare_cached(
             "SELECT m.name, m.def_kind, count(i.id) FROM module m \
@@ -925,8 +955,7 @@ pub fn modules_matching(
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })
         .map_err(|e| q(e, "module"))?;
-    let found: Vec<(String, String, i64)> =
-        rows.collect::<Result<_, _>>().map_err(|e| q(e, "module"))?;
+    let found: Vec<ModuleMatch> = rows.collect::<Result<_, _>>().map_err(|e| q(e, "module"))?;
     let hit_cap = found.len() >= limit;
     Ok((found, hit_cap))
 }
@@ -950,8 +979,7 @@ pub fn procedure_writes(
 ) -> Result<Vec<(StatementRow, BitSpan)>, String> {
     // Qualified: the joined views share several column names, and an
     // unqualified list would be ambiguous where they overlap.
-    let cols =
-        STMT_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
+    let cols = STMT_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
     let sql = format!(
         "SELECT {cols}, t.lo, t.hi, t.is_exact FROM v_stmt s \
            JOIN v_stmt_target t ON t.stmt_id = s.stmt_id \

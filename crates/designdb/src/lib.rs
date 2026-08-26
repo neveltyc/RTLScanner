@@ -23,8 +23,8 @@ pub mod schema;
 pub mod source;
 
 pub use bits::BitSpan;
-pub use rusqlite::Connection;
 pub use open::{Db, OpenError, SCHEMA_VERSION};
+pub use rusqlite::Connection;
 pub use schema::{DbInfo, Direction};
 pub use source::{SourceCache, SourceState};
 

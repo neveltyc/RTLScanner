@@ -151,13 +151,7 @@ pub fn tree(
             stack.push((child, below, depth + 1));
         }
     }
-    Ok(Tree {
-        root: root_path.to_string(),
-        max_depth,
-        levels,
-        deeper,
-        limit: resolve_limit(limit),
-    })
+    Ok(Tree { root: root_path.to_string(), max_depth, levels, deeper, limit: resolve_limit(limit) })
 }
 
 /// What a name search turned up.

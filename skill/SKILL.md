@@ -61,6 +61,11 @@ narrow the pattern instead. A net declared inside a generate block or a
 subroutine is named through it (`lane[0].sig`), so a bare name will not match
 one: try `*sig`.
 
+A modport view is a level of a path with no object behind it: `b.mst.vld` and
+`b.vld` are one net, and so is `u_p.p.vld` through the port that takes the
+view. All three resolve, and the answer gives the net's own path — which is the
+one `find` returns and the one to use again.
+
 ## Working from a waveform finding
 
 A waveform tool says *which signal, at what time, carrying what*. This says

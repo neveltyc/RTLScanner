@@ -49,11 +49,7 @@ pub struct Info {
 /// and an export that skipped the procedure doing the driving looks exactly
 /// like that.
 pub fn trust_notes(seal: &DbInfo) -> Vec<Diagnostic> {
-    let info = Info {
-        path: PathBuf::new(),
-        seal: seal.clone(),
-        sources: Vec::new(),
-    };
+    let info = Info { path: PathBuf::new(), seal: seal.clone(), sources: Vec::new() };
     notes(&info)
 }
 
