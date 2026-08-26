@@ -1,6 +1,6 @@
 [package]
 name = "rtlscanner"
-description = "Signal trace, driver and load analysis over an rtl-designdb design database"
+description = "Signal drivers, loads and dependencies in SystemVerilog, from an rtl-designdb export"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

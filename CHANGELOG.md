@@ -38,6 +38,10 @@ the predecessor gave.
   conditions listed below it. `status` deliberately does not move when
   `--control` changes how much is shown, so what was missing was the count the
   verdict rests on. With `--control` off the two are equal.
+- **A hand-written `--help`.** One page, under sixty lines: the commands with
+  their arguments, then every option under the commands it belongs to — which
+  the generated help cannot spell. `-h` and `--help` are the same text
+  everywhere, and the free-standing `help` subcommand is gone.
 - `rustfmt.toml`, so `cargo fmt --check` has a style to check against.
 
 ### Fixed

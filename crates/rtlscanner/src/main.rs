@@ -22,8 +22,66 @@ use serde_json::json;
 
 use envelope::{CommandError, Diagnostic, ErrorCode, Rendered};
 
+/// The one help text, written by hand: `-h` and `--help` are the same view,
+/// and what it groups by is the command an option belongs to — the generated
+/// help can only say each thing once, under one command or repeated verbatim
+/// under all of them.
+const HELP: &str = concat!(
+    "rtlscanner ",
+    env!("CARGO_PKG_VERSION"),
+    " — a signal-level tracer for RTL debug
+
+Usage: rtlscanner <command> <db> [arguments] [options]
+
+Commands:
+  info    <db>             whether this database can be trusted — run first
+  tree    <db> [SCOPE]     what the design is made of, level by level
+  find    <db> PATTERN     where a name lives (PATTERN is a glob: *, ?)
+  trace   <db> SIGNAL      what drives SIGNAL, one hop out
+  fanin   <db> SIGNAL      everything SIGNAL depends on, transitively
+  fanout  <db> SIGNAL      everything that depends on SIGNAL, transitively
+  path    <db> FROM TO     a route from FROM to TO
+
+<db> is a design database, exported from the RTL once by rtl-designdb.
+SIGNAL, FROM and TO are hierarchical paths like top.u_core.status[3].
+
+Options (all optional, under the commands that take them):
+  every command except info
+    --top NAME           which top, where the design has several
+    --strip-prefix PFX   strip a testbench prefix from paths
+  trace
+    --load               what reads the signal, instead of what drives it
+    --control            include the conditions gating each statement
+  fanin, fanout, path
+    --depth N            stop after N hops; 0 = unbounded
+                         (default 4; path and --comb are unbounded)
+    --comb               stop at state elements: this cycle's logic only
+    --through-latch      under --comb, cross latches anyway
+    --no-control         leave out gating conditions
+  tree
+    --depth N            levels shown below SCOPE; 0 = all (default 3)
+  find
+    --instances | --modules
+                         search instances, or definitions, instead of nets
+  tree, find, fanin, fanout
+    --limit N            rows shown; 0 = all (default 200)
+  every command
+    --json               emit the JSON envelope instead of a terminal view
+
+  -h, --help             print this help
+  -V, --version          print version
+
+Make the database first, from the RTL, with RTLDebugDBKit's exporter:
+  rtl-designdb <sources...> --top NAME -o design.db
+This version reads database schema v19: the exporter and this tool must
+agree on the schema version.
+The database is a snapshot of the RTL at export time; edit the source
+and it is stale until re-exported.
+"
+);
+
 #[derive(Parser)]
-#[command(name = "rtlscanner", version, about, long_about = None)]
+#[command(name = "rtlscanner", version, disable_help_subcommand = true, override_help = HELP)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -71,8 +129,7 @@ struct TreeArgs {
 struct FindArgs {
     #[command(flatten)]
     common: Common,
-    /// A glob against the name — `*` and `?` as a shell spells them. A net's
-    /// name is the one relative to its instance, not its full path
+    /// A glob (`*`, `?`) against a bare name, not a full path
     pattern: String,
     /// Search instances rather than nets
     #[arg(long)]
@@ -93,8 +150,7 @@ struct Common {
     /// Name the top to resolve against, where the design has several
     #[arg(long)]
     top: Option<String>,
-    /// Strip this prefix from paths — a testbench scope the design has never
-    /// heard of, as a waveform tool spells it
+    /// Strip this prefix from paths — a testbench scope the design has never heard of
     #[arg(long)]
     strip_prefix: Option<String>,
     /// Emit the JSON envelope rather than a terminal view
@@ -105,19 +161,16 @@ struct Common {
 /// How far a walk goes, and what ends it.
 #[derive(Args, Clone)]
 struct WalkArgs {
-    /// Stop after this many hops; 0 for as far as the design goes. Unbounded
-    /// by default in `--comb`, where state elements bound it instead
+    /// Stop after this many hops; 0 for as far as the design goes (default 4)
     #[arg(long)]
     depth: Option<u32>,
     /// Stop at state elements: the answer is then this cycle's logic
     #[arg(long)]
     comb: bool,
-    /// Cross a latch anyway — for a glitch, a loop closing through one, or a
-    /// pulse-latch borrow, where its transparent window is the point
+    /// Under --comb, cross a latch anyway — its transparent window is the point
     #[arg(long)]
     through_latch: bool,
-    /// Leave out the conditions that gate a statement. They are real
-    /// dependencies and usually the numerous ones
+    /// Leave out the conditions gating a statement — usually most of a walk
     #[arg(long)]
     no_control: bool,
 }
@@ -181,8 +234,7 @@ struct TraceArgs {
     /// Name the top to resolve against, where the design has several
     #[arg(long)]
     top: Option<String>,
-    /// Strip this prefix from the path — a testbench scope the design has
-    /// never heard of, as a waveform tool spells it
+    /// Strip this prefix from the path — a testbench scope the design has never heard of
     #[arg(long)]
     strip_prefix: Option<String>,
     /// Emit the JSON envelope rather than a terminal view
