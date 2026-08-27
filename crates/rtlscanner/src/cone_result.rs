@@ -36,17 +36,18 @@ impl ConeResult {
         ConeResult { cone, limit }
     }
 
-    /// The edges shown, and the nodes they refer to.
+    /// The edges shown, and the nodes the answer refers to.
     ///
-    /// Nodes follow edges rather than being clipped on their own: a node list
-    /// clipped separately would leave edges pointing at names that are not in
-    /// it.
-    fn shown(&self) -> (Vec<&Edge>, Vec<&Node>) {
+    /// Nodes follow what is shown rather than being clipped on their own: a
+    /// node list clipped separately would leave edges — or `direct` — pointing
+    /// at names that are not in it.
+    fn shown(&self, direct: &[i64]) -> (Vec<&Edge>, Vec<&Node>) {
         let edges: Vec<&Edge> = self.cone.edges.iter().take(self.limit).collect();
         if edges.len() == self.cone.edges.len() {
             return (edges, self.cone.nodes.iter().collect());
         }
-        let mut kept: Vec<i64> = edges.iter().flat_map(|e| [e.source, e.target]).collect();
+        let mut kept: Vec<i64> =
+            edges.iter().flat_map(|e| [e.source, e.target]).chain(direct.iter().copied()).collect();
         kept.sort_unstable();
         kept.dedup();
         let nodes = self.cone.nodes.iter().filter(|n| kept.binary_search(&n.net).is_ok()).collect();
@@ -58,22 +59,27 @@ impl ConeResult {
     }
 
     /// The nets one hop out, which is what a caller following a cone reads
-    /// first. Taken from the edges shown: naming a net the answer clipped away
-    /// would point at something not in it.
-    fn direct(
-        &self,
-        edges: &[&Edge],
-        net_of: &dyn Fn(i64) -> (String, Option<(i64, i64)>),
-    ) -> Vec<String> {
+    /// first, and how many there are.
+    ///
+    /// Counted over the whole first hop and clipped on its own, not taken from
+    /// whatever the edge budget happened to leave: `--limit` is a bound on the
+    /// cone, and reading it as a bound on the first hop as well made the one
+    /// list a caller starts from quietly short of the design.
+    fn direct(&self, net_of: &dyn Fn(i64) -> (String, Option<(i64, i64)>)) -> (Vec<i64>, usize) {
         let far = |e: &Edge| match self.cone.direction {
             Direction::Driver => e.source,
             Direction::Load => e.target,
         };
-        let mut names: Vec<String> =
-            edges.iter().filter(|e| e.depth == 1).map(|e| net_of(far(e)).0).collect();
-        names.sort();
-        names.dedup();
-        names
+        let mut nets: Vec<i64> =
+            self.cone.edges.iter().filter(|e| e.depth == 1).map(far).collect();
+        nets.sort_unstable();
+        nets.dedup();
+        // By the name a caller reads, so which ones a clipped answer holds is
+        // the same question twice running and not an artefact of edge order.
+        nets.sort_by_cached_key(|net| net_of(*net).0);
+        let total = nets.len();
+        nets.truncate(self.limit);
+        (nets, total)
     }
 }
 
@@ -101,11 +107,14 @@ fn edge_json(e: &Edge, net: &dyn Fn(i64) -> (String, Option<(i64, i64)>)) -> Val
         "boundary": e.boundary,
         "control": e.control,
         "clocked": e.clocked,
-        "source_bits": e.src_bits.spell(src_decl),
-        "target_bits": e.tgt_bits.spell(tgt_decl),
+        "source_bits": designdb::bits::say(&e.src_bits, src_decl),
+        "target_bits": designdb::bits::say(&e.tgt_bits, tgt_decl),
         "map_exact": e.map_exact,
         // Where a combinational walk stopped, so an empty answer can say why.
         "ends_at_state": e.ends_at_state,
+        // A constant condition rules this arm out at this parameterisation:
+        // the statement is in the design, the dependency is not in this build.
+        "unreachable": e.unreachable,
         // Which expansion the row belongs to, where a subroutine body produced
         // it: one call's rows are not another's.
         "call_site": e.call_site_id,
@@ -116,23 +125,24 @@ fn edge_json(e: &Edge, net: &dyn Fn(i64) -> (String, Option<(i64, i64)>)) -> Val
 
 impl CommandResult for ConeResult {
     fn to_json(&self) -> (Value, Value) {
-        let (edges, nodes) = self.shown();
         let named: std::collections::HashMap<i64, (String, Option<(i64, i64)>)> =
             self.cone.nodes.iter().map(|n| (n.net, (n.path.clone(), n.decl))).collect();
         let net_of =
             |net: i64| named.get(&net).cloned().unwrap_or_else(|| (format!("<net {net}>"), None));
+        let (direct, direct_total) = self.direct(&net_of);
+        let (edges, nodes) = self.shown(&direct);
 
         let data = json!({
             "start": self.cone.start,
             "direction": self.cone.direction.tag(),
             "max_depth": self.cone.bounds.max_depth,
             "comb": self.cone.bounds.comb,
-            "control": self.cone.bounds.control,
+            "control": self.cone.bounds.gating.tag(),
             "nodes": nodes.iter().map(|n| node_json(n)).collect::<Vec<_>>(),
             "edges": edges.iter().map(|e| edge_json(e, &net_of)).collect::<Vec<_>>(),
-            // Of the edges shown, so `nodes` remains the set of things `edges`
-            // refers to and `direct` names some of them.
-            "direct": self.direct(&edges, &net_of),
+            // The whole first hop, clipped on its own terms; `summary.direct`
+            // says how many there are.
+            "direct": direct.iter().map(|net| net_of(*net).0).collect::<Vec<_>>(),
         });
         let summary = json!({
             // The true counts, whatever was shown: a clipped list that also
@@ -142,10 +152,20 @@ impl CommandResult for ConeResult {
             "edges": self.cone.edges.len(),
             "shown_edges": edges.len(),
             "shown_nodes": nodes.len(),
+            // The first hop is its own list with its own bound: a caller
+            // reading `direct` as "what feeds this" needs to know when it is
+            // holding part of one.
+            "direct": direct_total,
+            "shown_direct": direct.len(),
             "stopped_at_state": self.cone.edges.iter().filter(|e| e.ends_at_state).count(),
             "max_depth_reached": self.cone.nodes.iter().map(|n| n.depth).max().unwrap_or(0),
             "control_edges": self.cone.edges.iter().filter(|e| e.control).count(),
+            "unreachable_edges": self.cone.edges.iter().filter(|e| e.unreachable).count(),
             "widened": self.cone.widened,
+            // Nets with a driver or load the export named only by a reference
+            // it did not resolve: this cone is short by at least that much,
+            // and `trace` on each of them names what is missing.
+            "unresolved": self.cone.unresolved.len(),
             "truncated": self.truncated(),
             "limit": if self.limit == usize::MAX { 0 } else { self.limit },
         });
@@ -153,7 +173,9 @@ impl CommandResult for ConeResult {
     }
 
     fn render_human(&self) -> String {
-        let (edges, nodes) = self.shown();
+        // No first-hop list here, so no node is kept for one: the terminal view
+        // prints edges and counts, and a name it never writes needs no row.
+        let (edges, nodes) = self.shown(&[]);
         let named: std::collections::HashMap<i64, &Node> =
             self.cone.nodes.iter().map(|n| (n.net, n)).collect();
         let name = |net: i64| named.get(&net).map(|n| n.path.as_str()).unwrap_or("<net>");
@@ -185,6 +207,7 @@ impl CommandResult for ConeResult {
                 edge.clocked.then_some("clocked"),
                 edge.boundary.then_some("boundary"),
                 edge.control.then_some("condition"),
+                edge.unreachable.then_some("unreachable at this parameterisation"),
                 edge.ends_at_state.then_some("stops here: state element"),
             ]
             .into_iter()
@@ -193,9 +216,10 @@ impl CommandResult for ConeResult {
             let note =
                 if marks.is_empty() { String::new() } else { format!("  [{}]", marks.join(", ")) };
             // Each end's bits against its own declared range: the two are
-            // different objects and rarely declared alike.
+            // different objects and rarely declared alike. `@[hi:lo]` is an
+            // offset from the LSB, for an end with no single declared range.
             let spell = |span: &designdb::BitSpan, net: i64| {
-                span.spell(decl(net)).map(|b| b.to_string()).unwrap_or_default()
+                designdb::bits::say(span, decl(net)).unwrap_or_default()
             };
             out.push_str(&format!(
                 "  {:>2}  {}{} -> {}{}\n      {:<18} {}{note}\n",
@@ -216,6 +240,13 @@ impl CommandResult for ConeResult {
                 self.cone.edges.len(),
                 nodes.len(),
                 self.cone.nodes.len(),
+            ));
+        }
+        if !self.cone.unresolved.is_empty() {
+            out.push_str(&format!(
+                "note: {} net(s) here have an arc the export named but did not resolve; \
+                 this cone is short by at least that much — trace them to see it\n",
+                self.cone.unresolved.len()
             ));
         }
         if self.cone.widened > 0 {

@@ -20,6 +20,95 @@ use designdb::bits::BitSpan;
 use designdb::resolve::{Anchor, ResolvedSignal};
 use designdb::{Connection, Db, Direction, bits, schema};
 
+/// How many nets a walk may reach before it stops and says so.
+///
+/// Not a display bound. `--limit` clips the answer and leaves the counts true,
+/// which costs the whole walk; this bounds the walk itself, because no rule
+/// about conditions makes a genuinely large value cone smaller. A design holds
+/// structures — a wide crossbar, an array of FIFOs — whose value cone really is
+/// most of it, and leaving conditions out entirely does not shrink one.
+///
+/// A hundred thousand nets is a few hundred megabytes and a few seconds, which
+/// is as long as one question is worth. `RTLSCANNER_MAX_NODES` overrides it;
+/// `0` removes it, and the caller carries the risk.
+pub const MAX_NODES: usize = 100_000;
+
+/// The walk's node budget, from the environment or the constant above.
+///
+/// Read once, before any command runs: a value that is not a number is a
+/// mistake in the invocation, and finding that out after a twelve-second walk
+/// would be the worst moment to learn it.
+pub fn max_nodes() -> Result<Option<usize>, String> {
+    let Some(set) = std::env::var_os("RTLSCANNER_MAX_NODES") else { return Ok(Some(MAX_NODES)) };
+    let text = set.to_string_lossy().trim().to_string();
+    match text.parse::<usize>() {
+        Ok(0) => Ok(None),
+        Ok(n) => Ok(Some(n)),
+        Err(_) => Err(format!(
+            "RTLSCANNER_MAX_NODES is '{text}', which is not a number of nets; \
+             unset it for the default of {MAX_NODES}, or set 0 to remove the bound"
+        )),
+    }
+}
+
+/// Why a walk stopped without an answer.
+#[derive(Debug, Clone)]
+pub enum WalkError {
+    /// The database could not answer something the walk asked it.
+    Db(String),
+    /// The cone passed the node budget. Reported rather than clipped: a walk
+    /// that stopped early cannot say how big the cone is, and every count this
+    /// tool reports is the true one.
+    TooLarge {
+        max_nodes: usize,
+        /// Nets reached when it stopped.
+        nodes: usize,
+        /// The deepest level the walk finished, and its size — which is an
+        /// answer the caller can actually ask for.
+        depth: u32,
+        depth_nodes: usize,
+        depth_edges: usize,
+    },
+}
+
+impl From<String> for WalkError {
+    fn from(message: String) -> WalkError {
+        WalkError::Db(message)
+    }
+}
+
+/// How far a gating condition is followed.
+///
+/// A gate is a fact about the statement it gates — `en` decided whether this
+/// assignment happened — and `trace` reports it that way: `gates[]` names the
+/// condition and does not go on to ask where the condition came from. Following
+/// it transitively makes a cone something else entirely: on real RTL the
+/// conditions form one connected component (reset gates the state machine, the
+/// state machine gates the enables, the enables gate the reset logic), so a
+/// walk that follows them returns that component — the same answer for every
+/// signal in it, and therefore no answer about any of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Gating {
+    /// Left out: only where the value came from.
+    None,
+    /// One hop from every net the value cone reaches: what gates each
+    /// assignment along the way, and not where those gates came from.
+    Direct,
+    /// Followed like any other dependency, which is what it was until this
+    /// proved to answer the same thing everywhere.
+    Full,
+}
+
+impl Gating {
+    pub fn tag(self) -> &'static str {
+        match self {
+            Gating::None => "none",
+            Gating::Direct => "direct",
+            Gating::Full => "full",
+        }
+    }
+}
+
 /// How far a walk may go, and what counts as the end of the road.
 #[derive(Debug, Clone, Copy)]
 pub struct Bounds {
@@ -31,9 +120,10 @@ pub struct Bounds {
     /// a glitch, a combinational loop closing through it, or a pulse-latch
     /// borrow all live on the far side of one.
     pub through_latch: bool,
-    /// Follow the conditions that gate a statement as well as the values it
-    /// moves. A condition is a real dependency and a numerous one.
-    pub control: bool,
+    /// How far the conditions gating a statement are followed.
+    pub gating: Gating,
+    /// Nets the walk may reach before it gives up. `None` removes the bound.
+    pub max_nodes: Option<usize>,
 }
 
 /// One net the walk reached.
@@ -76,6 +166,12 @@ pub struct Edge {
     /// Reported so a cone that ends can say where, rather than only that it
     /// ended.
     pub ends_at_state: bool,
+    /// A constant condition rules this arc's statement out at this
+    /// parameterisation. Kept, because the statement is in the design, and
+    /// marked, because `trace` says so about the same row and a cone that did
+    /// not would report logic this build cannot reach as an ordinary
+    /// dependency.
+    pub unreachable: bool,
     pub stmt_id: Option<i64>,
     pub call_site_id: Option<i64>,
     pub file: Option<Rc<str>>,
@@ -101,6 +197,11 @@ pub struct Cone {
     /// Nets whose window was widened to the whole object because a narrower
     /// one could not be carried across an arc.
     pub widened: usize,
+    /// Nets the walk reached that have an arc it could not follow, because the
+    /// export named the far end only by a reference it did not resolve.
+    /// `trace` names those references; a cone cannot, and counting them is how
+    /// a short answer says it is short rather than complete.
+    pub unresolved: Vec<i64>,
 }
 
 /// The bits of one net a walk has already asked about.
@@ -161,6 +262,8 @@ struct Facts {
     /// once for the database, on first use: the relation does not depend on the
     /// walk, and a cone asks about every net it reaches.
     state_nets: Option<(HashSet<i64>, HashSet<i64>)>,
+    /// Branches a constant condition rules out, with everything below them.
+    dead_branches: Option<HashSet<i64>>,
     body_local: HashMap<i64, bool>,
     dep: HashMap<i64, Option<(String, Option<i64>)>>,
     /// Statements, by id. A cone crosses many more arcs than a design has
@@ -190,6 +293,20 @@ impl Facts {
             None => self.state_nets.insert(schema::state_elements(c)?),
         };
         Ok((clocked.contains(&net), latch.contains(&net)))
+    }
+
+    /// Whether a constant condition rules this statement out.
+    fn unreachable(
+        &mut self,
+        c: &Connection,
+        stmt: Option<&schema::StatementRow>,
+    ) -> Result<bool, String> {
+        let Some(branch) = stmt.and_then(|s| s.branch_id) else { return Ok(false) };
+        let dead = match &self.dead_branches {
+            Some(known) => known,
+            None => self.dead_branches.insert(schema::dead_branches(c)?),
+        };
+        Ok(dead.contains(&branch))
     }
 
     fn file(&mut self, path: &str) -> Rc<str> {
@@ -296,7 +413,25 @@ pub fn walk(
     dir: Direction,
     window: Option<(u64, u64)>,
     bounds: Bounds,
-) -> Result<Cone, String> {
+) -> Result<Cone, WalkError> {
+    walk_to(db, anchor, start, dir, window, bounds, None)
+}
+
+/// The same walk, stopping at the level that reaches `goal`.
+///
+/// Breadth-first order is what makes that safe: every node of a shortest route
+/// to the goal arrived at a strictly smaller depth, so the level the goal turns
+/// up in is the last one a route can need. A cone whose whole point is one
+/// route otherwise costs a design-wide walk to answer about a net one hop away.
+pub fn walk_to(
+    db: &Db,
+    anchor: &Anchor,
+    start: &ResolvedSignal,
+    dir: Direction,
+    window: Option<(u64, u64)>,
+    bounds: Bounds,
+    goal: Option<i64>,
+) -> Result<Cone, WalkError> {
     let c = db.conn();
     let mut facts = Facts::default();
 
@@ -305,6 +440,10 @@ pub fn walk(
     let mut edges: Vec<Edge> = Vec::new();
     let mut depth_of: HashMap<i64, u32> = HashMap::new();
     let mut widened = 0usize;
+    let mut unresolved: HashSet<i64> = HashSet::new();
+    // The deepest level the walk finished, and its size. Kept so a walk that
+    // gives up can name a depth the caller can ask for instead.
+    let mut complete: (u32, usize, usize) = (0, 1, 0);
 
     let mut frontier =
         vec![Site { net: start.net.net_id, ctx: None, window: window.unwrap_or(WHOLE), depth: 0 }];
@@ -346,7 +485,7 @@ pub fn walk(
             let Some(rows) = by_net.get(&site.net) else { continue };
             for row in rows {
                 let is_control = row.dep_kind.as_deref() == Some("control");
-                if is_control && !bounds.control {
+                if is_control && bounds.gating == Gating::None {
                     continue;
                 }
                 if site.window != WHOLE && !row.signal_bits.may_touch(site.window.0, site.window.1)
@@ -359,8 +498,13 @@ pub fn walk(
                 let Some(far) = row.other_net_id else {
                     // Nothing to continue to: a tie-off, a boundary, a reader
                     // with no nameable target. `trace` is where those are
-                    // reported; here they end the walk without ending the
-                    // answer.
+                    // reported one by one. A far end the export named but did
+                    // not resolve is the one that leaves the answer short, so
+                    // that much is counted here: without it a cone missing a
+                    // hierarchical driver reads exactly like a complete one.
+                    if row.other_ref.is_some() {
+                        unresolved.insert(site.net);
+                    }
                     continue;
                 };
 
@@ -401,6 +545,7 @@ pub fn walk(
                     tgt_bits,
                     map_exact: row.map_exact,
                     ends_at_state: at_state,
+                    unreachable: facts.unreachable(c, stmt.as_ref())?,
                     stmt_id: row.stmt_id,
                     call_site_id: row.call_site_id,
                     file: row.file_path.as_deref().map(|p| facts.file(p)),
@@ -419,7 +564,24 @@ pub fn walk(
                 // there: an edge whose endpoint is not among the nodes would
                 // leave a caller reading `nodes` as the things `edges` names
                 // with a name that is not in it.
+                if depth_of.len() >= bounds.max_nodes.unwrap_or(usize::MAX)
+                    && !depth_of.contains_key(&far)
+                {
+                    return Err(WalkError::TooLarge {
+                        max_nodes: bounds.max_nodes.unwrap_or(usize::MAX),
+                        nodes: depth_of.len(),
+                        depth: complete.0,
+                        depth_nodes: complete.1,
+                        depth_edges: complete.2,
+                    });
+                }
                 depth_of.entry(far).or_insert(next_depth);
+                // The gate is named and the walk stops there: where it came
+                // from is the next question, asked about it. Following it here
+                // is what turned every cone into the same one.
+                if is_control && bounds.gating != Gating::Full {
+                    continue;
+                }
                 if at_state {
                     continue;
                 }
@@ -449,6 +611,14 @@ pub fn walk(
                 });
             }
         }
+        complete = (
+            asking.first().map(|s| s.depth).unwrap_or(0) + 1,
+            depth_of.len(),
+            edges.len(),
+        );
+        if goal.is_some_and(|net| depth_of.contains_key(&net)) {
+            break;
+        }
         frontier = next;
     }
 
@@ -468,6 +638,11 @@ pub fn walk(
         nodes,
         edges,
         widened,
+        unresolved: {
+            let mut nets: Vec<i64> = unresolved.into_iter().collect();
+            nets.sort_unstable();
+            nets
+        },
     })
 }
 
@@ -526,13 +701,13 @@ pub fn find_path(
     start: &ResolvedSignal,
     goal: &ResolvedSignal,
     bounds: Bounds,
-) -> Result<Option<Vec<Edge>>, String> {
-    // The walk is the same one; what differs is that it is read backwards from
-    // the goal once the goal is in it.
-    let cone = walk(db, anchor, start, Direction::Load, None, bounds)?;
+) -> Result<Option<Vec<Edge>>, WalkError> {
     if start.net.net_id == goal.net.net_id {
         return Ok(Some(Vec::new()));
     }
+    // The walk is the same one; what differs is that it stops at the level the
+    // goal turns up in, and is then read backwards from it.
+    let cone = walk_to(db, anchor, start, Direction::Load, None, bounds, Some(goal.net.net_id))?;
 
     // The shallowest arriving edge per node, which breadth-first order makes
     // one on a shortest route. Taken by depth rather than by position: the

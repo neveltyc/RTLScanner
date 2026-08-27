@@ -287,21 +287,80 @@ fn a_loop_publishes_the_iteration_space_behind_an_inexact_range() {
 }
 
 #[test]
-fn a_waveform_path_resolves_once_its_testbench_prefix_is_named() {
-    let Some(fx) = basic("a_waveform_path_resolves_once_its_testbench_prefix_is_named") else {
-        return;
-    };
-    // A path from a waveform tool is anchored at a testbench the design has
-    // never heard of. The design cannot recognise that scope, so the caller
-    // states it.
-    let (v, code) = json_trace(&fx, &["tb.u_dut.basic.y", "--strip-prefix", "tb.u_dut"]);
-    assert_eq!(code, 0, "{v}");
-    assert_eq!(v["data"]["hops"].as_array().unwrap().len(), 2);
+fn a_waveform_path_resolves_without_being_told_where_it_is_anchored() {
+    let Some(fx) = basic("a_waveform_path_resolves_without_being_told") else { return };
 
-    // A scope whose name merely begins with the prefix is a different scope.
-    let (v, code) = json_trace(&fx, &["tb.u_dutch.y", "--strip-prefix", "tb.u_dut"]);
-    assert_eq!(code, 1);
-    assert!(v["errors"][0]["message"].as_str().unwrap().contains("not under"));
+    // A path from a waveform tool is anchored at the testbench that ran the
+    // simulation. Which levels those are is a hypothesis this design can test,
+    // so it is tested rather than demanded — and the answer says which ones it
+    // dropped — joined with `.`, the design's own separator — because a path
+    // reinterpreted in silence cannot be checked.
+    for (path, discarded) in [
+        ("tb.u_dut.basic.y", "tb.u_dut"),
+        ("tb.dut.wrap.i_top.y", "tb.dut.wrap.i_top"),
+        ("tb/u_dut/y", "tb.u_dut"),
+    ] {
+        let (v, code) = json_trace(&fx, &[path]);
+        assert_eq!(code, 0, "{path}: {v}");
+        assert_eq!(v["data"]["hops"].as_array().unwrap().len(), 2, "{path}");
+        assert_eq!(v["data"]["anchor"]["discarded"][0], discarded, "{path}: {v}");
+    }
+
+    // Already the design's own, and nothing is dropped.
+    let (v, code) = json_trace(&fx, &["basic.y"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["anchor"]["discarded"].as_array().unwrap().len(), 0, "{v}");
+
+    // Stating it is an override, not a requirement: a path already relative to
+    // the design still answers, which is what lets `path FROM TO` take one of
+    // each.
+    let (v, code) = json_trace(&fx, &["basic.y", "--anchor", "tb.u_dut"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["anchor"]["discarded"].as_array().unwrap().len(), 0, "{v}");
+}
+
+#[test]
+fn a_path_that_reaches_the_design_and_then_fails_says_where() {
+    let Some(fx) = basic("a_path_that_reaches_the_design_and_then_fails") else { return };
+
+    // `basic` names this design, so the caller is in these coordinates and
+    // `nope` is their mistake. Reading past it to find some name further down
+    // would answer about a net nobody asked for.
+    let (v, code) = json_trace(&fx, &["tb.u_dut.basic.nope.y"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["errors"][0]["details"]["failing_segment"], "nope", "{v}");
+
+    // Where nothing in the path reached the design at all, the failing level
+    // is not a name to correct — it is a level to drop, and the message says
+    // so rather than sending the caller to fix the wrong word.
+    let (v, code) = json_trace(&fx, &["nowhere.at.all.zzz"]);
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["errors"][0]["details"]["anchored_elsewhere"], true, "{v}");
+    assert!(v["errors"][0]["message"].as_str().unwrap().contains("--anchor"), "{v}");
+}
+
+#[test]
+fn a_path_whose_only_matching_level_is_a_port_is_read_as_that_port() {
+    let Some(fx) = basic("a_path_whose_only_matching_level_is_a_port") else { return };
+
+    // The limit of working the anchor out from the path, stated so it is not
+    // found by surprise. A port of the root is a level a waveform points at
+    // constantly (`tb.u_dut.clk`), so a path ending in one has to be read as
+    // reaching the design — and nothing distinguishes that from a path whose
+    // scopes are simply wrong and whose last level happens to share a port's
+    // name. Both are read the same way.
+    //
+    // What keeps it checkable is that the answer says what it dropped: three
+    // levels the caller wrote are named right there in `anchor.discarded`.
+    let (v, code) = json_trace(&fx, &["nowhere.at.all.y"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["signal"], "basic.y", "{v}");
+    assert_eq!(v["data"]["anchor"]["discarded"][0], "nowhere.at.all", "{v}");
+
+    // Naming the anchor is how a caller who knows better says so.
+    let (v, code) = json_trace(&fx, &["nowhere.at.all.y", "--anchor", "tb.u_dut"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["data"]["anchor"]["discarded"][0], "nowhere.at.all", "{v}");
 }
 
 /// Constructs the first round of tests did not reach, each of which turned out
@@ -536,10 +595,10 @@ endmodule
     let Some(fx) = exported("gated", GATED, "a_signal_read_only_by_conditions") else { return };
 
     // `en` gates a statement and feeds no value, so it has no structural load:
-    // the verdict must not move because `--control` was passed, or the flag
+    // the verdict must not move because `--ctl` was passed, or the flag
     // would be deciding what the tool says about the design rather than how
     // much of it is shown.
-    let (v, _) = json_trace(&fx, &["gated.en", "--load", "--control"]);
+    let (v, _) = json_trace(&fx, &["gated.en", "--load", "--ctl"]);
     assert_eq!(v["data"]["status"], "no_load_found");
     assert_eq!(v["summary"]["hops"], 1, "the condition is an answer: {v}");
 
@@ -549,7 +608,7 @@ endmodule
 
     // A net that is read for its value has both counts equal, so an ordinary
     // answer is unchanged by any of this.
-    let (v, _) = json_trace(&fx, &["gated.d", "--load", "--control"]);
+    let (v, _) = json_trace(&fx, &["gated.d", "--load", "--ctl"]);
     assert_eq!(v["data"]["status"], "resolved");
     assert_eq!(v["summary"]["structural_hops"], v["summary"]["hops"]);
 }

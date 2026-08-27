@@ -3,9 +3,10 @@
 //! Two things a path is not. It is not a hierarchy: a generate block is a level
 //! of the path but not a level of the instance tree, and a net declared inside
 //! one belongs to the enclosing instance under a name that carries the generate
-//! segments. And it does not round-trip: an escaped identifier may hold a `.`,
-//! so a path is assembled segment by segment and matched whole, never split
-//! back apart on a separator and trusted.
+//! segments. And its separators are not its structure: an escaped identifier
+//! may hold a `.`, so the text is first split into the LEVELS it names — see
+//! [`levels`] — and every lookup, at any depth, matches a whole level. Nothing
+//! here trusts a `.` to mean a boundary.
 
 use crate::err;
 use crate::schema::{self, NetRow};
@@ -15,25 +16,65 @@ use crate::schema::{self, NetRow};
 /// translate it first.
 const SEPARATORS: [char; 2] = ['.', '/'];
 
-/// Split a path into segments, skipping a leading separator.
-pub fn segments(path: &str) -> Vec<&str> {
+/// Split a path into segments, skipping a leading separator. A segment is not
+/// a level of the path — see [`levels`], which is what a lookup takes.
+fn segments(path: &str) -> Vec<&str> {
     path.split(SEPARATORS).filter(|s| !s.is_empty()).collect()
 }
 
-/// Where the design sits, and what to strip off a path before looking in it.
+/// Split a path into the levels it names, which is not the same as its
+/// segments: an escaped identifier may hold a separator, and LRM 5.6.1 ends
+/// such a name at whitespace. `\u.1 .v` has three segments and two levels,
+/// `\u.1 ` and `v`. Looking a level up one segment at a time would never find
+/// it, which is the whole reason a path is assembled rather than split.
 ///
-/// A path from a waveform tool is anchored at a testbench the design has never
-/// heard of. Stripping that prefix is the caller's to state — the design has no
-/// way to recognise a scope that is not in it — so the anchor carries it.
+/// Joining levels back with `.` restores the text, so a caller may still take
+/// the leaf as everything from some level onward.
+pub fn levels(path: &str) -> Vec<String> {
+    let segments = segments(path);
+    let mut levels = Vec::with_capacity(segments.len());
+    let mut at = 0;
+    while at < segments.len() {
+        let span = match segments[at] {
+            open if open.starts_with('\\') && !open.ends_with(char::is_whitespace) => segments[at..]
+                .iter()
+                .position(|s| s.ends_with(char::is_whitespace))
+                .map_or(1, |i| i + 1),
+            _ => 1,
+        };
+        levels.push(segments[at..at + span].join("."));
+        at += span;
+    }
+    levels
+}
+
+/// Where the design sits in the coordinates a path is written in.
+///
+/// The database is rooted at the module the export made its top. A waveform is
+/// rooted at the testbench that ran the simulation, where this design is one
+/// instance among others — so the same net is `tb.u_dut.u_core.q` there and
+/// `top.u_core.q` here. Two things differ, not one: the levels above are in
+/// neither world, and the level itself is spelled with the instance's name
+/// there and the module's here.
+///
+/// The caller may state where the root sits; where it does not, the levels
+/// above are inferred, because which ones they are is a hypothesis the design
+/// can test rather than a fact only the caller holds.
+///
+/// Which of several instances of this design a waveform meant is not a
+/// question these rows can answer at all: the export elaborated the module
+/// once, so every instance of it in a testbench maps to the same rows. What
+/// the levels above are worth is telling the caller which ones were dropped.
 #[derive(Debug, Clone)]
 pub struct Anchor {
     /// The root instance's node id.
     pub root: i64,
     /// The root's own name, as the design spells it.
     pub root_name: String,
-    /// A prefix to remove from an incoming path, without its trailing
-    /// separator. Empty means paths are already design-relative.
-    pub strip_prefix: String,
+    /// Where the root sits in the caller's coordinates, without a trailing
+    /// separator. Empty means it was not stated, and the levels above a path
+    /// are worked out from the path.
+    pub stated: String,
 }
 
 /// A net, with where it sits.
@@ -46,6 +87,10 @@ pub struct ResolvedSignal {
     /// The net's name relative to its instance.
     pub local: String,
     pub net: NetRow,
+    /// The levels of the asked-for path that were above the design and
+    /// discarded, joined with `.`. Reported, because a path reinterpreted
+    /// without saying so is a path the caller cannot check.
+    pub discarded: Option<String>,
 }
 
 impl ResolvedSignal {
@@ -66,7 +111,7 @@ impl ResolvedSignal {
 pub fn anchor(
     c: &rusqlite::Connection,
     top: Option<&str>,
-    strip_prefix: Option<&str>,
+    stated: Option<&str>,
 ) -> Result<Anchor, String> {
     let roots = schema::roots(c)?;
     let chosen = match (top, roots.len()) {
@@ -88,27 +133,69 @@ pub fn anchor(
     Ok(Anchor {
         root: chosen.node_id,
         root_name: chosen.node_name.clone(),
-        strip_prefix: strip_prefix.unwrap_or("").trim_end_matches(SEPARATORS).to_string(),
+        stated: stated.unwrap_or("").trim_end_matches(SEPARATORS).to_string(),
     })
 }
 
-/// Remove the anchor's prefix from a path.
+/// How many of a path's leading levels are the stated anchor.
 ///
-/// The remainder must start at a segment boundary: `tb.u_dut` must not match
-/// the front of `tb.u_dutch`, which is a different scope whose name happens to
-/// begin the same way.
-pub fn strip_prefix<'a>(anchor: &Anchor, path: &'a str) -> Result<&'a str, String> {
-    if anchor.strip_prefix.is_empty() {
-        return Ok(path);
+/// Zero where the path does not carry it: a stated anchor says where the root
+/// sits in the caller's coordinates, not which coordinates every path must be
+/// written in. Requiring it made `path FROM TO` demand that both operands be
+/// spelled alike, for no gain — a path already relative to the design resolves
+/// on its own.
+///
+/// The match is by level, so `tb.u_dut` does not match the front of
+/// `tb.u_dutch`, and either separator matches either: the path this strips a
+/// testbench off is usually a waveform tool's, and the two spellings name one
+/// hierarchy.
+fn stated_levels(anchor: &Anchor, levels: &[String]) -> usize {
+    if anchor.stated.is_empty() {
+        return 0;
     }
-    let rest = path
-        .strip_prefix(anchor.strip_prefix.as_str())
-        .ok_or_else(|| err(format!("'{path}' is not under '{}'", anchor.strip_prefix)))?;
-    match rest.chars().next() {
-        None => Ok(""),
-        Some(c) if SEPARATORS.contains(&c) => Ok(&rest[c.len_utf8()..]),
-        Some(_) => Err(err(format!("'{path}' is not under '{}'", anchor.strip_prefix))),
+    let stated = self::levels(&anchor.stated);
+    match levels.len() > stated.len() && levels[..stated.len()] == stated[..] {
+        true => stated.len(),
+        false => 0,
     }
+}
+
+/// How many of a path's leading levels are above the design altogether.
+///
+/// A waveform's path is anchored at the testbench, and the levels between it
+/// and this design are in neither world — the export never elaborated them.
+/// Which ones they are is a hypothesis the design can test, so it is tested
+/// rather than demanded: levels are discarded while none of them names
+/// anything at the root.
+///
+/// The first that does ends it, even if what follows fails. A path that
+/// reaches the design and then goes wrong inside it is a mistake in the path,
+/// not a different set of coordinates, and reading on would discard the
+/// caller's own scopes until some name matched further down — answering
+/// confidently about a net they never asked for.
+/// `None` where no level of the path names anything here at all — the path is
+/// not this design's, and the level that failed is not a name to correct.
+fn above_the_design(
+    c: &rusqlite::Connection,
+    anchor: &Anchor,
+    levels: &[String],
+) -> Result<Option<usize>, String> {
+    let root_inst = schema::node(c, anchor.root)?.and_then(|n| n.inst_id);
+    for (i, level) in levels.iter().enumerate() {
+        if *level == anchor.root_name || schema::child_node(c, anchor.root, level)?.is_some() {
+            return Ok(Some(i));
+        }
+        // The root's own ports are levels too, and the last one. They are what
+        // a waveform points at most often, so a path ending in one has to be
+        // recognised as reaching the design.
+        if i + 1 == levels.len()
+            && let Some(inst) = root_inst
+            && schema::net_by_name(c, inst, level)?.is_some()
+        {
+            return Ok(Some(i));
+        }
+    }
+    Ok(None)
 }
 
 /// The path from `root` down to `inst`, or `None` if it is not below it.
@@ -131,7 +218,7 @@ pub fn path_below_root(
     }
 }
 
-/// Walk `segments` down from `root` and resolve `leaf` as a net there.
+/// Walk `levels` down from `root` and resolve `leaf` as a net there.
 ///
 /// The two cursors are the point: `node` descends every level of the path,
 /// while `inst` only advances at an instance. Generate levels fold into the
@@ -139,7 +226,7 @@ pub fn path_below_root(
 fn walk(
     c: &rusqlite::Connection,
     root: i64,
-    segments: &[&str],
+    levels: &[String],
     leaf: &str,
 ) -> Result<Option<ResolvedSignal>, String> {
     let Some(root_node) = schema::node(c, root)? else { return Ok(None) };
@@ -151,9 +238,9 @@ fn walk(
     let mut below: Vec<String> = Vec::new();
     let mut folded: Vec<String> = Vec::new();
 
-    let mut rest = segments;
-    while let Some((first, tail)) = rest.split_first() {
-        match schema::child_node(c, node, first)? {
+    let mut rest = levels;
+    while let Some((level, tail)) = rest.split_first() {
+        match schema::child_node(c, node, level)? {
             Some(child) => match child.node_kind.as_str() {
                 "instance" | "root" => {
                     let Some(child_inst) = child.inst_id else { return Ok(None) };
@@ -180,7 +267,7 @@ fn walk(
                 if !folded.is_empty() {
                     return Ok(None);
                 }
-                match detour(c, root, node, inst, first)? {
+                match detour(c, root, node, inst, level)? {
                     None => break,
                     Some(None) => return Ok(None),
                     Some(Some(next)) => {
@@ -202,12 +289,12 @@ fn walk(
     // Whatever is left is not a level of the tree: subroutine scopes have no
     // node, and their nets are named through them.
     let mut local = folded;
-    local.extend(rest.iter().map(|s| s.to_string()));
+    local.extend(rest.iter().cloned());
     local.push(leaf.to_string());
     let local = local.join(".");
 
     if let Some(net) = schema::net_by_name(c, inst, &local)? {
-        return Ok(Some(ResolvedSignal { inst, below_root: below, local, net }));
+        return Ok(Some(ResolvedSignal { inst, below_root: below, local, net, discarded: None }));
     }
     // An escaped identifier is stored as SystemVerilog spells it, and a caller
     // may have written it either way.
@@ -219,6 +306,7 @@ fn walk(
                 below_root: below,
                 local: bare.to_string(),
                 net,
+                discarded: None,
             }));
         }
     }
@@ -273,10 +361,49 @@ fn detour(
 pub struct Unresolved {
     /// The longest prefix of the path that named something.
     pub valid_prefix: Vec<String>,
-    /// The segment that did not.
+    /// The level that did not — one level, which an escaped identifier may
+    /// spell with separators in it.
     pub failing_segment: String,
     /// What that level does contain.
     pub candidates: Vec<String>,
+    /// No level of the path named anything here. The failing level is then not
+    /// a name to correct but a level to drop, and a message that offers a
+    /// spelling correction sends the caller to fix the wrong word.
+    pub anchored_elsewhere: bool,
+}
+
+/// The levels of a path that are the design's, and the ones above it that
+/// were not — a testbench, a wrapper, whatever else ran the simulation.
+///
+/// Every command that takes a path goes through here, so a scope and a signal
+/// are read in the same coordinates.
+pub fn below_the_anchor(
+    c: &rusqlite::Connection,
+    anchor: &Anchor,
+    path: &str,
+) -> Result<(Vec<String>, Option<String>, bool), String> {
+    let mut levels = levels(path);
+    // Where the root sits in the caller's coordinates: taken from the anchor
+    // where it was stated and the path carries it, worked out from the path
+    // where it was not.
+    let (above, reached) = match stated_levels(anchor, &levels) {
+        // Nothing in the path names anything here. Discarding all of it would
+        // leave nothing to report, so it is read whole and the failure says
+        // that no part of it reached the design.
+        0 => match above_the_design(c, anchor, &levels)? {
+            Some(above) => (above, true),
+            None => (0, false),
+        },
+        stated => (stated, true),
+    };
+    let discarded = (above > 0).then(|| levels[..above].join("."));
+    levels.drain(..above);
+    // A path may or may not repeat the root's own name; both spell the same
+    // net, and the design is what says which one this is.
+    if levels.first().map(String::as_str) == Some(anchor.root_name.as_str()) {
+        levels.remove(0);
+    }
+    Ok((levels, discarded, reached))
 }
 
 /// Resolve a design-relative path to the net it names.
@@ -289,29 +416,26 @@ pub fn resolve(
     anchor: &Anchor,
     path: &str,
 ) -> Result<Result<ResolvedSignal, Unresolved>, String> {
-    let path = strip_prefix(anchor, path)?;
-    let mut segments = segments(path);
-
-    // A path may or may not repeat the root's own name; both spell the same
-    // net, and the design is what says which one this is.
-    if segments.first() == Some(&anchor.root_name.as_str()) {
-        segments.remove(0);
-    }
-    if segments.is_empty() {
+    let (levels, discarded, reached) = below_the_anchor(c, anchor, path)?;
+    if levels.is_empty() {
         return Ok(Err(Unresolved {
             valid_prefix: Vec::new(),
             failing_segment: path.to_string(),
             candidates: names_under(c, anchor.root)?,
+            anchored_elsewhere: !reached,
         }));
     }
 
-    for split in (0..segments.len()).rev() {
-        let leaf = segments[split..].join(".");
-        if let Some(found) = walk(c, anchor.root, &segments[..split], &leaf)? {
+    for split in (0..levels.len()).rev() {
+        let leaf = levels[split..].join(".");
+        if let Some(mut found) = walk(c, anchor.root, &levels[..split], &leaf)? {
+            found.discarded = discarded;
             return Ok(Ok(found));
         }
     }
-    Ok(Err(diagnose(c, anchor, &segments)?))
+    let mut why = diagnose(c, anchor, &levels)?;
+    why.anchored_elsewhere = !reached;
+    Ok(Err(why))
 }
 
 /// Walk as far as the path does resolve, and report what is at the level it
@@ -319,25 +443,25 @@ pub fn resolve(
 fn diagnose(
     c: &rusqlite::Connection,
     anchor: &Anchor,
-    segments: &[&str],
+    levels: &[String],
 ) -> Result<Unresolved, String> {
     let mut node = anchor.root;
     let mut inst = schema::node(c, anchor.root)?.and_then(|n| n.inst_id);
     let mut valid = Vec::new();
 
-    for (i, segment) in segments.iter().enumerate() {
-        // The last segment is the name, not a scope: a path failing there
-        // failed to name a net, and the level above it is what to list.
-        if i + 1 == segments.len() {
+    for (i, level) in levels.iter().enumerate() {
+        // The last level is the name, not a scope: a path failing there failed
+        // to name a net, and the level above it is what to list.
+        if i + 1 == levels.len() {
             break;
         }
-        let crossed = match schema::child_node(c, node, segment)? {
+        let crossed = match schema::child_node(c, node, level)? {
             Some(child) => Some((child.node_id, child.inst_id)),
             // A generate level has no instance, and `walk` takes no detour
             // from one either.
             None => match inst {
                 None => None,
-                Some(at) => match detour(c, anchor.root, node, at, segment)? {
+                Some(here) => match detour(c, anchor.root, node, here, level)? {
                     Some(Some(next)) => Some((next, Some(next))),
                     _ => None,
                 },
@@ -347,21 +471,23 @@ fn diagnose(
             Some((next_node, next_inst)) => {
                 node = next_node;
                 inst = next_inst;
-                valid.push((*segment).to_string());
+                valid.push(level.clone());
             }
             None => {
                 return Ok(Unresolved {
                     valid_prefix: valid,
-                    failing_segment: (*segment).to_string(),
+                    failing_segment: level.clone(),
                     candidates: names_under(c, node)?,
+                    anchored_elsewhere: false,
                 });
             }
         }
     }
     Ok(Unresolved {
         valid_prefix: valid,
-        failing_segment: segments.last().map(|s| s.to_string()).unwrap_or_default(),
+        failing_segment: levels.last().cloned().unwrap_or_default(),
         candidates: names_under(c, node)?,
+        anchored_elsewhere: false,
     })
 }
 
@@ -443,19 +569,21 @@ mod tests {
         INSERT INTO module(id, name, def_kind) VALUES
             (1,'top','module'), (2,'dp','module'), (3,'reg','module');
         INSERT INTO tree_node(id, parent_node_id, name, node_kind, ordinal) VALUES
-            (1, NULL, 'top',   'root',     0),
-            (2, 1,    'u_dp0', 'instance', 0),
-            (3, 2,    'g[0]',  'generate', 0),
-            (4, 3,    'u_reg', 'instance', 0),
-            (5, 1,    'u_dp1', 'instance', 1);
+            (1, NULL, 'top',    'root',     0),
+            (2, 1,    'u_dp0',  'instance', 0),
+            (3, 2,    'g[0]',   'generate', 0),
+            (4, 3,    'u_reg',  'instance', 0),
+            (5, 1,    'u_dp1',  'instance', 1),
+            (6, 1,    '\\u.1 ', 'instance', 2);
         INSERT INTO inst(id, module_id, parent_inst_id, param_signature) VALUES
-            (1, 1, NULL, ''), (2, 2, 1, ''), (4, 3, 2, ''), (5, 2, 1, '');
+            (1, 1, NULL, ''), (2, 2, 1, ''), (4, 3, 2, ''), (5, 2, 1, ''), (6, 3, 1, '');
         INSERT INTO net(id, inst_id, scope_node_id, name, decl_kind, width, is_implicit) VALUES
             (1, 1, 1, 'clk',       'wire',     1, 0),
             (2, 4, 4, 'q',         'variable', 8, 0),
             (3, 2, 3, 'g[0].sig',  'wire',     4, 0),
             (4, 1, 1, 'bump.v',    'variable', 8, 0),
-            (5, 1, 1, 'foo.bar',   'wire',     1, 0);";
+            (5, 1, 1, 'foo.bar',   'wire',     1, 0),
+            (6, 6, 6, 'v',         'variable', 8, 0);";
 
     fn opened(tag: &str) -> Db {
         let dir = tmp(tag);
@@ -540,6 +668,37 @@ mod tests {
     }
 
     #[test]
+    fn an_escaped_identifier_holding_a_separator_is_a_scope_too() {
+        // The leaf was already matched whole; a level of the path is the same
+        // name in the same spelling, and looking it up a segment at a time
+        // reaches an instance called `\u` that is not there.
+        let db = opened("escaped-scope");
+        let a = plain(&db);
+        let found = resolved(&db, &a, r"top.\u.1 .v");
+        assert_eq!(found.net.net_id, 6);
+        assert_eq!(found.inst, 6);
+        assert_eq!(found.below_root, [r"\u.1 "]);
+        assert_eq!(found.path("top", '.'), r"top.\u.1 .v");
+
+        // And the level is what a failure below it reports, so a correction
+        // starts from a name that exists.
+        let Err(u) = resolve(db.conn(), &a, r"top.\u.1 .vv").unwrap() else { panic!("resolved") };
+        assert_eq!(u.valid_prefix, [r"\u.1 "]);
+        assert_eq!(u.failing_segment, "vv");
+    }
+
+    #[test]
+    fn levels_end_an_escaped_identifier_at_its_terminator() {
+        assert_eq!(levels(r"top.\u.1 .v"), ["top", r"\u.1 ", "v"]);
+        // Already terminated by the first segment, so it stands alone.
+        assert_eq!(levels(r"top.\u[2] .v"), ["top", r"\u[2] ", "v"]);
+        // No terminator anywhere: nothing says where the name ends, so the
+        // path is read as written rather than swallowing the rest of it.
+        assert_eq!(levels(r"top.\u.1.v"), ["top", r"\u", "1", "v"]);
+        assert_eq!(levels("top.u_dp0.q"), ["top", "u_dp0", "q"]);
+    }
+
+    #[test]
     fn a_name_that_does_not_resolve_comes_back_with_the_level_that_does() {
         let db = opened("unresolved");
         let a = plain(&db);
@@ -561,16 +720,73 @@ mod tests {
     }
 
     #[test]
-    fn a_prefix_is_stripped_only_at_a_segment_boundary() {
-        let db = opened("prefix");
+    fn a_stated_anchor_matches_whole_levels_and_either_separator() {
+        let db = opened("anchor-stated");
+        for stated in ["tb.u_dut", "tb/u_dut"] {
+            let a = anchor(db.conn(), None, Some(stated)).unwrap();
+            for path in ["tb.u_dut.top.u_dp0.g[0].u_reg.q", "tb/u_dut/top/u_dp0/g[0]/u_reg/q"] {
+                let found = resolved(&db, &a, path);
+                assert_eq!(found.net.net_id, 2, "{stated} / {path}");
+                assert_eq!(found.discarded.as_deref(), Some("tb.u_dut"), "{stated} / {path}");
+            }
+        }
+
+        // A level whose name merely begins with it is a different level, so
+        // nothing is taken off the front of it. What is left is then read like
+        // any other foreign path — the whole of `tb.u_dutch`, never `ch`.
         let a = anchor(db.conn(), None, Some("tb.u_dut")).unwrap();
+        let found = resolved(&db, &a, "tb.u_dutch.clk");
+        assert_eq!(found.net.net_id, 1);
+        assert_eq!(found.discarded.as_deref(), Some("tb.u_dutch"));
+    }
 
-        let found = resolved(&db, &a, "tb.u_dut.top.u_dp0.g[0].u_reg.q");
+    #[test]
+    fn a_stated_anchor_is_an_override_and_not_a_requirement() {
+        // It says where the root sits in the caller's coordinates, not which
+        // coordinates every path has to be written in. Demanding the second
+        // made a two-path question insist both operands be spelled alike.
+        let db = opened("anchor-override");
+        let a = anchor(db.conn(), None, Some("tb.u_dut")).unwrap();
+        let found = resolved(&db, &a, "top.u_dp0.g[0].u_reg.q");
         assert_eq!(found.net.net_id, 2);
+        assert_eq!(found.discarded, None);
+    }
 
-        // A scope whose name merely begins with the prefix is a different
-        // scope, and taking it would answer about the wrong design.
-        let e = resolve(db.conn(), &a, "tb.u_dutch.q").unwrap_err();
-        assert!(e.contains("is not under 'tb.u_dut'"), "{e}");
+    #[test]
+    fn a_path_from_another_world_finds_the_design_on_its_own() {
+        // A waveform's path is anchored at the testbench that ran the
+        // simulation. Which levels those are is a hypothesis this design can
+        // test, so it is tested rather than demanded.
+        let db = opened("anchor-inferred");
+        let a = plain(&db);
+        for (path, discarded) in [
+            ("tb.u_dut.u_dp0.g[0].u_reg.q", Some("tb.u_dut")),
+            ("tb.dut.wrap.i_top.u_dp0.g[0].u_reg.q", Some("tb.dut.wrap.i_top")),
+            ("tb.u_dut.top.u_dp0.g[0].u_reg.q", Some("tb.u_dut")),
+            ("top.u_dp0.g[0].u_reg.q", None),
+            ("u_dp0.g[0].u_reg.q", None),
+        ] {
+            let found = resolved(&db, &a, path);
+            assert_eq!(found.net.net_id, 2, "{path}");
+            assert_eq!(found.discarded.as_deref(), discarded, "{path}");
+        }
+        // A port of the root is a level too, and the one a waveform points at
+        // most often.
+        assert_eq!(resolved(&db, &a, "tb.u_dut.clk").net.net_id, 1);
+    }
+
+    #[test]
+    fn a_path_that_reaches_the_design_and_then_fails_is_not_read_on() {
+        // `u_dp0` names something here, so the caller is in these coordinates
+        // and `nope` is their mistake. Discarding it to keep looking would find
+        // `clk` at the root and answer confidently about a net nobody asked
+        // for.
+        let db = opened("anchor-stops");
+        let a = plain(&db);
+        let Err(u) = resolve(db.conn(), &a, "tb.u_dut.u_dp0.nope.clk").unwrap() else {
+            panic!("read past the design's own level")
+        };
+        assert_eq!(u.valid_prefix, ["u_dp0"]);
+        assert_eq!(u.failing_segment, "nope");
     }
 }

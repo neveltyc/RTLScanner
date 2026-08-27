@@ -46,28 +46,38 @@ SIGNAL, FROM and TO are hierarchical paths like top.u_core.status[3].
 Options (all optional, under the commands that take them):
   every command except info
     --top NAME           which top, where the design has several
-    --strip-prefix PFX   strip a testbench prefix from paths
+  trace, tree, fanin, fanout, path
+    --anchor PATH        where this design's root sits in your paths, e.g.
+                         tb.u_dut. Worked out from the path when omitted, so
+                         a waveform's spelling is accepted as it comes.
   trace
     --load               what reads the signal, instead of what drives it
-    --control            include the conditions gating each statement
+    --ctl                include the conditions gating each statement
   fanin, fanout, path
     --depth N            stop after N hops; 0 = unbounded
                          (default 4; path and --comb are unbounded)
     --comb               stop at state elements: this cycle's logic only
     --through-latch      under --comb, cross latches anyway
-    --no-control         leave out gating conditions
+    --no-ctl             leave out gating conditions entirely
+    --follow-ctl         follow a gating condition on, rather than naming it
+                         and stopping there, which is the default
   tree
     --depth N            levels shown below SCOPE; 0 = all (default 3)
   find
     --instances | --modules
                          search instances, or definitions, instead of nets
-  tree, find, fanin, fanout
+  info, tree, find, fanin, fanout
     --limit N            rows shown; 0 = all (default 200)
   every command
     --json               emit the JSON envelope instead of a terminal view
 
   -h, --help             print this help
   -V, --version          print version
+
+Environment:
+  RTLSCANNER_MAX_NODES   nets a fanin/fanout/path walk may reach before it
+                         stops and says so (default 100000; 0 = no bound).
+                         This bounds the WALK; --limit bounds the answer.
 
 Make the database first, from the RTL, with RTLDebugDBKit's exporter:
   rtl-designdb <sources...> --top NAME -o design.db
@@ -91,6 +101,9 @@ enum Command {
     Info {
         /// Path to the design database
         db: PathBuf,
+        /// List at most this many unchanged sources; 0 for all
+        #[arg(long)]
+        limit: Option<i64>,
         /// Emit the JSON envelope rather than a terminal view
         #[arg(long)]
         json: bool,
@@ -113,6 +126,8 @@ enum Command {
 struct TreeArgs {
     #[command(flatten)]
     common: Common,
+    #[command(flatten)]
+    at: AnchorArg,
     /// Start below this scope rather than at the top
     scope: Option<String>,
     /// Show this many levels; 0 for all
@@ -148,12 +163,21 @@ struct Common {
     /// Name the top to resolve against, where the design has several
     #[arg(long)]
     top: Option<String>,
-    /// Strip this prefix from paths — a testbench scope the design has never heard of
-    #[arg(long)]
-    strip_prefix: Option<String>,
     /// Emit the JSON envelope rather than a terminal view
     #[arg(long)]
     json: bool,
+}
+
+/// Where this design sits in the coordinates the caller's paths are written
+/// in, for the commands that take a path.
+///
+/// Worked out from the path where it is not given, so it is an override and
+/// not a precondition — see `resolve::below_the_anchor`.
+#[derive(Args, Clone)]
+struct AnchorArg {
+    /// Where the design's root sits in your paths, e.g. tb.u_dut (inferred if omitted)
+    #[arg(long)]
+    anchor: Option<String>,
 }
 
 /// How far a walk goes, and what ends it.
@@ -168,13 +192,16 @@ struct WalkArgs {
     /// Under --comb, cross a latch anyway — its transparent window is the point
     #[arg(long)]
     through_latch: bool,
-    /// Leave out the conditions gating a statement — usually most of a walk
+    /// Leave out the conditions gating a statement entirely
     #[arg(long)]
-    no_control: bool,
+    no_ctl: bool,
+    /// Follow a gating condition transitively, like any other dependency
+    #[arg(long, conflicts_with = "no_ctl")]
+    follow_ctl: bool,
 }
 
 impl WalkArgs {
-    fn bounds(&self) -> cone::Bounds {
+    fn bounds(&self, max_nodes: Option<usize>) -> cone::Bounds {
         cone::Bounds {
             // Zero is unbounded, as it is for `--limit`: one spelling for
             // "no bound" across the tool. A combinational walk is bounded by
@@ -187,7 +214,16 @@ impl WalkArgs {
             },
             comb: self.comb,
             through_latch: self.through_latch,
-            control: !self.no_control,
+            // One hop by default: a gate says what decided this assignment,
+            // and where the gate itself came from is a question about the
+            // gate. Followed transitively it stops being about the signal
+            // asked for at all.
+            gating: match (self.no_ctl, self.follow_ctl) {
+                (true, _) => cone::Gating::None,
+                (_, true) => cone::Gating::Full,
+                _ => cone::Gating::Direct,
+            },
+            max_nodes,
         }
     }
 }
@@ -196,6 +232,8 @@ impl WalkArgs {
 struct ConeArgs {
     #[command(flatten)]
     common: Common,
+    #[command(flatten)]
+    at: AnchorArg,
     /// Hierarchical path of the signal, with an optional bit-select
     signal: String,
     #[command(flatten)]
@@ -209,6 +247,8 @@ struct ConeArgs {
 struct PathArgs {
     #[command(flatten)]
     common: Common,
+    #[command(flatten)]
+    at: AnchorArg,
     /// Where the route starts
     from: String,
     /// Where it should arrive
@@ -228,13 +268,13 @@ struct TraceArgs {
     load: bool,
     /// Include the conditions that gate a statement as arcs of their own
     #[arg(long)]
-    control: bool,
+    ctl: bool,
+    #[command(flatten)]
+    at: AnchorArg,
     /// Name the top to resolve against, where the design has several
     #[arg(long)]
     top: Option<String>,
-    /// Strip this prefix from the path — a testbench scope the design has never heard of
-    #[arg(long)]
-    strip_prefix: Option<String>,
+
     /// Emit the JSON envelope rather than a terminal view
     #[arg(long)]
     json: bool,
@@ -242,26 +282,38 @@ struct TraceArgs {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Before any command runs, like the arguments themselves: a budget that is
+    // not a number is a mistake in the invocation, and a twelve-second walk is
+    // the worst moment to find that out.
+    let max_nodes = match cone::max_nodes() {
+        Ok(bound) => bound,
+        Err(message) => {
+            eprintln!("error: {message}");
+            return ExitCode::from(2);
+        }
+    };
     let rendered = match cli.command {
-        Command::Info { db, json } => {
-            let (outcome, diagnostics) = info::run(&db);
+        Command::Info { db, limit, json } => {
+            let (outcome, diagnostics) = info::run(&db, cone_result::resolve_limit(limit));
             envelope::render(
                 "info",
-                json!({ "db": db.display().to_string() }),
+                json!({ "db": db.display().to_string(), "limit": limit }),
                 &outcome,
                 &diagnostics,
                 json,
             )
         }
-        Command::Fanin(args) => cone_command(args, Direction::Driver),
-        Command::Fanout(args) => cone_command(args, Direction::Load),
-        Command::Path(args) => path_command(args),
+        Command::Fanin(args) => cone_command(args, Direction::Driver, max_nodes),
+        Command::Fanout(args) => cone_command(args, Direction::Load, max_nodes),
+        Command::Path(args) => path_command(args, max_nodes),
         Command::Tree(args) => {
             let echo = json!({
                 "db": args.common.db.display().to_string(),
                 "scope": args.scope,
                 "depth": args.depth,
                 "limit": args.limit,
+                "top": args.common.top,
+                "anchor": args.at.anchor,
             });
             let outcome = tree_command(&args);
             envelope::render("tree", echo, &outcome, &[], args.common.json)
@@ -273,41 +325,50 @@ fn main() -> ExitCode {
                 "instances": args.instances,
                 "modules": args.modules,
                 "limit": args.limit,
+                "top": args.common.top,
             });
             let outcome = find_command(&args);
-            envelope::render("find", echo, &outcome, &[], args.common.json)
+            let notes = match &outcome {
+                Ok(found) => found.notes(),
+                Err(_) => Vec::new(),
+            };
+            envelope::render("find", echo, &outcome, &notes, args.common.json)
         }
         Command::Trace(args) => {
             let echo = json!({
                 "db": args.db.display().to_string(),
                 "signal": args.signal,
                 "load": args.load,
-                "control": args.control,
+                "ctl": args.ctl,
                 "top": args.top,
-                "strip_prefix": args.strip_prefix,
+                "anchor": args.at.anchor,
             });
-            let (outcome, notes) = trace_command(&args);
-            envelope::render("trace", echo, &outcome, &notes, args.json)
+            let (outcome, notes, at) = trace_command(&args);
+            envelope::render_anchored("trace", echo, &outcome, &notes, at.as_ref(), args.json)
         }
     };
     write_out(rendered)
 }
 
-fn trace_command(args: &TraceArgs) -> (Result<trace::Trace, CommandError>, Vec<Diagnostic>) {
+type Traced = (Result<trace::Trace, CommandError>, Vec<Diagnostic>, Option<envelope::AnchorNote>);
+
+fn trace_command(args: &TraceArgs) -> Traced {
     match traced(args) {
-        Ok((trace, notes)) => (Ok(trace), notes),
-        Err(e) => (Err(e), Vec::new()),
+        Ok((trace, notes, at)) => (Ok(trace), notes, Some(at)),
+        Err(e) => (Err(e), Vec::new(), None),
     }
 }
 
-fn traced(args: &TraceArgs) -> Result<(trace::Trace, Vec<Diagnostic>), CommandError> {
+fn traced(
+    args: &TraceArgs,
+) -> Result<(trace::Trace, Vec<Diagnostic>, envelope::AnchorNote), CommandError> {
     let db = open(&args.db)?;
     // What the export could not reach is not visible in an answer's shape: a
     // signal whose driving procedure was skipped reads as undriven.
     let notes = designdb::schema::db_info(db.conn())
-        .map(|seal| info::trust_notes(&seal))
+        .map(|seal| info::trust_notes(&db, &seal))
         .unwrap_or_default();
-    let anchor = resolve::anchor(db.conn(), args.top.as_deref(), args.strip_prefix.as_deref())
+    let anchor = resolve::anchor(db.conn(), args.top.as_deref(), args.at.anchor.as_deref())
         .map_err(|e| CommandError::new(ErrorCode::NoTop, e))?;
 
     // A bit-select is split off first, and only where the whole spelling is not
@@ -326,6 +387,7 @@ fn traced(args: &TraceArgs) -> Result<(trace::Trace, Vec<Diagnostic>), CommandEr
                 &prefix.join("."),
                 &u.failing_segment,
                 &u.candidates,
+                u.anchored_elsewhere,
             ));
         }
     };
@@ -366,9 +428,10 @@ fn traced(args: &TraceArgs) -> Result<(trace::Trace, Vec<Diagnostic>), CommandEr
     };
 
     let dir = if args.load { Direction::Load } else { Direction::Driver };
-    let trace = trace::run(&db, &anchor, &signal, dir, offsets, spelled, args.control)
+    let trace = trace::run(&db, &anchor, &signal, dir, offsets, spelled, args.ctl)
         .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
-    Ok((trace, notes))
+    let at = anchor_note(&anchor, [signal.discarded.as_deref(), None]);
+    Ok((trace, notes, at))
 }
 
 /// Split a trailing bit-select off the signal path.
@@ -418,12 +481,21 @@ fn not_found(
     prefix: &str,
     missing: &str,
     here: &[String],
+    elsewhere: bool,
 ) -> CommandError {
     let close = resolve::close_matches(missing, here, 5);
-    let hint = if close.is_empty() {
-        String::new()
-    } else {
-        format!("; did you mean: {}", close.join(", "))
+    // No level of this path named anything here, so it is not written in these
+    // coordinates at all. The failing level is then not a name to correct but
+    // a level to drop, and offering a spelling correction would send the
+    // caller to fix the wrong word.
+    let outside = elsewhere;
+    let hint = match (outside, close.is_empty()) {
+        (true, _) => format!(
+            "; nothing above it named this design either — if '{asked}' is anchored at a \
+             testbench, name where the root sits with --anchor"
+        ),
+        (false, false) => format!("; did you mean: {}", close.join(", ")),
+        (false, true) => String::new(),
     };
     let what = match code {
         ErrorCode::ScopeNotFound => "a scope",
@@ -438,6 +510,7 @@ fn not_found(
         "valid_prefix": prefix,
         "failing_segment": missing,
         "close_matches": close,
+        "anchored_elsewhere": outside,
         "available": here.iter().take(SHOWN).collect::<Vec<_>>(),
         "available_truncated": here.len() > SHOWN,
     }))
@@ -464,11 +537,71 @@ fn write_all(w: &mut impl Write, s: &str) -> std::io::Result<()> {
 }
 
 /// Open the database and choose the root, which every command does first.
-fn design(common: &Common) -> Result<(Db, resolve::Anchor), CommandError> {
+fn design(common: &Common, at: &AnchorArg) -> Result<(Db, resolve::Anchor), CommandError> {
     let db = open(&common.db)?;
-    let anchor = resolve::anchor(db.conn(), common.top.as_deref(), common.strip_prefix.as_deref())
+    let anchor = resolve::anchor(db.conn(), common.top.as_deref(), at.anchor.as_deref())
         .map_err(|e| CommandError::new(ErrorCode::NoTop, e))?;
     Ok((db, anchor))
+}
+
+/// The root every path in this answer is spelled against, plus what any of
+/// them lost getting there.
+fn anchor_note(anchor: &resolve::Anchor, of: [Option<&str>; 2]) -> envelope::AnchorNote {
+    let mut discarded: Vec<String> =
+        of.into_iter().flatten().map(str::to_string).collect();
+    discarded.sort();
+    discarded.dedup();
+    envelope::AnchorNote { root: anchor.root_name.clone(), discarded }
+}
+
+/// A walk that stopped, as the envelope reports it.
+///
+/// The budget comes from the environment and so is absent from `command.args`;
+/// an answer that a budget changed has to carry the number that changed it, or
+/// the same command on two machines differs with nothing to say why. A walk
+/// that finished never mentions it: there the number changed nothing.
+fn walk_failed(e: cone::WalkError) -> CommandError {
+    match e {
+        cone::WalkError::Db(message) => CommandError::new(ErrorCode::BadDb, message),
+        cone::WalkError::TooLarge { max_nodes, nodes, depth, depth_nodes, depth_edges } => {
+            // `--depth 0` is unbounded, so a walk that got nowhere must not be
+            // told to ask for depth zero — that is the question it just failed.
+            let reached = match depth {
+                0 => format!(
+                    "the bound of {max_nodes} net(s) is smaller than this cone's first hop"
+                ),
+                d => format!(
+                    "depth {d} is the deepest it finished, at {depth_nodes} net(s) \
+                     and {depth_edges} arc(s)"
+                ),
+            };
+            let mut ideas = Vec::new();
+            if depth > 0 {
+                ideas.push(format!("--depth {depth}"));
+            }
+            ideas.extend([
+                "--comb".to_string(),
+                "--no-ctl".to_string(),
+                "RTLSCANNER_MAX_NODES=<bigger>, or 0 for no bound and the risk is yours"
+                    .to_string(),
+            ]);
+            CommandError::new(
+                ErrorCode::BudgetExceeded,
+                format!(
+                    "this cone reached the walk's bound of {max_nodes} net(s) and was still \
+                     growing; {reached}"
+                ),
+            )
+            .with_details(json!({
+                "max_nodes": max_nodes,
+                "nodes_reached": nodes,
+                "last_complete_depth": depth,
+                "nodes_at_that_depth": depth_nodes,
+                "edges_at_that_depth": depth_edges,
+                "try": ideas,
+            }))
+        }
+    }
 }
 
 /// Resolve one signal path, with the bit-select it may carry.
@@ -491,6 +624,7 @@ fn signal_of(
                 &prefix.join("."),
                 &u.failing_segment,
                 &u.candidates,
+                u.anchored_elsewhere,
             ));
         }
     };
@@ -522,7 +656,7 @@ fn signal_of(
     Ok((signal, window))
 }
 
-fn cone_command(args: ConeArgs, dir: Direction) -> Rendered {
+fn cone_command(args: ConeArgs, dir: Direction, max_nodes: Option<usize>) -> Rendered {
     let name = match dir {
         Direction::Driver => "fanin",
         Direction::Load => "fanout",
@@ -530,56 +664,67 @@ fn cone_command(args: ConeArgs, dir: Direction) -> Rendered {
     let echo = json!({
         "db": args.common.db.display().to_string(),
         "signal": args.signal,
+        "top": args.common.top,
+        "anchor": args.at.anchor,
         "depth": args.walk.depth,
         "comb": args.walk.comb,
         "through_latch": args.walk.through_latch,
-        "no_control": args.walk.no_control,
+        "no_ctl": args.walk.no_ctl,
+        "follow_ctl": args.walk.follow_ctl,
         "limit": args.limit,
     });
-    let (outcome, notes) = match walked(&args, dir) {
-        Ok((result, notes)) => (Ok(result), notes),
-        Err(e) => (Err(e), Vec::new()),
+    let (outcome, notes, at) = match walked(&args, dir, max_nodes) {
+        Ok((result, notes, at)) => (Ok(result), notes, Some(at)),
+        Err(e) => (Err(e), Vec::new(), None),
     };
-    envelope::render(name, echo, &outcome, &notes, args.common.json)
+    envelope::render_anchored(name, echo, &outcome, &notes, at.as_ref(), args.common.json)
 }
 
 fn walked(
     args: &ConeArgs,
     dir: Direction,
-) -> Result<(cone_result::ConeResult, Vec<Diagnostic>), CommandError> {
-    let (db, anchor) = design(&args.common)?;
+    max_nodes: Option<usize>,
+) -> Result<(cone_result::ConeResult, Vec<Diagnostic>, envelope::AnchorNote), CommandError> {
+    let (db, anchor) = design(&args.common, &args.at)?;
     let notes = designdb::schema::db_info(db.conn())
-        .map(|seal| info::trust_notes(&seal))
+        .map(|seal| info::trust_notes(&db, &seal))
         .unwrap_or_default();
     let (signal, window) = signal_of(&db, &anchor, &args.signal)?;
 
-    let cone = cone::walk(&db, &anchor, &signal, dir, window, args.walk.bounds())
-        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+    let cone = cone::walk(&db, &anchor, &signal, dir, window, args.walk.bounds(max_nodes))
+        .map_err(walk_failed)?;
     let limit = cone_result::resolve_limit(args.limit);
-    Ok((cone_result::ConeResult::new(cone, limit), notes))
+    let at = anchor_note(&anchor, [signal.discarded.as_deref(), None]);
+    Ok((cone_result::ConeResult::new(cone, limit), notes, at))
 }
 
-fn path_command(args: PathArgs) -> Rendered {
+fn path_command(args: PathArgs, max_nodes: Option<usize>) -> Rendered {
     let echo = json!({
         "db": args.common.db.display().to_string(),
         "from": args.from,
         "to": args.to,
+        "top": args.common.top,
+        "anchor": args.at.anchor,
         "depth": args.walk.depth,
         "comb": args.walk.comb,
         "through_latch": args.walk.through_latch,
-        "no_control": args.walk.no_control,
+        "no_ctl": args.walk.no_ctl,
+        "follow_ctl": args.walk.follow_ctl,
     });
-    let (outcome, notes) = match routed(&args) {
-        Ok((result, notes)) => (Ok(result), notes),
-        Err(e) => (Err(e), Vec::new()),
+    let (outcome, notes, at) = match routed(&args, max_nodes) {
+        Ok((result, notes, at)) => (Ok(result), notes, Some(at)),
+        Err(e) => (Err(e), Vec::new(), None),
     };
-    envelope::render("path", echo, &outcome, &notes, args.common.json)
+    envelope::render_anchored("path", echo, &outcome, &notes, at.as_ref(), args.common.json)
 }
 
-fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>), CommandError> {
-    let (db, anchor) = design(&args.common)?;
+fn routed(
+    args: &PathArgs,
+    max_nodes: Option<usize>,
+) -> Result<(cone_result::PathResult, Vec<Diagnostic>, envelope::AnchorNote), CommandError> {
+    let (db, anchor) = design(&args.common, &args.at)?;
     let notes = designdb::schema::db_info(db.conn())
-        .map(|seal| info::trust_notes(&seal))
+        .map(|seal| info::trust_notes(&db, &seal))
         .unwrap_or_default();
     let (from, _) = signal_of(&db, &anchor, &args.from)?;
     let (to, _) = signal_of(&db, &anchor, &args.to)?;
@@ -587,10 +732,14 @@ fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>),
     // A route search is bounded by finding the route, not by a hop count: a
     // default depth here would report "no path" for one that is simply longer
     // than the default, which is the answer a caller is least able to check.
-    let bounds =
-        cone::Bounds { max_depth: args.walk.depth.filter(|d| *d > 0), ..args.walk.bounds() };
-    let route = cone::find_path(&db, &anchor, &from, &to, bounds)
-        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
+    let bounds = cone::Bounds {
+        max_depth: args.walk.depth.filter(|d| *d > 0),
+        ..args.walk.bounds(max_nodes)
+    };
+    // A walk that gave up is not a walk that found nothing: `found: false`
+    // rests on having looked everywhere, so a budget that stopped the search
+    // is an error and never an answer.
+    let route = cone::find_path(&db, &anchor, &from, &to, bounds).map_err(walk_failed)?;
 
     // Every net a route names, so the answer spells paths and not ids.
     let mut names = std::collections::HashMap::new();
@@ -606,6 +755,7 @@ fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>),
             }
         }
     }
+    let at = anchor_note(&anchor, [from.discarded.as_deref(), to.discarded.as_deref()]);
     Ok((
         cone_result::PathResult {
             from: from.path(&anchor.root_name, '.'),
@@ -615,11 +765,12 @@ fn routed(args: &PathArgs) -> Result<(cone_result::PathResult, Vec<Diagnostic>),
             names,
         },
         notes,
+        at,
     ))
 }
 
 fn tree_command(args: &TreeArgs) -> Result<browse::Tree, CommandError> {
-    let (db, anchor) = design(&args.common)?;
+    let (db, anchor) = design(&args.common, &args.at)?;
     // A scope names a level of the tree, not a net: the walk down is the same
     // one, and what it stops at is a node rather than a name inside one.
     let (node, path) = match &args.scope {
@@ -641,17 +792,13 @@ fn scope_node(
     anchor: &resolve::Anchor,
     scope: &str,
 ) -> Result<(i64, String), CommandError> {
-    let stripped = resolve::strip_prefix(anchor, scope)
-        .map_err(|e| CommandError::new(ErrorCode::ScopeNotFound, e))?;
-    let mut segments = resolve::segments(stripped);
-    if segments.first() == Some(&anchor.root_name.as_str()) {
-        segments.remove(0);
-    }
+    let (levels, _discarded, _reached) = resolve::below_the_anchor(db.conn(), anchor, scope)
+        .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
 
     let mut at = anchor.root;
     let mut walked = vec![anchor.root_name.clone()];
-    for segment in segments {
-        let found = schema::child_node(db.conn(), at, segment)
+    for level in levels {
+        let found = schema::child_node(db.conn(), at, &level)
             .map_err(|e| CommandError::new(ErrorCode::BadDb, e))?;
         match found {
             Some(child) => {
@@ -670,8 +817,11 @@ fn scope_node(
                     ErrorCode::ScopeNotFound,
                     scope,
                     &walked.join("."),
-                    segment,
+                    &level,
                     &here,
+                    // The scope walk starts below the anchor, so anything that
+                    // fails here failed inside the design.
+                    false,
                 ));
             }
         }
@@ -680,7 +830,8 @@ fn scope_node(
 }
 
 fn find_command(args: &FindArgs) -> Result<browse::Found, CommandError> {
-    let (db, anchor) = design(&args.common)?;
+    // `find` matches a name, never a path, so there is no anchor to state.
+    let (db, anchor) = design(&args.common, &AnchorArg { anchor: None })?;
     let kind = match (args.instances, args.modules) {
         (true, true) => {
             return Err(CommandError::new(

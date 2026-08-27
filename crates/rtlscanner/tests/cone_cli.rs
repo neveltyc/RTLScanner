@@ -287,7 +287,7 @@ fn conditions_are_dependencies_and_are_told_apart_from_values() {
 
     let all = cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--limit", "0"]);
     let without =
-        cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--no-control", "--limit", "0"]);
+        cone(&fx, "fanin", &["pipe.u_reg.q", "--depth", "1", "--no-ctl", "--limit", "0"]);
 
     // `en` gates the assignment. It is a real dependency — the value would not
     // be there without it — and a different kind from `d`, which supplies it.
@@ -522,4 +522,309 @@ endmodule
     // windows, and an answer that dropped them would be hiding what it knows.
     assert_eq!(edge["source_bits"], "[7:4]", "{edge}");
     assert_eq!(edge["target_bits"], serde_json::Value::Null, "the whole of a four-bit net");
+}
+
+/// One module in two parameterisations, so the same statement is ruled out in
+/// one and live in the other, plus a packed two-dimensional array whose
+/// elements are written one per generate instance.
+const SHAPES: &str = r#"
+module arm #(parameter int MODE = 0) (input logic [7:0] a, b, output logic [7:0] y);
+  localparam bit EN = (MODE == 1);
+  always_comb begin
+    if (EN) y = a;
+    else    y = b;
+  end
+endmodule
+
+module shapes(input logic clk, input logic [7:0] a, b, output logic [7:0] y0, y1);
+  logic [2:0][7:0] lane;
+  arm #(.MODE(0)) u0 (.a(a), .b(b), .y(y0));
+  arm #(.MODE(1)) u1 (.a(a), .b(b), .y(y1));
+  genvar i;
+  for (i = 0; i < 3; i = i + 1) begin : g
+    always_ff @(posedge clk) lane[i] <= a;
+  end
+endmodule
+"#;
+
+#[test]
+fn an_arm_a_constant_condition_rules_out_is_reported_and_marked() {
+    let Some(fx) = exported("shapes", SHAPES, "cone-unreachable") else { return };
+
+    // The same source line, ruled out in one parameterisation and live in the
+    // other. `trace` says so about these rows already; a cone that did not
+    // would report logic this build cannot reach as an ordinary dependency.
+    for (signal, dead, live) in [("shapes.u0.y", "shapes.u0.a", "shapes.u0.b"), (
+        "shapes.u1.y",
+        "shapes.u1.b",
+        "shapes.u1.a",
+    )] {
+        let v = cone(&fx, "fanin", &[signal, "--depth", "1", "--limit", "0"]);
+        let marked: Vec<(String, bool)> = v["data"]["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| {
+                (e["source"].as_str().unwrap().to_string(), e["unreachable"].as_bool().unwrap())
+            })
+            .collect();
+        assert!(marked.contains(&(dead.to_string(), true)), "{signal}: {marked:?}");
+        assert!(marked.contains(&(live.to_string(), false)), "{signal}: {marked:?}");
+        assert_eq!(v["summary"]["unreachable_edges"], 1, "{signal}");
+    }
+}
+
+#[test]
+fn an_end_with_no_declared_range_still_says_which_bits_it_touches() {
+    let Some(fx) = exported("shapes", SHAPES, "cone-aggregate-bits") else { return };
+
+    // `logic [2:0][7:0]` has no one range to spell indices against. Three
+    // generate instances each write one element, and saying nothing about the
+    // window would make three different arcs read as one.
+    let v = cone(&fx, "fanin", &["shapes.lane", "--depth", "1", "--limit", "0"]);
+    let mut windows: Vec<String> = v["data"]["edges"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["target_bits"].as_str().unwrap_or("").to_string())
+        .collect();
+    windows.sort();
+    windows.dedup();
+    assert_eq!(windows, ["@[15:8]", "@[23:16]", "@[7:0]"], "{v}");
+
+    // And the edges stay distinct as JSON, which is what a caller reads.
+    let all = v["data"]["edges"].as_array().unwrap();
+    let mut seen: Vec<String> = all.iter().map(|e| e.to_string()).collect();
+    seen.sort();
+    seen.dedup();
+    assert_eq!(seen.len(), all.len(), "three writes, three edges: {v}");
+}
+
+/// A read of an absolute, top-anchored hierarchical path. The export records
+/// the reference and leaves it unresolved, so the row has a name and no net.
+const XMR: &str = r#"
+module src(output logic [7:0] v);
+  assign v = 8'hA5;
+endmodule
+module reader(output logic [7:0] o);
+  assign o = xmr.u_src.v;
+endmodule
+module xmr(output logic [7:0] o);
+  src    u_src();
+  reader u_rd(.o(o));
+endmodule
+"#;
+
+#[test]
+fn a_cone_says_when_it_could_not_follow_an_arc_the_export_only_named() {
+    let Some(fx) = exported("xmr", XMR, "cone-unresolved") else { return };
+
+    // `trace` names the far end, apart from the signals it can be asked
+    // about: the export did not resolve this one, so it is not a path.
+    let (t, code) = common::json_trace(&fx, &["xmr.u_rd.o"]);
+    assert_eq!(code, 0);
+    assert_eq!(t["data"]["hops"][0]["signals"].as_array().unwrap().len(), 0, "{t}");
+    assert_eq!(t["data"]["hops"][0]["unresolved"][0], "xmr.u_src.v", "{t}");
+
+    // The cone has no net to walk to and stops. What it must not do is stop
+    // silently: an empty answer that says nothing reads exactly like a net
+    // nothing drives.
+
+    let v = cone(&fx, "fanin", &["xmr.u_rd.o", "--depth", "1", "--limit", "0"]);
+    assert_eq!(arcs(&v).len(), 0, "there is no net to walk to: {v}");
+    assert_eq!(v["summary"]["unresolved"], 1, "and the answer says so: {v}");
+
+    // A net whose fan-in the export did record says zero, so the count marks
+    // the short answers and not every answer.
+    let whole = cone(&fx, "fanin", &["xmr.u_src.v", "--depth", "1", "--limit", "0"]);
+    assert_eq!(whole["summary"]["unresolved"], 0, "{whole}");
+}
+
+#[test]
+fn a_route_is_as_long_as_the_cone_says_the_goal_is_deep() {
+    let Some(fx) = exported("pipe", PIPE, "path-shortest") else { return };
+
+    // The walk stops at the level the goal turns up in rather than running to
+    // the edge of the design. Breadth-first order is what makes that safe, and
+    // this is the property that rests on it: the route found is a shortest one,
+    // so its length is the depth the cone puts the goal at.
+    let reached = cone(&fx, "fanout", &["pipe.a", "--depth", "0", "--limit", "0"]);
+    let depth_of = |path: &str| -> u64 {
+        reached["data"]["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|n| n["path"] == path)
+            .unwrap_or_else(|| panic!("{path} is not in the cone: {reached}"))["depth"]
+            .as_u64()
+            .unwrap()
+    };
+
+    for target in ["pipe.s", "pipe.u_reg.d", "pipe.u_reg.q", "pipe.m", "pipe.y"] {
+        let v = cone(&fx, "path", &["pipe.a", target]);
+        assert_eq!(v["data"]["found"], true, "{target}: {v}");
+        assert_eq!(v["summary"]["length"], depth_of(target), "{target}: {v}");
+    }
+}
+
+#[test]
+fn the_first_hop_is_counted_whole_and_clipped_on_its_own() {
+    let Some(fx) = exported("pipe", PIPE, "cone-direct") else { return };
+
+    let direct = |v: &Value| -> Vec<String> {
+        v["data"]["direct"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d.as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // `b` is read twice, one hop out, and the cone past it is deeper than that.
+    // `--limit` bounds the cone; reading it as a bound on the first hop as well
+    // left `direct` — the list a caller starts from — quietly short.
+    let whole = cone(&fx, "fanout", &["pipe.b", "--depth", "0", "--limit", "0"]);
+    let all = direct(&whole);
+    assert_eq!(all, ["pipe.m", "pipe.s"], "{whole}");
+    assert!(whole["summary"]["edges"].as_u64().unwrap() > all.len() as u64, "{whole}");
+
+    let clipped = cone(&fx, "fanout", &["pipe.b", "--depth", "0", "--limit", "1"]);
+    assert_eq!(clipped["summary"]["shown_edges"], 1, "{clipped}");
+    // One edge shown, and the first hop still counted whole.
+    assert_eq!(clipped["summary"]["direct"], 2, "{clipped}");
+    assert_eq!(clipped["summary"]["shown_direct"], 1, "{clipped}");
+    assert_eq!(direct(&clipped).len(), 1, "{clipped}");
+
+    // Whatever is clipped, every name the answer gives is a node of it.
+    for v in [&whole, &clipped] {
+        let nodes: Vec<String> = nodes(v);
+        for name in direct(v) {
+            assert!(nodes.contains(&name), "{name} is named and not a node: {v}");
+        }
+    }
+
+    // A cone deeper than the limit does not clip the first hop at all: the two
+    // budgets are separate now.
+    let deep = cone(&fx, "fanout", &["pipe.b", "--depth", "0", "--limit", "2"]);
+    assert_eq!(deep["summary"]["direct"], 2, "{deep}");
+    assert_eq!(direct(&deep), all, "{deep}");
+}
+
+/// A gate with a value cone of its own behind it, so following the gate and
+/// stopping at it are visibly different answers.
+const GATED: &str = r#"
+module gated(input logic [7:0] a, b, c, output logic [7:0] y);
+  logic [7:0] sum;
+  logic       en;
+  assign sum = b + c;
+  assign en  = |sum;
+  always_comb begin
+    y = 8'h00;
+    if (en) y = a;
+  end
+endmodule
+"#;
+
+#[test]
+fn a_gate_is_named_and_not_followed() {
+    let Some(fx) = exported("gated", GATED, "cone-gating") else { return };
+    let reached = |args: &[&str]| -> Vec<String> {
+        let mut v = nodes(&cone(&fx, "fanin", args));
+        v.sort();
+        v
+    };
+
+    // What decided the assignment is part of the answer; where that decision
+    // came from is a question about the gate, and `trace` does not follow it
+    // either. Following it here is what made every cone the same cone.
+    assert_eq!(
+        reached(&["gated.y", "--depth", "0", "--limit", "0"]),
+        ["gated.a", "gated.en", "gated.y"]
+    );
+
+    // Asked for, it is followed like anything else, and `sum`, `b` and `c`
+    // come with it.
+    assert_eq!(
+        reached(&["gated.y", "--depth", "0", "--limit", "0", "--follow-ctl"]),
+        ["gated.a", "gated.b", "gated.c", "gated.en", "gated.sum", "gated.y"]
+    );
+
+    // And left out entirely, the gate is not named at all.
+    assert_eq!(
+        reached(&["gated.y", "--depth", "0", "--limit", "0", "--no-ctl"]),
+        ["gated.a", "gated.y"]
+    );
+
+    // The first hop is the same whichever way the rest is walked, which is what
+    // keeps a depth-1 cone equal to a trace.
+    let one = |args: &[&str]| cone(&fx, "fanin", args)["data"]["direct"].clone();
+    assert_eq!(
+        one(&["gated.y", "--depth", "1", "--limit", "0"]),
+        one(&["gated.y", "--depth", "1", "--limit", "0", "--follow-ctl"])
+    );
+}
+
+#[test]
+fn a_walk_that_gave_up_says_so_and_is_never_an_answer() {
+    let Some(fx) = exported("pipe", PIPE, "cone-budget") else { return };
+    let db = fx.db.to_str().unwrap();
+
+    // The bound is on the walk, not the answer: it cannot be clipped and
+    // still counted, so passing it is an error rather than a short cone.
+    let (v, code) = common::json_of_with(
+        &[("RTLSCANNER_MAX_NODES", "2")],
+        &["fanin", "--json", db, "pipe.y", "--depth", "0", "--limit", "0"],
+    );
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["errors"][0]["code"], "BUDGET_EXCEEDED", "{v}");
+    let details = &v["errors"][0]["details"];
+    assert_eq!(details["max_nodes"], 2, "{v}");
+    // The environment set it, so `command.args` cannot show it: the error has
+    // to carry the number that changed the outcome.
+    assert!(v["command"]["args"].get("max_nodes").is_none(), "{v}");
+    assert!(details["last_complete_depth"].is_number(), "{v}");
+    // `--depth 0` is unbounded, so a walk that got nowhere must never be told
+    // to ask for depth zero — that is the question it just failed.
+    let ideas = details["try"].as_array().unwrap();
+    assert!(!ideas.iter().any(|i| i == "--depth 0"), "{v}");
+
+    // Zero removes it, and the same question answers.
+    let (v, code) = common::json_of_with(
+        &[("RTLSCANNER_MAX_NODES", "0")],
+        &["fanin", "--json", db, "pipe.y", "--depth", "0", "--limit", "0"],
+    );
+    assert_eq!(code, 0, "{v}");
+    assert!(v["summary"]["nodes"].as_u64().unwrap() > 2, "{v}");
+
+    // A value that is not a number is a mistake in the invocation, and is
+    // rejected the way one is: on stderr, before any command runs.
+    let (stdout, stderr, code) =
+        common::run_with(&[("RTLSCANNER_MAX_NODES", "lots")], &["fanin", "--json", db, "pipe.y"]);
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stdout.is_empty(), "{stdout}");
+    assert!(stderr.contains("RTLSCANNER_MAX_NODES"), "{stderr}");
+}
+
+#[test]
+fn no_route_and_gave_up_looking_are_different_answers() {
+    let Some(fx) = exported("pipe", PIPE, "path-budget") else { return };
+    let db = fx.db.to_str().unwrap();
+
+    // `y` does not reach `a`: the walk covered everything and that is a fact
+    // about the design.
+    let (v, code) = json_of(&["path", "--json", db, "pipe.y", "pipe.a"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["status"], "ok", "{v}");
+    assert_eq!(v["data"]["found"], false, "{v}");
+
+    // Under a budget it never got there, which is not the same thing and must
+    // not read as the same thing.
+    let (v, code) = common::json_of_with(
+        &[("RTLSCANNER_MAX_NODES", "2")],
+        &["path", "--json", db, "pipe.a", "pipe.y"],
+    );
+    assert_eq!(code, 1, "{v}");
+    assert_eq!(v["status"], "error", "{v}");
+    assert_eq!(v["errors"][0]["code"], "BUDGET_EXCEEDED", "{v}");
+    assert!(v["data"].is_null(), "a walk that gave up has no data: {v}");
 }

@@ -9,7 +9,7 @@ use designdb::{Connection, Db, schema};
 use serde_json::{Value, json};
 
 use crate::cone_result::resolve_limit;
-use crate::envelope::CommandResult;
+use crate::envelope::{CommandResult, Diagnostic};
 
 /// One level of the elaborated tree, as a caller sees it.
 pub struct Level {
@@ -168,6 +168,28 @@ pub struct Found {
     /// counted rather than silently dropped.
     outside_root: usize,
     limit: usize,
+}
+
+impl Found {
+    /// What a caller should know about a pattern that found nothing.
+    ///
+    /// A glob is matched against the name a net has inside its instance, not
+    /// against its path, so a pattern written as a path matches nothing and
+    /// says so with the same empty answer as a name that is simply not there.
+    /// The two need telling apart: one is a fact about the design, the other
+    /// is a question this command does not take.
+    pub fn notes(&self) -> Vec<Diagnostic> {
+        if !self.hits.is_empty() || !self.pattern.contains(['.', '/']) {
+            return Vec::new();
+        }
+        vec![Diagnostic::warning(format!(
+            "'{}' is matched against a name, not a path — a hierarchical pattern finds \
+             nothing here whatever the design holds; drop the scopes and glob the name \
+             ('*{}')",
+            self.pattern,
+            self.pattern.rsplit(['.', '/']).next().unwrap_or(&self.pattern),
+        ))]
+    }
 }
 
 struct Hit {

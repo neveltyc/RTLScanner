@@ -77,7 +77,17 @@ pub fn exported(top: &str, rtl: &str, test: &str) -> Option<Exported> {
 }
 
 pub fn run(args: &[&str]) -> (String, String, i32) {
-    let out = Command::new(scanner()).args(args).output().expect("running rtlscanner");
+    run_with(&[], args)
+}
+
+/// The same, with environment set: the walk's node budget is configured that
+/// way, so testing it means setting it.
+pub fn run_with(env: &[(&str, &str)], args: &[&str]) -> (String, String, i32) {
+    let mut cmd = Command::new(scanner());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.args(args).output().expect("running rtlscanner");
     (
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -88,7 +98,11 @@ pub fn run(args: &[&str]) -> (String, String, i32) {
 /// The JSON envelope of one command, with the invariant every command holds:
 /// under `--json`, everything is on stdout.
 pub fn json_of(args: &[&str]) -> (Value, i32) {
-    let (stdout, stderr, code) = run(args);
+    json_of_with(&[], args)
+}
+
+pub fn json_of_with(env: &[(&str, &str)], args: &[&str]) -> (Value, i32) {
+    let (stdout, stderr, code) = run_with(env, args);
     assert!(stderr.is_empty(), "JSON keeps everything on stdout, got: {stderr}");
     (serde_json::from_str(&stdout).expect("stdout is one JSON envelope"), code)
 }
