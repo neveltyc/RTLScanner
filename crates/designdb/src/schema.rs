@@ -109,6 +109,10 @@ pub struct TerminalRow {
 pub struct StatementRow {
     pub stmt_id: i64,
     pub inst_id: i64,
+    /// The level of the tree the statement is written in, which is the
+    /// instance unless a generate block encloses it. Three generate instances
+    /// of one `always` block share an instance and differ only here.
+    pub scope_node_id: i64,
     pub proc_id: Option<i64>,
     /// Execution order within the procedure; NULL outside one, so a continuous
     /// assignment has none.
@@ -450,23 +454,24 @@ pub fn iface_targets(c: &Connection, term_id: i64) -> Result<Vec<Option<i64>>, S
         .map_err(|e| q(e, "v_net_conn"))
 }
 
-const STMT_COLS: &str = "stmt_id, inst_id, proc_id, sequence, stmt_kind, construct, \
-     assign_kind, delay, call_site_id, branch_id, file_path, src_line";
+const STMT_COLS: &str = "stmt_id, inst_id, scope_node_id, proc_id, sequence, stmt_kind, \
+     construct, assign_kind, delay, call_site_id, branch_id, file_path, src_line";
 
 fn stmt_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<StatementRow> {
     Ok(StatementRow {
         stmt_id: r.get(0)?,
         inst_id: r.get(1)?,
-        proc_id: r.get(2)?,
-        sequence: r.get(3)?,
-        stmt_kind: r.get(4)?,
-        construct: r.get(5)?,
-        assign_kind: r.get(6)?,
-        delay: r.get(7)?,
-        call_site_id: r.get(8)?,
-        branch_id: r.get(9)?,
-        file_path: r.get(10)?,
-        src_line: line_of(r.get(11)?),
+        scope_node_id: r.get(2)?,
+        proc_id: r.get(3)?,
+        sequence: r.get(4)?,
+        stmt_kind: r.get(5)?,
+        construct: r.get(6)?,
+        assign_kind: r.get(7)?,
+        delay: r.get(8)?,
+        call_site_id: r.get(9)?,
+        branch_id: r.get(10)?,
+        file_path: r.get(11)?,
+        src_line: line_of(r.get(12)?),
     })
 }
 
@@ -803,6 +808,24 @@ pub fn net_of(c: &Connection, net_id: i64) -> Result<Option<NetRow>, String> {
 ///
 /// A bare `always` is clocked when its sensitivity names an edge. Which edge is
 /// the clock is not decided here, and does not need to be.
+/// Every branch a constant condition rules out, and every branch below one.
+///
+/// Read once for the database rather than a chain walk per arc: a cone crosses
+/// hundreds of thousands of arcs and a design has a few thousand branches. A
+/// statement under any of these is in the design and cannot run at this
+/// parameterisation, which is what `trace` calls unreachable.
+pub fn dead_branches(c: &Connection) -> Result<HashSet<i64>, String> {
+    const SQL: &str = "WITH RECURSIVE dead(branch_id) AS ( \
+            SELECT branch_id FROM v_branch WHERE static_taken = 0 \
+          UNION \
+            SELECT b.branch_id FROM v_branch b \
+              JOIN dead d ON b.parent_branch_id = d.branch_id) \
+        SELECT branch_id FROM dead";
+    let mut stmt = c.prepare(SQL).map_err(|e| q(e, "v_branch"))?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0)).map_err(|e| q(e, "v_branch"))?;
+    rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_branch"))
+}
+
 pub fn state_elements(c: &Connection) -> Result<(HashSet<i64>, HashSet<i64>), String> {
     // An edge-triggered procedure stores what it assigns non-blockingly; a
     // blocking assignment in one is a temporary computed within the same
@@ -981,6 +1004,10 @@ pub fn procedure_writes(
     // Qualified: the joined views share several column names, and an
     // unqualified list would be ambiguous where they overlap.
     let cols = STMT_COLS.split(", ").map(|c| format!("s.{c}")).collect::<Vec<_>>().join(", ");
+    // Where the statement's own columns end and the target's begin. Counted
+    // rather than written down: a column added to the list would otherwise
+    // shift the three that follow it and be read as bits.
+    let after: usize = STMT_COLS.split(", ").count();
     let sql = format!(
         "SELECT {cols}, t.lo, t.hi, t.is_exact FROM v_stmt s \
            JOIN v_stmt_target t ON t.stmt_id = s.stmt_id \
@@ -994,7 +1021,7 @@ pub fn procedure_writes(
     let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "v_stmt"))?;
     let rows = stmt
         .query_map(rusqlite::params![proc_id, net], |r| {
-            let bits = BitSpan::read(r.get(12)?, r.get(13)?, r.get(14)?);
+            let bits = BitSpan::read(r.get(after)?, r.get(after + 1)?, r.get(after + 2)?);
             Ok((stmt_row(r)?, bits))
         })
         .map_err(|e| q(e, "v_stmt"))?;
@@ -1101,4 +1128,18 @@ mod tests {
         let e = db_info(db.conn()).unwrap_err();
         assert!(e.contains("v_db_info"), "{e}");
     }
+}
+
+/// References the export wrote as a path and could not resolve, as
+/// (reads, writes).
+///
+/// Not in the seal. A read that did not resolve leaves a net with fewer
+/// sources than it has; a write that did not resolve leaves one reading as
+/// undriven while something plainly writes it — and that second case is
+/// indistinguishable, from the outside, from a net nothing drives.
+pub fn unresolved_refs(c: &Connection) -> Result<(i64, i64), String> {
+    const SQL: &str = "SELECT \
+            COALESCE(SUM(access = 'read'), 0), COALESCE(SUM(access = 'write'), 0) \
+          FROM v_hier_ref WHERE resolved_net_id IS NULL";
+    c.query_row(SQL, [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| q(e, "v_hier_ref"))
 }
