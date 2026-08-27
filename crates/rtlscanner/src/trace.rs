@@ -89,7 +89,7 @@ impl HopKind {
     ///
     /// An alias binds two names into one object without either driving the
     /// other, so an aliased net with no driver would otherwise read as
-    /// resolved. A condition is excluded for a different reason: `--control`
+    /// resolved. A condition is excluded for a different reason: `--ctl`
     /// changes how much is displayed and must not change what the tool says
     /// about the design.
     ///
@@ -131,7 +131,10 @@ pub struct Hop {
     /// The statement's text, where the source still matches the export.
     statement: Option<String>,
     source_state: SourceState,
-    /// The instance the statement lives in.
+    /// The level of the tree the statement is written in: the instance, or
+    /// the generate block inside it that holds the statement. Two generate
+    /// instances of one block are one instance and two scopes, and the scope
+    /// is what tells their statements apart.
     scope: String,
     file: Option<String>,
     line: Option<u32>,
@@ -143,8 +146,15 @@ pub struct Hop {
     spans: Vec<BitSpan>,
     /// False where a range is an upper bound rather than the bits touched.
     bits_exact: bool,
-    /// The full paths of the nets at the other end.
+    /// The full paths of the nets at the other end. Every one of them names a
+    /// net of this database, so following one is the next `trace`.
     signals: Vec<String>,
+    /// The other end where the export named it and did not resolve it: a
+    /// subroutine formal, or a hierarchical path it could not place. Kept apart
+    /// from `signals` because these do not name a net and asking about one
+    /// answers SIGNAL_NOT_FOUND — and kept, because they are what a cone,
+    /// which can only count them, is short by.
+    unresolved: Vec<String>,
     /// `continuous | blocking | nonblocking`.
     assign_kind: Option<String>,
     /// Execution order inside the procedure, where there is one.
@@ -296,6 +306,10 @@ impl CommandResult for Trace {
                     "bits": spell_spans(&h.spans, self.decl),
                     "bits_exact": h.bits_exact,
                     "signals": h.signals,
+                    // Named by the export, resolving to no net: reported so the
+                    // answer does not hide them, listed apart so `signals` is
+                    // safe to follow.
+                    "unresolved": h.unresolved,
                     "assign_kind": h.assign_kind,
                     "sequence": h.sequence,
                     "timing": h.timing.as_ref().map(|t| json!({
@@ -419,14 +433,16 @@ impl CommandResult for Trace {
             if let Some(index) = hop.procedure {
                 out.push_str(&format!("      in procedure #{}\n", index + 1));
             }
+            let side = match self.direction {
+                Direction::Driver => "from",
+                Direction::Load => "to",
+            };
             for s in &hop.signals {
-                out.push_str(&format!(
-                    "      {}: {s}\n",
-                    match self.direction {
-                        Direction::Driver => "from",
-                        Direction::Load => "to",
-                    }
-                ));
+                out.push_str(&format!("      {side}: {s}\n"));
+            }
+            // Named, and not a path this tool can be asked about.
+            for s in &hop.unresolved {
+                out.push_str(&format!("      {side}: {s}  (unresolved by the export)\n"));
             }
         }
 
@@ -618,11 +634,10 @@ fn count_drivers(hops: &[Hop], dir: Direction) -> (usize, bool) {
     (sources.len(), contend)
 }
 
-/// The windows a hop touches, in declared indices. `None` where there is
-/// nothing to say: the whole object, or no declared range to anchor offsets
-/// against.
+/// The windows a hop touches, each said the way its object can say it. `None`
+/// where there is nothing to say, which is the whole object.
 fn spell_spans(spans: &[BitSpan], decl: Option<(i64, i64)>) -> Option<Vec<String>> {
-    let spelled: Vec<String> = spans.iter().filter_map(|s| s.spell(decl)).collect();
+    let spelled: Vec<String> = spans.iter().filter_map(|s| bits::say(s, decl)).collect();
     (!spelled.is_empty()).then_some(spelled)
 }
 
@@ -645,10 +660,10 @@ fn merge(
     sep: char,
     c: &Connection,
 ) -> Result<(), String> {
-    if let Some(path) = far_path(c, anchor, row, sep)?
-        && !hop.signals.contains(&path)
-    {
-        hop.signals.push(path);
+    match far_path(c, anchor, row, sep)? {
+        FarEnd::Net(path) if !hop.signals.contains(&path) => hop.signals.push(path),
+        FarEnd::Named(name) if !hop.unresolved.contains(&name) => hop.unresolved.push(name),
+        _ => {}
     }
     if !hop.spans.contains(&row.signal_bits) {
         hop.spans.push(row.signal_bits);
@@ -666,19 +681,34 @@ fn crosses_boundary(row: &schema::ArcRow, signal: &ResolvedSignal) -> bool {
         || row.other_inst_id.is_some_and(|i| i != signal.inst)
 }
 
-/// The full path of the net at the far end of an arc.
+/// What sits at the other end of an arc.
+enum FarEnd {
+    /// A net of this database, named by its design path.
+    Net(String),
+    /// Named by the export and not resolved to a net: a subroutine formal, or
+    /// a hierarchical path it could not place. A name, but not one to ask
+    /// about.
+    Named(String),
+    /// Nothing to name at all: a literal, a tie-off.
+    Nothing,
+}
+
 fn far_path(
     c: &Connection,
     anchor: &Anchor,
     row: &schema::ArcRow,
     sep: char,
-) -> Result<Option<String>, String> {
+) -> Result<FarEnd, String> {
     let (Some(inst), Some(name)) = (row.other_inst_id, row.other_name.as_deref()) else {
         // Not a net this export names: the reference, where there is one, is
-        // the only name there is.
-        return Ok(row.other_ref.clone());
+        // the only name there is — and it is not a path this tool can resolve,
+        // so it is reported apart from the ones that are.
+        return Ok(match row.other_ref.clone() {
+            Some(named) => FarEnd::Named(named),
+            None => FarEnd::Nothing,
+        });
     };
-    Ok(Some(
+    Ok(FarEnd::Net(
         instance_path(c, anchor, inst, sep)?
             + &sep.to_string()
             + &name.replace('.', &sep.to_string()),
@@ -725,8 +755,9 @@ fn build_hop(
     let kind = classify(row, stmt.as_ref());
     let raw_kind = raw_kind_of(row, stmt.as_ref(), kind);
 
-    let scope_inst = stmt.as_ref().map(|s| s.inst_id).or(row.other_inst_id).unwrap_or(signal.inst);
-    let scope = instance_path(c, anchor, scope_inst, sep)?;
+    let scope_node =
+        stmt.as_ref().map(|s| s.scope_node_id).or(row.other_inst_id).unwrap_or(signal.inst);
+    let scope = instance_path(c, anchor, scope_node, sep)?;
 
     let (file, line) = match &stmt {
         Some(s) if s.file_path.is_some() => (s.file_path.clone(), s.src_line),
@@ -736,6 +767,7 @@ fn build_hop(
         (Some(f), Some(l)) => source.line(c, f, l),
         _ => (None, SourceState::Missing),
     };
+    let far = far_path(c, anchor, row, sep)?;
 
     let mut hop = Hop {
         kind,
@@ -748,7 +780,14 @@ fn build_hop(
         boundary: crosses_boundary(row, signal),
         spans: vec![row.signal_bits],
         bits_exact: row.signal_bits.is_exact() && row.map_exact != Some(false),
-        signals: far_path(c, anchor, row, sep)?.into_iter().collect(),
+        signals: match &far {
+            FarEnd::Net(path) => vec![path.clone()],
+            _ => Vec::new(),
+        },
+        unresolved: match &far {
+            FarEnd::Named(name) => vec![name.clone()],
+            _ => Vec::new(),
+        },
         assign_kind: stmt.as_ref().and_then(|s| s.assign_kind.clone()),
         sequence: stmt.as_ref().and_then(|s| s.sequence),
         timing: None,
@@ -767,7 +806,7 @@ fn build_hop(
     if let Some(stmt) = &stmt {
         // A driver's operands are what it reads; a load's are not this
         // signal's business, and listing them would name the far side twice.
-        if dir == Direction::Driver && hop.signals.is_empty() {
+        if dir == Direction::Driver && hop.signals.is_empty() && hop.unresolved.is_empty() {
             for operand in schema::operands_of(c, stmt.stmt_id)? {
                 let path = instance_path(c, anchor, stmt.inst_id, sep)?
                     + &sep.to_string()
@@ -892,7 +931,7 @@ fn procedures_of(
                 sequence: row.sequence,
                 line: row.src_line,
                 statement: text,
-                bits: bits.spell(decl),
+                bits: bits::say(&bits, decl),
                 // No gating level at all: nothing stands between the procedure
                 // running and this assignment happening.
                 unconditional: row.branch_id.is_none(),
