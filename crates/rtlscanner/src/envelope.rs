@@ -35,6 +35,10 @@ pub enum ErrorCode {
     NoTop,
     /// A bit-select the signal cannot be measured against.
     BadSelect,
+    /// The cone passed the walk's node budget. Not the same as an empty answer
+    /// and not the same as no route: the walk stopped, so there is nothing to
+    /// say about what it had not reached.
+    BudgetExceeded,
 }
 
 impl ErrorCode {
@@ -47,6 +51,7 @@ impl ErrorCode {
             ErrorCode::ScopeNotFound => "SCOPE_NOT_FOUND",
             ErrorCode::NoTop => "NO_TOP",
             ErrorCode::BadSelect => "BAD_SELECT",
+            ErrorCode::BudgetExceeded => "BUDGET_EXCEEDED",
         }
     }
 }
@@ -107,6 +112,26 @@ pub struct Rendered {
 /// Render an outcome. JSON puts everything on stdout, including a failure;
 /// the human view keeps notes and failures on stderr, where a terminal
 /// expects them.
+/// Where the answer's paths are anchored, and what a path lost getting there.
+///
+/// Carried by every command that takes a path, because a path written in a
+/// waveform's coordinates is reinterpreted to reach the design, and a
+/// reinterpretation the answer does not mention is one the caller cannot
+/// check.
+#[derive(Debug, Clone, Default)]
+pub struct AnchorNote {
+    pub root: String,
+    /// The levels discarded from each path, deduplicated. Empty where every
+    /// path was already the design's own.
+    pub discarded: Vec<String>,
+}
+
+impl AnchorNote {
+    fn to_json(&self) -> Value {
+        json!({ "root": self.root, "discarded": self.discarded })
+    }
+}
+
 pub fn render<R: CommandResult>(
     command: &str,
     args: Value,
@@ -114,9 +139,23 @@ pub fn render<R: CommandResult>(
     diagnostics: &[Diagnostic],
     json: bool,
 ) -> Rendered {
+    render_anchored(command, args, outcome, diagnostics, None, json)
+}
+
+pub fn render_anchored<R: CommandResult>(
+    command: &str,
+    args: Value,
+    outcome: &Result<R, CommandError>,
+    diagnostics: &[Diagnostic],
+    anchor: Option<&AnchorNote>,
+    json: bool,
+) -> Rendered {
     match outcome {
         Ok(result) => {
-            let (data, summary) = result.to_json();
+            let (mut data, summary) = result.to_json();
+            if let (Some(note), Some(map)) = (anchor, data.as_object_mut()) {
+                map.insert("anchor".to_string(), note.to_json());
+            }
             if json {
                 Rendered {
                     stdout: envelope(command, args, "ok", data, summary, diagnostics, json!([])),

@@ -3,16 +3,20 @@ $ rtlscanner trace top.packed_up --json design.db
 {
   "command": {
     "args": {
-      "control": false,
+      "anchor": null,
+      "ctl": false,
       "db": "design.db",
       "load": false,
       "signal": "top.packed_up",
-      "strip_prefix": null,
       "top": null
     },
     "name": "trace"
   },
   "data": {
+    "anchor": {
+      "discarded": [],
+      "root": "top"
+    },
     "bits": null,
     "direction": "driver",
     "hops": [
@@ -38,7 +42,8 @@ $ rtlscanner trace top.packed_up --json design.db
         "source": "read",
         "statement": "assign packed_up[7:4] = a[3:0];  // two disjoint windows, one signal",
         "timing": null,
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       },
       {
         "assign_kind": "continuous",
@@ -62,7 +67,8 @@ $ rtlscanner trace top.packed_up --json design.db
         "source": "read",
         "statement": "assign packed_up[3:0] = b[7:4];",
         "timing": null,
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       }
     ],
     "procedures": [],
@@ -81,5 +87,5 @@ $ rtlscanner trace top.packed_up --json design.db
     "structural_hops": 2
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

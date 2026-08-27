@@ -3,7 +3,8 @@ $ rtlscanner info --json design.db
 {
   "command": {
     "args": {
-      "db": "design.db"
+      "db": "design.db",
+      "limit": null
     },
     "name": "info"
   },
@@ -17,7 +18,9 @@ $ rtlscanner info --json design.db
       "status": "complete",
       "truncated_call_count": 0,
       "unanalysed_inst_count": 0,
-      "unresolved_count": 0
+      "unresolved_count": 0,
+      "unresolved_ref_reads": 0,
+      "unresolved_ref_writes": 0
     },
     "path": "design.db",
     "producer": {
@@ -42,10 +45,11 @@ $ rtlscanner info --json design.db
   "summary": {
     "analysis_status": "complete",
     "schema_version": 19,
+    "shown_sources": 1,
     "sources": 1,
     "sources_missing": 0,
     "sources_stale": 0
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

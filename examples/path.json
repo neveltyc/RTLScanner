@@ -3,17 +3,24 @@ $ rtlscanner path top.a top.out --json design.db
 {
   "command": {
     "args": {
+      "anchor": null,
       "comb": false,
       "db": "design.db",
       "depth": null,
+      "follow_ctl": false,
       "from": "top.a",
-      "no_control": false,
+      "no_ctl": false,
       "through_latch": false,
-      "to": "top.out"
+      "to": "top.out",
+      "top": null
     },
     "name": "path"
   },
   "data": {
+    "anchor": {
+      "discarded": [],
+      "root": "top"
+    },
     "comb": false,
     "edges": [
       {
@@ -31,7 +38,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.a",
         "source_bits": null,
         "target": "top.u_core.a",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       },
       {
         "boundary": true,
@@ -48,7 +56,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.u_core.a",
         "source_bits": null,
         "target": "top.u_core.u_alu.a",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       },
       {
         "boundary": false,
@@ -65,7 +74,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.u_core.u_alu.a",
         "source_bits": null,
         "target": "top.u_core.u_alu.r",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       },
       {
         "boundary": true,
@@ -82,7 +92,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.u_core.u_alu.r",
         "source_bits": null,
         "target": "top.u_core.sum",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       },
       {
         "boundary": false,
@@ -99,7 +110,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.u_core.sum",
         "source_bits": null,
         "target": "top.u_core.out",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       },
       {
         "boundary": true,
@@ -116,7 +128,8 @@ $ rtlscanner path top.a top.out --json design.db
         "source": "top.u_core.out",
         "source_bits": null,
         "target": "top.out",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       }
     ],
     "found": true,
@@ -142,5 +155,5 @@ $ rtlscanner path top.a top.out --json design.db
     "length": 6
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

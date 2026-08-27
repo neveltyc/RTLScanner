@@ -3,16 +3,20 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
 {
   "command": {
     "args": {
-      "control": false,
+      "anchor": null,
+      "ctl": false,
       "db": "design.db",
       "load": true,
       "signal": "top.u_core.sum",
-      "strip_prefix": null,
       "top": null
     },
     "name": "trace"
   },
   "data": {
+    "anchor": {
+      "discarded": [],
+      "root": "top"
+    },
     "bits": null,
     "direction": "load",
     "hops": [
@@ -59,7 +63,8 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
           ],
           "proc_kind": "always_ff"
         },
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       }
     ],
     "procedures": [],
@@ -78,5 +83,5 @@ $ rtlscanner trace top.u_core.sum --load --json design.db
     "structural_hops": 1
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

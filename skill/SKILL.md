@@ -36,13 +36,15 @@ far the answer can be trusted.
    file and exits 0 even when elaboration errored. `info` says whether the rows
    cover the design and whether the source still matches; a `no_driver_found`
    from an export that skipped the driving procedure looks exactly like a
-   signal nothing drives.
+   signal nothing drives. Where that risk is real — a source that has moved on,
+   a hierarchical write the export could not place — every command says so in
+   `diagnostics`, not only `info`.
 
 ## Commands
 
 | You want | Command | Read from |
 |---|---|---|
-| Whether this database can be trusted | `info <db>` | `data.analysis`, `data.sources`, `diagnostics` |
+| Whether this database can be trusted | `info <db> [--limit N]` | `data.analysis`, `data.sources`, `diagnostics` |
 | What the design is made of | `tree <db> [scope] [--depth N]` | `data.levels[]` |
 | Where a name lives | `find <db> <glob> [--instances\|--modules]` | `data.hits[].path` |
 | What drives / reads this signal | `trace <db> <path> [--load]` | `data.hops[]` |
@@ -50,16 +52,33 @@ far the answer can be trusted.
 | What depends on it | `fanout <db> <path> …` | same |
 | Whether a route exists | `path <db> <from> <to> [--comb]` | `data.found`, `data.nodes[]` |
 
+`path` has three outcomes and they are not two: a route (`ok`, `found: true`),
+no route (`ok`, `found: false` — the walk covered everything, so this is a fact
+about the design), and a walk that gave up (`error`, `BUDGET_EXCEEDED` — it
+covered nothing like everything, so it says nothing).
+
 Every command except `info` takes `--top <name>` where the design has several
-tops, and `--strip-prefix <scope>` to accept a path anchored at a testbench the
-design has never heard of.
+tops. **A path anchored at a testbench needs nothing else**: the levels above
+this design are worked out from the path and named in `data.anchor.discarded`,
+so `tb.u_dut.u_core.q` is asked as it comes. `--anchor <path>` states where the
+root sits when you want to be sure; it is an override, not a requirement, so a
+path already relative to the design still answers alongside one that is not.
 
 `tree` shows three levels unless told otherwise; `summary.depth_truncated` says
-when that cut the walk short, and `--depth 0` reaches the rest. `find` stops
-after 5000 matches — `summary.capped` says so, and no `--limit` reaches past it;
-narrow the pattern instead. A net declared inside a generate block or a
-subroutine is named through it (`lane[0].sig`), so a bare name will not match
-one: try `*sig`.
+when that cut the walk short, and `--depth 0` reaches the rest. Everywhere a
+`--limit` appears, `0` means no limit. `find` stops after 5000 matches —
+`summary.capped` says so, and no `--limit` reaches past it; narrow the pattern
+instead.
+
+`find` matches a **name**, never a path: `*.osignal` and `top.u_x.osignal`
+match nothing whatever the design holds, and the answer says which of the two
+that is. A net declared inside a generate block or a subroutine is named
+through it (`lane[0].sig`), so a bare name will not match one either: try
+`*sig`.
+
+A path may be spelled with `.` or `/` at any level, including under `--anchor`,
+and an escaped identifier is one level however many dots it holds —
+`top.\u.1 .v` names the net `v` inside the instance `\u.1 `.
 
 A modport view is a level of a path with no object behind it: `b.mst.vld` and
 `b.vld` are one net, and so is `u_p.p.vld` through the port that takes the
@@ -70,7 +89,7 @@ with the elements named rather than answered about the first.
 
 `trace`'s `summary` carries two counts and they are not the same: `hops` is
 everything the answer holds, `structural_hops` is what `status` rests on. They
-differ only where an alias or — under `--control` — a condition is the answer,
+differ only where an alias or — under `--ctl` — a condition is the answer,
 so `no_load_found` with `hops: 2` and `structural_hops: 0` means the net is
 read as a condition and never for its value.
 
@@ -79,8 +98,14 @@ read as a condition and never for its value.
 A waveform tool says *which signal, at what time, carrying what*. This says
 *which statement put it there*. The two meet on the hierarchical path.
 
-1. **`--strip-prefix`** — a waveform path is usually `tb.u_dut.…` while the
-   design's own root is `u_dut`'s module. Pass the testbench scope once.
+1. **Paste the path as the waveform spells it.** The levels above this design
+   are worked out and reported in `data.anchor.discarded`; read that back to
+   confirm what was dropped. Two limits worth knowing: a path that reaches the
+   design and then goes wrong inside it is reported as a mistake at that level
+   and never re-read from further along, and a path whose *only* matching level
+   is a port of the root is taken as that port — which is right for
+   `tb.u_dut.clk` and wrong for a path whose scopes were nonsense and whose
+   last level happens to share a port's name. `--anchor <path>` settles it.
 2. **`trace <signal>`** — the statement, its file and line, the conditions it
    sits under and which arm of each, the events its procedure runs on, and the
    operands it reads.
@@ -115,6 +140,15 @@ A waveform tool says *which signal, at what time, carrying what*. This says
 - `bits` — a list, because a statement may write several windows.
   `bits_exact: false` means the range is an upper bound, not the bits actually
   touched — a dynamic index, or a mapping that lost precision at a boundary.
+  A window reading `@[hi:lo]` is an offset from the LSB of the flattened
+  object, not a declared index: the object has no single declared range to
+  spell one against, which is what a packed multi-dimensional array or a struct
+  is. Two windows of one such object are still two different windows.
+- `signals` — the nets at the other end, every one a path the next `trace`
+  accepts. `unresolved` beside it is the other end where the export named it
+  and resolved it to nothing: a subroutine formal, or a hierarchical path it
+  could not place. Those are reported and are not askable; a cone cannot even
+  name them, only count them.
 - `unreachable: true` — a constant condition rules this arm out at this
   parameterisation. It is still reported (the statement is in the design) and
   not counted as a driver.
@@ -129,32 +163,62 @@ A waveform tool says *which signal, at what time, carrying what*. This says
 
 ## Reading a cone
 
-- `data.direct` is the nets one hop out — usually what you want first.
+- `data.direct` is the nets one hop out — usually what you want first. It has
+  its own bound and its own counts: `summary.direct` is the whole first hop,
+  `summary.shown_direct` is how much of it you were given. `--limit` bounds the
+  cone and the first hop separately, so a deep cone never costs you the list
+  you start from.
 - `--comb` stops at state elements, so the answer is the logic that settles in
   one cycle. Latches count as state; `--through-latch` crosses one, which is
   what a glitch, a loop closing through it, or a pulse-latch borrow is about.
   An edge with `ends_at_state: true` is where a cone stopped, and
   `summary.stopped_at_state` counts them — that is how an empty answer says
   "the value is last cycle's" rather than "nothing drives this".
-- **Conditions are followed by default and are usually most of a cone.**
-  `summary.control_edges` says how many; `--no-control` leaves them out when
-  you want only the values. (`trace` is the other way round: its `gates[]`
-  already carry the conditions, so `--control` there is opt-in.)
+- **A condition is named, and not followed.** Every net the value cone reaches
+  contributes the conditions gating its assignments — one hop, the same ones
+  `trace` puts in `gates[]` — and the walk stops at them. Where a gate's own
+  value came from is a question about the gate: ask it about the gate.
+  `summary.control_edges` counts them; `data.control` says which rule is in
+  force (`direct` by default, `none` under `--no-ctl`, `full` under
+  `--follow-ctl`).
+
+  `--follow-ctl` follows them on instead. Expect that to answer about the
+  design rather than about your signal: on real RTL the conditions form one
+  connected component — reset gates the state machine, the state machine gates
+  the enables — so an unbounded cone through them returns that component. That
+  is the same set of nets for every signal in it, to the net, whichever one you
+  asked about.
 - `--depth N` bounds the walk, `0` is unbounded. `--limit` bounds the output
   and the counts stay true: `summary.edges` is the whole cone,
   `summary.shown_edges` is what you were given.
+- **A walk has a node bound of its own**, because a wide crossbar or an array
+  of FIFOs has a value cone that really is most of the design and no rule about
+  conditions makes it smaller. Passing it is `BUDGET_EXCEEDED`, never a short
+  answer: a clipped walk cannot report the true counts, and every count here is
+  the true one. It is 100 000 nets, and the operator sets
+  `RTLSCANNER_MAX_NODES` (`0` removes it) — not a flag, so an error that a
+  bound caused carries the number in `details.max_nodes`.
 - `summary.widened` counts hops where a bit-select could not be carried across
   and the question widened to the whole object. Nothing is lost by it — the
   answer is wider, not wrong.
+- **`unreachable: true` on an edge** is the same fact `trace` reports: a
+  constant condition rules that arm out at this parameterisation. The edge is
+  kept, because the statement is in the design; `summary.unreachable_edges`
+  counts them, and on parameterised IP they are often most of a cone.
+- **`summary.unresolved`** counts nets in the cone with an arc the walk could
+  not follow, because the export named the far end and did not resolve it.
+  That is the one way a cone is short without saying so anywhere else —
+  `trace` those nets and `hop.unresolved` names what is missing.
 
 ## Errors worth handling
 
 | Code | What to do |
 |---|---|
-| `SIGNAL_NOT_FOUND` / `SCOPE_NOT_FOUND` | `details` has `close_matches`, `valid_prefix` and what is at that level. The next call is a correction, not a search. |
+| `SIGNAL_NOT_FOUND` / `SCOPE_NOT_FOUND` | `details` has `close_matches`, `valid_prefix` and what is at that level. The next call is a correction, not a search. `anchored_elsewhere: true` means no level of the path named anything here — it is not a spelling to fix but a path from another world, and `--anchor` says where this design sits in it. |
 | `BAD_SELECT` | Either an aggregate with no single declared range to select from — trace the whole object — or two options that ask for different things. The message says which. |
 | `NO_TOP` | Several tops; the message lists them. Pass `--top`. |
 | `DB_UNREADABLE` | Wrong schema version or not a database. Re-export with a matching `rtl-designdb`. |
+| `BUDGET_EXCEEDED` | The cone passed the walk's node bound and stopped, so nothing is known about what it had not reached — this is **not** an empty cone and, from `path`, **not** "no route". `details.last_complete_depth` is the deepest level that did finish: ask for that `--depth`, or narrow with `--comb` / `--no-ctl`. |
 
 ## What it will not tell you
 

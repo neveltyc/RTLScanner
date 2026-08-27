@@ -274,14 +274,14 @@ fn every_bit_is_the_whole(db: &Path, signal: &str, width: u64) {
 ///
 /// Asked twice over, because the two commands differ on what a condition is: a
 /// trace files the conditions gating a statement under that statement's
-/// `gates` unless `--control` is given, while a cone makes them arcs of their
-/// own and has them on by default. `--no-control` compares the data half;
-/// `--control` on both sides compares the whole, which is what notices a walk
+/// `gates` unless `--ctl` is given, while a cone makes them arcs of their
+/// own and has them on by default. `--no-ctl` compares the data half;
+/// `--ctl` on both sides compares the whole, which is what notices a walk
 /// that stopped following conditions at all.
 fn first_hop_is_a_trace(db: &Path, signal: &str) {
     for (cone_args, trace_args) in [
-        (["--depth", "1", "--limit", "0", "--no-control"].as_slice(), [].as_slice()),
-        (["--depth", "1", "--limit", "0"].as_slice(), ["--control"].as_slice()),
+        (["--depth", "1", "--limit", "0", "--no-ctl"].as_slice(), [].as_slice()),
+        (["--depth", "1", "--limit", "0"].as_slice(), ["--ctl"].as_slice()),
     ] {
         let mut argv = vec![signal];
         argv.extend(cone_args);

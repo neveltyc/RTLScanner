@@ -40,6 +40,12 @@ pub struct Info {
     path: PathBuf,
     seal: DbInfo,
     sources: Vec<(String, SourceState)>,
+    /// Hierarchical references the export named and did not resolve, as
+    /// (reads, writes). Not in the seal, and not derivable from it.
+    unresolved: (i64, i64),
+    /// How many unchanged sources to list. Every source that is not current is
+    /// listed whatever this says.
+    limit: usize,
 }
 
 /// What a caller should know before trusting an answer from this database.
@@ -47,13 +53,49 @@ pub struct Info {
 /// Every command that answers from these rows reports this, not just the one
 /// that reports the seal: a `no_driver_found` is read as "nothing drives it",
 /// and an export that skipped the procedure doing the driving looks exactly
-/// like that.
-pub fn trust_notes(seal: &DbInfo) -> Vec<Diagnostic> {
-    let info = Info { path: PathBuf::new(), seal: seal.clone(), sources: Vec::new() };
+/// like that. The sources are checked here too — a note about them that only
+/// `info` could reach would be a note the commands that quote lines never
+/// make.
+pub fn trust_notes(db: &Db, seal: &DbInfo) -> Vec<Diagnostic> {
+    let info = Info {
+        path: PathBuf::new(),
+        seal: seal.clone(),
+        sources: source_states(db),
+        unresolved: unresolved_refs(db),
+        limit: 0,
+    };
     notes(&info)
 }
 
+/// Every source the export recorded, against what is on disk now.
+fn source_states(db: &Db) -> Vec<(String, SourceState)> {
+    db.source_files()
+        .map(|files| files.into_iter().map(|(p, d)| (p.clone(), check_source(&p, &d))).collect())
+        .unwrap_or_default()
+}
+
+/// References the export wrote as a path and could not resolve to a net, by
+/// direction. A read that did not resolve leaves a net with fewer sources than
+/// it has; a write that did not resolve leaves a net reading as undriven while
+/// something plainly writes it. Neither is in the seal, and both are the
+/// difference between `no_driver_found` meaning "nothing does" and meaning
+/// "the export could not say what does".
+fn unresolved_refs(db: &Db) -> (i64, i64) {
+    schema::unresolved_refs(db.conn()).unwrap_or((0, 0))
+}
+
 impl Info {
+    /// The sources listed in the answer: everything that is not current, and
+    /// as many current ones as any other list this tool returns. A design of a
+    /// few thousand files would otherwise make the first command an agent runs
+    /// the largest answer it ever reads, and the files worth reading are the
+    /// ones that moved.
+    fn shown_sources(&self) -> Vec<&(String, SourceState)> {
+        let (moved, current): (Vec<_>, Vec<_>) =
+            self.sources.iter().partition(|(_, s)| *s != SourceState::Current);
+        moved.into_iter().chain(current.into_iter().take(self.limit)).collect()
+    }
+
     fn stale(&self) -> usize {
         self.sources.iter().filter(|(_, s)| *s == SourceState::Stale).count()
     }
@@ -117,8 +159,12 @@ impl CommandResult for Info {
                 "truncated_call_count": s.truncated_call_count,
                 "checker_inst_count": s.checker_inst_count,
                 "unanalysed_inst_count": s.unanalysed_inst_count,
+                // Not from the seal: the export does not count these, and a
+                // consumer reading `no_driver_found` needs them.
+                "unresolved_ref_reads": self.unresolved.0,
+                "unresolved_ref_writes": self.unresolved.1,
             },
-            "sources": self.sources.iter().map(|(p, state)| json!({
+            "sources": self.shown_sources().into_iter().map(|(p, state)| json!({
                 "path": p,
                 "state": state.tag(),
             })).collect::<Vec<_>>(),
@@ -127,6 +173,7 @@ impl CommandResult for Info {
             "schema_version": s.schema_version,
             "analysis_status": s.analysis_status,
             "sources": self.sources.len(),
+            "shown_sources": self.shown_sources().len(),
             "sources_stale": self.stale(),
             "sources_missing": self.missing(),
         });
@@ -163,12 +210,20 @@ impl CommandResult for Info {
         for (path, state) in self.sources.iter().filter(|(_, s)| *s != SourceState::Current) {
             out.push_str(&format!("  {}: {path}\n", state.tag()));
         }
+        let shown = self.shown_sources().len();
+        if shown < self.sources.len() {
+            out.push_str(&format!(
+                "  ({} of {} listed; --limit 0 for all)\n",
+                shown,
+                self.sources.len()
+            ));
+        }
         out
     }
 }
 
 /// Read the seal and check every recorded source against what is on disk.
-pub fn run(path: &Path) -> (Result<Info, CommandError>, Vec<Diagnostic>) {
+pub fn run(path: &Path, limit: usize) -> (Result<Info, CommandError>, Vec<Diagnostic>) {
     let db = match Db::open(path) {
         Ok(db) => db,
         Err(e) => {
@@ -191,12 +246,17 @@ pub fn run(path: &Path) -> (Result<Info, CommandError>, Vec<Diagnostic>) {
         Ok(seal) => seal,
         Err(message) => return (Err(CommandError::new(ErrorCode::BadDb, message)), Vec::new()),
     };
-    let sources = match db.source_files() {
-        Ok(files) => files.into_iter().map(|(p, d)| (p.clone(), check_source(&p, &d))).collect(),
-        Err(message) => return (Err(CommandError::new(ErrorCode::BadDb, message)), Vec::new()),
-    };
+    if let Err(message) = db.source_files() {
+        return (Err(CommandError::new(ErrorCode::BadDb, message)), Vec::new());
+    }
 
-    let info = Info { path: path.to_path_buf(), seal, sources };
+    let info = Info {
+        path: path.to_path_buf(),
+        seal,
+        sources: source_states(&db),
+        unresolved: unresolved_refs(&db),
+        limit,
+    };
     let notes = notes(&info);
     (Ok(info), notes)
 }
@@ -258,6 +318,17 @@ fn notes(info: &Info) -> Vec<Diagnostic> {
             "{} procedure(s) were skipped: every driver they wrote is absent, \
              which reads as an undriven signal rather than an error",
             info.seal.empty_procedure_count
+        )));
+    }
+
+    // A write the export could not attribute leaves the net it should have
+    // driven reading as undriven, which is the one answer a caller cannot
+    // check from the outside.
+    if info.unresolved.1 > 0 {
+        notes.push(Diagnostic::warning(format!(
+            "{} hierarchical write(s) were named and not resolved to a net: a signal one of \
+             them drives answers no_driver_found rather than naming them",
+            info.unresolved.1
         )));
     }
 

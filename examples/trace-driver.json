@@ -3,16 +3,20 @@ $ rtlscanner trace top.muxed --json design.db
 {
   "command": {
     "args": {
-      "control": false,
+      "anchor": null,
+      "ctl": false,
       "db": "design.db",
       "load": false,
       "signal": "top.muxed",
-      "strip_prefix": null,
       "top": null
     },
     "name": "trace"
   },
   "data": {
+    "anchor": {
+      "discarded": [],
+      "root": "top"
+    },
     "bits": null,
     "direction": "driver",
     "hops": [
@@ -37,7 +41,8 @@ $ rtlscanner trace top.muxed --json design.db
           "events": [],
           "proc_kind": "always_comb"
         },
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       },
       {
         "assign_kind": "blocking",
@@ -89,7 +94,8 @@ $ rtlscanner trace top.muxed --json design.db
           "events": [],
           "proc_kind": "always_comb"
         },
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       },
       {
         "assign_kind": "blocking",
@@ -141,7 +147,8 @@ $ rtlscanner trace top.muxed --json design.db
           "events": [],
           "proc_kind": "always_comb"
         },
-        "unreachable": false
+        "unreachable": false,
+        "unresolved": []
       }
     ],
     "procedures": [
@@ -190,5 +197,5 @@ $ rtlscanner trace top.muxed --json design.db
     "structural_hops": 3
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }

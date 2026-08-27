@@ -3,10 +3,12 @@ $ rtlscanner tree --depth 0 --json design.db
 {
   "command": {
     "args": {
+      "anchor": null,
       "db": "design.db",
       "depth": 0,
       "limit": null,
-      "scope": null
+      "scope": null,
+      "top": null
     },
     "name": "tree"
   },
@@ -67,5 +69,5 @@ $ rtlscanner tree --depth 0 --json design.db
     "truncated": false
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }
