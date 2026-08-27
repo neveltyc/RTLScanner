@@ -70,12 +70,29 @@ impl BitSpan {
         }
     }
 
+    /// The span as offsets into the flattened object, counting from the LSB.
+    ///
+    /// What there is to say about an object with no single declared range — a
+    /// packed multi-dimensional array, a struct — where [`spell`](Self::spell)
+    /// rightly declines to name indices. Saying nothing instead would make two
+    /// arcs touching different elements read as the same arc.
+    ///
+    /// `None` for the whole object and for a span with no stated position,
+    /// which are the two cases that have no offsets to give.
+    pub fn offsets(&self) -> Option<(u64, u64)> {
+        match self {
+            BitSpan::Range { lo, hi, .. } => Some((*lo, *hi)),
+            BitSpan::Whole | BitSpan::Unknown => None,
+        }
+    }
+
     /// The span in declared indices, given the object's declared range.
     ///
     /// `None` for the whole object — a caller says nothing rather than spelling
     /// a range that adds nothing — and for a span with no declared range to
     /// anchor it, since bare offsets would read as indices and be wrong for
-    /// every object not declared `[N-1:0]`.
+    /// every object not declared `[N-1:0]`. [`offsets`](Self::offsets) is what
+    /// that second case has instead.
     pub fn spell(&self, decl: Option<(i64, i64)>) -> Option<String> {
         let (BitSpan::Range { lo, hi, .. }, Some((left, right))) = (self, decl) else {
             return None;
@@ -87,6 +104,18 @@ impl BitSpan {
         let (a, b) = (at(*lo), at(*hi));
         Some(if a == b { format!("[{a}]") } else { format!("[{}:{}]", a.max(b), a.min(b)) })
     }
+}
+
+/// What a span has to say about itself, given its object's declared range.
+///
+/// [`spell`](BitSpan::spell) where there is a range to spell against, and
+/// `@[hi:lo]` — [`offsets`](BitSpan::offsets), marked as offsets so they cannot
+/// be read as indices — where there is not. An aggregate is the common case
+/// with no range: a packed multi-dimensional array or a struct. Saying nothing
+/// there loses the window entirely, and two arcs touching different elements of
+/// one array then read as the same arc.
+pub fn say(span: &BitSpan, decl: Option<(i64, i64)>) -> Option<String> {
+    span.spell(decl).or_else(|| span.offsets().map(|(lo, hi)| format!("@[{hi}:{lo}]")))
 }
 
 /// The declared range of a simple vector, if this type is one.
@@ -177,6 +206,15 @@ pub fn cross(
 /// Declared indices to LSB-relative offsets, against the object's own range.
 pub fn offsets_of(select: (i64, i64), decl: (i64, i64)) -> Result<(u64, u64), String> {
     let (left, right) = decl;
+    // LRM 11.5.1: a part-select runs the way its object is declared. Reading
+    // one that does not as though it did would answer about a range the caller
+    // did not write, and look like an answer.
+    if select.0 != select.1 && (select.0 > select.1) != (left > right) {
+        return Err(format!(
+            "select [{}:{}] runs the opposite way from the declared range [{left}:{right}]",
+            select.0, select.1
+        ));
+    }
     let low = left.min(right);
     let high = left.max(right);
     let to_offset = |i: i64| -> Result<u64, String> {
@@ -221,6 +259,40 @@ mod tests {
         assert!(r.may_touch(0, 4));
         assert!(!r.may_touch(0, 3));
         assert!(!r.may_touch(8, 8));
+    }
+
+    #[test]
+    fn an_object_with_no_declared_range_still_says_which_bits() {
+        // `logic [2:0][8:0]` has no one range to spell indices against, but
+        // three arcs touching three elements are three different facts and
+        // saying nothing about any of them makes them one.
+        let decl = declared_range("logic[2:0][8:0]", Some(27));
+        assert_eq!(decl, None);
+        let element = |n: u64| BitSpan::Range { lo: n * 9, hi: n * 9 + 8, exact: true };
+        assert_eq!(say(&element(0), decl).as_deref(), Some("@[8:0]"));
+        assert_eq!(say(&element(2), decl).as_deref(), Some("@[26:18]"));
+
+        // A range to spell against still wins: the marked form is what there
+        // is instead of indices, never as well as them.
+        assert_eq!(say(&element(0), Some((26, 0))).as_deref(), Some("[8:0]"));
+        // And the two cases with no position stay silent.
+        assert_eq!(say(&BitSpan::Whole, decl), None);
+        assert_eq!(say(&BitSpan::Unknown, decl), None);
+    }
+
+    #[test]
+    fn a_part_select_must_run_the_way_its_object_is_declared() {
+        // LRM 11.5.1. Read the other way round it would answer about a range
+        // the caller did not write.
+        assert_eq!(offsets_of((1, 0), (3, 0)).unwrap(), (0, 1));
+        let e = offsets_of((0, 1), (3, 0)).unwrap_err();
+        assert!(e.contains("opposite way"), "{e}");
+        assert_eq!(offsets_of((0, 1), (0, 3)).unwrap(), (2, 3));
+        let e = offsets_of((1, 0), (0, 3)).unwrap_err();
+        assert!(e.contains("opposite way"), "{e}");
+        // A single index has no direction to contradict.
+        assert!(offsets_of((2, 2), (3, 0)).is_ok());
+        assert!(offsets_of((2, 2), (0, 3)).is_ok());
     }
 
     #[test]
