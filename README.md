@@ -34,7 +34,7 @@ cargo build
 ./target/debug/rtlscanner info design.db
 ./target/debug/rtlscanner trace design.db top.u_core.u_alu.result
 ./target/debug/rtlscanner trace design.db 'top.u_core.status[3]' --load
-./target/debug/rtlscanner trace --json design.db tb.dut.q --strip-prefix tb
+./target/debug/rtlscanner trace --json design.db tb.dut.q   # anchored at a testbench
 ./target/debug/rtlscanner fanin design.db top.u_core.status --depth 6
 ./target/debug/rtlscanner fanin design.db top.u_core.status --comb   # this cycle's logic
 ./target/debug/rtlscanner path design.db top.a top.u_core.result
@@ -61,6 +61,12 @@ hashes to what was exported. Which of several drivers was in effect at some
 moment is not a structural fact and is not claimed; the material to decide it
 is in the answer.
 
+The names a hop gives are in two lists and the split is the point: `signals`
+holds paths, every one of which the next command accepts, and `unresolved`
+holds the far ends the export named and resolved to nothing — a subroutine
+formal, a hierarchical path it could not place. Mixing them would make half of
+`signals` a question that answers `SIGNAL_NOT_FOUND`.
+
 `tree` and `find` are where a path comes from when you do not have one yet:
 what the design is made of, and where a name lives. What `find` returns, every
 other command accepts.
@@ -68,23 +74,51 @@ other command accepts.
 A path may also be spelled the way a designer or a waveform writes it. A
 modport view is a level of a path with nothing behind it — `b.mst.vld` and
 `b.vld` are one net — so the view is crossed and the answer gives the net's own
-path. Where the design has several tops, `--top` says which; where a path comes
-from a waveform anchored at a testbench the design has never heard of,
-`--strip-prefix` says how much of it is not the design's.
+path. Where the design has several tops, `--top` says which.
+
+A path from a waveform is anchored at the testbench that ran the simulation,
+where this design is one instance among others; the levels between are in
+neither world, since the export never elaborated them. Which ones they are is a
+hypothesis these rows can test, so it is tested rather than demanded: the path
+is asked as it comes and the answer names what it dropped in
+`data.anchor.discarded`. `--anchor` states it instead, for the case where a
+testbench happens to name its instance after something this design also has.
 
 `fanin` and `fanout` follow those hops outward, and `path` reads the walk
 backwards to give one route. A cone stops where the caller says: after so many
 hops, or — with `--comb` — at the state elements that end the cycle, latches
 included, since a latch holds a level. `--through-latch` crosses one anyway,
 which is what a glitch, a loop closing through it, or a pulse-latch borrow is
-about. Conditions are followed like any other dependency and counted
-separately, because on real RTL most of a cone is conditions; `--no-control`
-leaves them out.
+about.
+
+A condition is named and not followed. Every net the value cone reaches
+contributes the conditions gating its assignments — one hop, the same ones a
+`trace` hop carries — and the walk stops there, because where a gate's own
+value came from is a question about the gate. On real RTL the conditions form
+one connected component, so following them transitively returns that component
+rather than an answer about the signal asked for: `--follow-ctl` does it
+anyway, and `--no-ctl` leaves conditions out altogether.
+
+Two bounds, and they are different. `--limit` bounds the answer and leaves the
+counts true, which costs the whole walk. `RTLSCANNER_MAX_NODES` bounds the walk
+— 100 000 nets by default, `0` to remove it — because a wide crossbar or an
+array of FIFOs has a value cone that really is most of the design. Passing it
+is an error, never a short answer: a walk that stopped cannot report what it
+did not reach, and from `path` that is why "no route" and "gave up looking" are
+different outcomes rather than one.
 
 A bit-select narrows a cone to what feeds those bits, and carries the window
 across each hop for as long as the correspondence is exact — widening to the
 whole object rather than naming bits that might be the wrong ones, and saying
-how often it had to.
+how often it had to. A window on an object with no single declared range — a
+packed multi-dimensional array, a struct — is spelled `@[hi:lo]`, an offset
+from the LSB rather than a declared index it has no right to claim.
+
+Where an answer is short, it says so rather than looking complete: an arm a
+constant condition rules out is reported and marked `unreachable`, and an arc
+whose far end the export named but did not resolve is counted in
+`summary.unresolved` — the cone cannot walk to a name that resolves to no net,
+and `trace` on that signal is what names it.
 
 Every command answers in one JSON envelope: `tool`, `version`, `status`,
 `command`, `data`, `diagnostics`, `errors`, `summary`. A failure is a

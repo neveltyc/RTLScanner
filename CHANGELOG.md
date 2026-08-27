@@ -7,6 +7,183 @@ based on [Keep a Changelog](https://keepachangelog.com/); this project uses
 This record starts at 1.0.0, the first release of the Rust rewrite. What came
 before it was a Python program, archived at `v0.1.0` through `v0.5.0`.
 
+## [1.0.2] — 2026-08-27
+
+Answers that were short, wide or unfollowable, and said none of it. Every item
+here came out of running the tool over the RTLDebugDBKit construct fixtures and
+one large real design, and checking the answers against each other and against
+the RTL.
+
+**This release breaks the command line and the envelope.** Three flags are
+spelled differently, one moved off a command that ignored it, an unbounded cone
+answers a different question, and a query that used to run for a long time can
+now stop and say it will not. A caller written against 1.0.x needs reading
+before it is pointed at this. Everything that changed is under **Changed**,
+with what it was and why it is not that any more.
+
+### Changed
+- **A gating condition is named by a cone and no longer followed by it.** Every
+  net the value cone reaches contributes the conditions gating its assignments
+  — one hop, the same ones `trace` puts in `gates[]` — and the walk stops
+  there. It used to follow them like any other dependency, and on real RTL the
+  conditions are one connected component: reset gates the state machine, the
+  state machine gates the enables, the enables gate the reset logic. An
+  unbounded cone therefore returned that component, which is the same set of
+  nets for every signal in it. On a large design, three unrelated signals from
+  three different subsystems each answered with the identical set of nets, byte
+  for byte. That answer was a constant, and a constant is not an answer about a
+  signal.
+
+  The same three now answer with tens of nets each. `--follow-ctl` restores
+  the old walk, `--no-ctl` still leaves conditions out entirely, and
+  `data.control` says which of the three is in force. A depth-1 cone is
+  unchanged, so it still equals a `trace`.
+- **Every flag naming a condition spells it `ctl`:** `--no-control` is now
+  `--no-ctl`, and `trace --control` is now `trace --ctl`, beside the new
+  `--follow-ctl`. One idea spelled two ways across one tool is a thing to
+  explain forever. No aliases are kept: a deprecated spelling is a second
+  contract to maintain, and this tool is young enough that carrying one costs
+  more than the rename does.
+
+### Changed
+- **`--strip-prefix` is now `--anchor`, and is rarely needed.** It named its
+  mechanism — cut this text off the front — where what it states is a fact:
+  where this design's root sits in the coordinates your paths are written in.
+  The type it fills has been called `Anchor` from the start; only the flag
+  disagreed.
+
+  It is also no longer a precondition. Which levels are above this design is a
+  hypothesis these rows can test, so a path from a waveform is asked as it
+  comes: levels are discarded while none of them names anything at the root,
+  and the first that does ends it. A path that reaches the design and then goes
+  wrong inside it is a mistake at that level, not a different set of
+  coordinates, and is never re-read from further along. The answer names what
+  it dropped in `data.anchor.discarded`, because a path reinterpreted in
+  silence is one the caller cannot check.
+
+  Stating it is now an override rather than a requirement: a path already
+  relative to the design answers alongside one that is not, which is what lets
+  `path FROM TO` take one of each. `find` no longer accepts it at all — it
+  matches a name, never a path, and took the option without using it. Every
+  command that takes a path now echoes `top` and `anchor`; only `trace` did.
+
+  One limit is stated rather than hidden: a path whose only matching level is a
+  port of the root is read as that port. That is right for `tb.u_dut.clk` and
+  wrong for a path whose scopes were nonsense and whose last level happens to
+  share a port's name — `anchor.discarded` is what shows the difference, and
+  `--anchor` settles it. On the designs this was measured against, a path with
+  a wrong level inside the design is refused rather than re-read in 99.9% of
+  cases; the rest are this shape.
+- **A failure that reached nothing says so.** Where no level of a path named
+  anything in this design, the error used to point at the first level as a
+  name to correct and offer a spelling for it. It now reports
+  `anchored_elsewhere: true` and names `--anchor`, because the level is not
+  misspelled — it is somewhere this design has never been.
+
+### Added
+- **A node bound on the walk itself** — `RTLSCANNER_MAX_NODES`, 100 000 nets by
+  default, `0` to remove it. `--limit` bounds the answer and leaves the counts
+  true, which costs the whole walk; this bounds the walk, because no rule about
+  conditions makes a genuinely large value cone smaller — a wide crossbar or an
+  array of FIFOs stays six figures of nets with conditions left out
+  entirely. Passing it is
+  `BUDGET_EXCEEDED` and never a clipped cone: a walk that stopped cannot report
+  the true counts, and every count here is the true one. The error names the
+  deepest level that did finish, which is a `--depth` the caller can ask for.
+
+  It is an environment variable and not a flag, so it does not appear in
+  `command.args`; the error carries `details.max_nodes` instead, since an
+  outcome a bound changed has to say what changed it. A value that is not a
+  number is rejected on stderr with exit 2, before any command runs. `tree` is
+  not subject to it: the hierarchy is finite and small beside a dataflow
+  closure, and walking all of it costs seconds.
+- **`path` tells "no route" from "gave up looking".** Exhausted and found
+  nothing is `status: ok` with `found: false` — the walk covered everything, so
+  it is a fact about the design. Stopped by the bound is `status: error` with
+  `BUDGET_EXCEEDED`. Folding the second into the first would have made the
+  first untrustworthy.
+- **A cone edge carries `unreachable`, and `summary.unreachable_edges` counts
+  them.** `trace` has said since v19 that a constant condition rules an arm
+  out; a cone said nothing, so logic a parameterisation excludes arrived as an
+  ordinary dependency. On parameterised RTL that is not a rare case: one net's
+  depth-1 fan-in measured 51 edges, 42 of them arms that build cannot take.
+- **`summary.unresolved` on a cone**: nets it reached that have an arc it could
+  not follow, because the export named the far end and did not resolve it. The
+  walk has always stopped there; now the answer says it stopped, so a cone
+  short of a hierarchical driver no longer reads like a complete one.
+- **`hop.unresolved` on `trace`**, beside `signals`. The two were one list, and
+  half of it — a subroutine formal, a path the export could not place — is not
+  a signal any command accepts. `signals` is now every name that is a path and
+  nothing else, which is what following one is supposed to mean.
+- **`info --limit`**, and `summary.shown_sources`. `data.sources` was the one
+  list in the tool with no bound: a few hundred files made it tens of
+  kilobytes, and `info` is the first thing an agent runs. Every source that is not `current` is listed
+  whatever the limit says.
+- **`info` counts hierarchical references the export did not resolve**
+  (`unresolved_ref_reads`, `unresolved_ref_writes`), which the seal does not
+  carry. An unresolved *write* is the one that matters: the net it should have
+  driven answers `no_driver_found`, and that reads exactly like a net nothing
+  drives. Where there is one, every command now says so.
+
+### Fixed
+- **A path whose scope is an escaped identifier holding a `.` did not resolve.**
+  `\u.1 .v` was looked up one dot-separated piece at a time and found an
+  instance named `\u`, which is not there. A path is now split into levels
+  rather than segments — LRM 5.6.1 ends an escaped name at whitespace — so the
+  rule the module always claimed, that a name is matched whole, holds at every
+  level and not only at the leaf. `find` and `tree` emit these paths, and until
+  now no other command took them back.
+- **Bits of an object with no single declared range went unreported.** A packed
+  multi-dimensional array or a struct has no range to spell indices against, so
+  `spell` declined — and the window vanished. Three generate instances writing
+  three elements of one array produced three JSON edges identical in every
+  field, and `summary.edges` counted all three. Such a span now reads
+  `@[hi:lo]`, marked as an offset from the LSB so it cannot be mistaken for a
+  declared index. On real RTL this recovers the window on tens of thousands of
+  dependency rows.
+- **`path` walked the whole design before looking for the goal.** It is
+  breadth-first, so the level the goal turns up in is the last one a shortest
+  route can need. Between two nets one hop apart on a large design: 12.1 s and
+  830 MB, now 0.3 s and 24 MB.
+- **The stale-source warning never reached any command but `info`.**
+  `trust_notes` built its subject with an empty source list, so the note it
+  exists to carry was unreachable from `trace`, `fanin`, `fanout` and `path` —
+  the commands whose answers quote lines from those files.
+- **`--strip-prefix` did not accept `/`.** Paths take either separator because
+  a waveform tool may spell a hierarchy with `/`, and stripping a testbench off
+  a waveform path is the whole reason the option exists; the two did not
+  compose. Either separator now matches either, and the remainder must still
+  start at a segment boundary.
+- **A part-select running against its object's declared direction was
+  accepted.** `x[0:1]` on `logic [3:0] x` answered about `[1:0]`. LRM 11.5.1
+  makes it an error, and so does this now.
+- **A hop's `scope` named the instance, never the generate block inside it.**
+  Three generate instances of one `always` block share an instance and differ
+  only in scope, so all three said the same thing about where they were.
+- **`data.direct` was clipped by the cone's `--limit` and said nothing about
+  it.** The first hop is the list a caller starts from, and it was whatever the
+  edge budget happened to leave: on a net with more than 200 loads the default
+  answer was quietly part of one. It is now counted whole (`summary.direct`),
+  clipped on its own terms (`summary.shown_direct`), and every name in it is
+  still a node of the answer.
+- **`find` answered a hierarchical pattern with a silent nothing.** A glob is
+  matched against a name, not a path, so `*.osignal` could never match; the
+  empty answer now says which of the two it is.
+- **A column added to `STMT_COLS` shifted the three read after it.**
+  `procedure_writes` read the target's bits at a written-down index; it counts
+  the list now, which is the rule the module states and this was the one place
+  that did not follow it.
+
+### Known, and not fixed here
+- A cone still cannot *follow* an arc whose far end the export named and did
+  not resolve — it counts them. The export resolves `$root.top.x` and does not
+  resolve `top.x`, which is the same reference; that belongs upstream, and
+  compensating for it here would be a layer with a known expiry.
+- `u_ren.p.d`, a modport port declared under a name of its own
+  (`modport m(output .d(data))`), does not resolve. The schema records a
+  terminal's modport by name and nothing about that modport's ports, so there
+  is nothing here to resolve it with.
+
 ## [1.0.1] — 2026-08-27
 
 Hardening. The suite gets two processors nobody wrote for this tool to run the

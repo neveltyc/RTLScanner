@@ -3,19 +3,26 @@ $ rtlscanner fanin top.out --comb --json design.db
 {
   "command": {
     "args": {
+      "anchor": null,
       "comb": true,
       "db": "design.db",
       "depth": null,
+      "follow_ctl": false,
       "limit": null,
-      "no_control": false,
+      "no_ctl": false,
       "signal": "top.out",
-      "through_latch": false
+      "through_latch": false,
+      "top": null
     },
     "name": "fanin"
   },
   "data": {
+    "anchor": {
+      "discarded": [],
+      "root": "top"
+    },
     "comb": true,
-    "control": true,
+    "control": "direct",
     "direct": [
       "top.u_core.out"
     ],
@@ -36,7 +43,8 @@ $ rtlscanner fanin top.out --comb --json design.db
         "source": "top.u_core.out",
         "source_bits": null,
         "target": "top.out",
-        "target_bits": null
+        "target_bits": null,
+        "unreachable": false
       }
     ],
     "max_depth": null,
@@ -63,16 +71,20 @@ $ rtlscanner fanin top.out --comb --json design.db
   "status": "ok",
   "summary": {
     "control_edges": 0,
+    "direct": 1,
     "edges": 1,
     "limit": 200,
     "max_depth_reached": 1,
     "nodes": 2,
+    "shown_direct": 1,
     "shown_edges": 1,
     "shown_nodes": 2,
     "stopped_at_state": 1,
     "truncated": false,
+    "unreachable_edges": 0,
+    "unresolved": 0,
     "widened": 0
   },
   "tool": "rtlscanner",
-  "version": "1.0.1"
+  "version": "1.0.2"
 }
