@@ -1087,6 +1087,20 @@ pub fn source_file(c: &Connection, file_path: &str) -> Result<Option<(String, St
     })
 }
 
+/// References the export wrote as a path and could not resolve, as
+/// (reads, writes).
+///
+/// Not in the seal. A read that did not resolve leaves a net with fewer
+/// sources than it has; a write that did not resolve leaves one reading as
+/// undriven while something plainly writes it — and that second case is
+/// indistinguishable, from the outside, from a net nothing drives.
+pub fn unresolved_refs(c: &Connection) -> Result<(i64, i64), String> {
+    const SQL: &str = "SELECT \
+            COALESCE(SUM(access = 'read'), 0), COALESCE(SUM(access = 'write'), 0) \
+          FROM v_hier_ref WHERE resolved_net_id IS NULL";
+    c.query_row(SQL, [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| q(e, "v_hier_ref"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1127,16 +1141,4 @@ mod tests {
     }
 }
 
-/// References the export wrote as a path and could not resolve, as
-/// (reads, writes).
-///
-/// Not in the seal. A read that did not resolve leaves a net with fewer
-/// sources than it has; a write that did not resolve leaves one reading as
-/// undriven while something plainly writes it — and that second case is
-/// indistinguishable, from the outside, from a net nothing drives.
-pub fn unresolved_refs(c: &Connection) -> Result<(i64, i64), String> {
-    const SQL: &str = "SELECT \
-            COALESCE(SUM(access = 'read'), 0), COALESCE(SUM(access = 'write'), 0) \
-          FROM v_hier_ref WHERE resolved_net_id IS NULL";
-    c.query_row(SQL, [], |r| Ok((r.get(0)?, r.get(1)?))).map_err(|e| q(e, "v_hier_ref"))
-}
+
