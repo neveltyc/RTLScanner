@@ -662,7 +662,9 @@ pub fn gating_reads(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String>
             })
         })
         .map_err(|e| q(e, "branch_ref"))?;
-    out.extend(rows.collect::<Result<_, _>>().map_err(|e| q(e, "branch_ref"))?);
+    let found: Vec<RefRow> =
+        rows.collect::<Result<_, _>>().map_err(|e| q(e, "branch_ref"))?;
+    out.extend(found);
 
     // A condition reaching outside the instance: hier_ref rows keyed on the
     // level. An upward reference resolves to no net of this export, so the
@@ -684,7 +686,9 @@ pub fn gating_reads(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String>
             })
         })
         .map_err(|e| q(e, "hier_ref"))?;
-    out.extend(rows.collect::<Result<_, _>>().map_err(|e| q(e, "hier_ref"))?);
+    let found: Vec<RefRow> =
+        rows.collect::<Result<_, _>>().map_err(|e| q(e, "hier_ref"))?;
+    out.extend(found);
 
     Ok(out)
 }
