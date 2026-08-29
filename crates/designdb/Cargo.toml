@@ -1,6 +1,6 @@
 [package]
 name = "designdb"
-description = "Reader for an rtl-designdb design.db, schema v19"
+description = "Reader for an rtl-designdb design.db, schema v20"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

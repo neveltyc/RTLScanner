@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 # One run per ref. A second push supersedes the first rather than racing it.
 concurrency:
@@ -37,3 +38,26 @@ jobs:
 
       - run: make build
       - run: make check
+
+  windows-artifact:
+    name: windows-artifact
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: cargo-build-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-build-
+
+      - run: cargo build --release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rtlscanner-windows-amd64
+          path: target/release/rtlscanner.exe

@@ -1100,9 +1100,8 @@ mod tests {
         write_db(
             &path,
             crate::SCHEMA_VERSION,
-            &["INSERT OR REPLACE INTO meta VALUES ('top', 'dut'), \
-               ('analysis_status', 'partial'), ('error_count', '4'), \
-               ('empty_procedure_count', '2')"],
+            &["UPDATE db_info SET top = 'dut', analysis_status = 'partial', \
+               error_count = 4, empty_procedure_count = 2"],
         );
         let db = Db::open(&path).unwrap();
         let info = db_info(db.conn()).unwrap();
@@ -1116,17 +1115,15 @@ mod tests {
     }
 
     #[test]
-    fn a_seal_missing_a_required_key_is_a_failure_not_a_zero() {
+    fn a_database_without_the_seal_row_is_refused_not_read_as_zeros() {
         let dir = tmp("dbinfo-hollow");
         let path = dir.join("design.db");
-        // A file that opens and passes the version gate, with no seal behind
-        // it. Reported as zero counts it would read as an export with nothing
-        // wrong in it — the opposite of what it is.
-        write_db(&path, crate::SCHEMA_VERSION, &["DELETE FROM meta WHERE key = 'error_count'"]);
-        let db = Db::open(&path).unwrap();
-
-        let e = db_info(db.conn()).unwrap_err();
-        assert!(e.contains("v_db_info"), "{e}");
+        // v20 stores the seal as one required row, so a database with no
+        // `db_info` row fails the version gate at open rather than being read
+        // as an export with nothing wrong in it.
+        write_db(&path, crate::SCHEMA_VERSION, &["DELETE FROM db_info"]);
+        let Err(e) = Db::open(&path) else { panic!("a database with no seal was opened") };
+        assert!(matches!(e, crate::OpenError::NoSchemaVersion { .. }), "expected NoSchemaVersion, got {e}");
     }
 }
 

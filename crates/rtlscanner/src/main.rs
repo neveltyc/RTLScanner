@@ -81,7 +81,7 @@ Environment:
 
 Make the database first, from the RTL, with RTLDebugDBKit's exporter:
   rtl-designdb <sources...> --top NAME -o design.db
-This version reads database schema v19: the exporter and this tool must
+This version reads database schema v20: the exporter and this tool must
 agree on the schema version.
 The database is a snapshot of the RTL at export time; edit the source
 and it is stale until re-exported.

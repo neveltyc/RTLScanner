@@ -71,8 +71,8 @@ fn a_partial_export_names_what_it_fell_short_of() {
     fixture::write_db(
         &db,
         SCHEMA_VERSION,
-        &["INSERT OR REPLACE INTO meta VALUES ('analysis_status', 'partial'), \
-           ('error_count', '4'), ('empty_procedure_count', '2')"],
+        &["UPDATE db_info SET analysis_status = 'partial', error_count = 4, \
+           empty_procedure_count = 2"],
     );
     let (v, code) = info_json(&db);
 
@@ -98,8 +98,7 @@ fn a_truncated_recursion_is_told_apart_from_a_construct_the_export_declined() {
     fixture::write_db(
         &db,
         SCHEMA_VERSION,
-        &["INSERT OR REPLACE INTO meta VALUES ('recursion_count', '7'), \
-           ('unresolved_count', '3')"],
+        &["UPDATE db_info SET recursion_count = 7, unresolved_count = 3"],
     );
     let (v, code) = info_json(&db);
 
@@ -118,20 +117,17 @@ fn a_truncated_recursion_is_told_apart_from_a_construct_the_export_declined() {
 }
 
 #[test]
-fn a_seal_that_contradicts_itself_is_reported_as_such() {
+fn a_seal_that_contradicts_itself_is_refused_by_v20() {
     let dir = tmp("info-malformed");
     let db = dir.join("design.db");
-    // The contract: `partial` is exactly the five counts, so `partial` with
-    // none of them is a file whose seal cannot be taken at its word.
-    fixture::write_db(
-        &db,
-        SCHEMA_VERSION,
-        &["INSERT OR REPLACE INTO meta VALUES ('analysis_status', 'partial')"],
-    );
-    let (v, _) = info_json(&db);
-
-    let note = v["diagnostics"][0]["message"].as_str().unwrap();
-    assert!(note.contains("contradicts itself"), "{note}");
+    // v20 enforces the seal through db_info CHECK; a contradictory
+    // analysis_status vs the counts beside it can no longer be written.
+    fixture::write_db(&db, SCHEMA_VERSION, &[]);
+    let c = designdb::Connection::open(&db).unwrap();
+    let err = c
+        .execute_batch("UPDATE db_info SET analysis_status = 'partial'")
+        .unwrap_err();
+    assert!(err.to_string().contains("CHECK"), "expected CHECK violation: {err}");
 }
 
 #[test]

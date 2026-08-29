@@ -21,7 +21,7 @@ use crate::err;
 /// does not know the version does not get to guess — and an older one because
 /// its columns still exist under meanings that have since moved, which fails
 /// silently rather than loudly.
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 /// Why a file could not be opened as a design database.
 ///
@@ -34,7 +34,7 @@ pub enum OpenError {
     NotFound { path: PathBuf, reason: String },
     /// The bytes are not a SQLite database.
     NotADatabase { path: PathBuf, reason: String },
-    /// A database, but with no `meta` version to check.
+    /// A database, but with no `db_info` version to check.
     NoSchemaVersion { path: PathBuf },
     /// A design database of a version this build does not read.
     VersionMismatch { path: PathBuf, found: i64, tool: Option<String> },
@@ -113,11 +113,10 @@ impl Db {
     fn check_version(&self) -> Result<(), OpenError> {
         let found: Option<i64> = self
             .conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |r| {
-                r.get::<_, String>(0)
+            .query_row("SELECT schema_version FROM db_info WHERE id = 1", [], |r| {
+                r.get::<_, i64>(0)
             })
-            .ok()
-            .and_then(|v| v.parse().ok());
+            .ok();
         match found {
             Some(v) if v == SCHEMA_VERSION => Ok(()),
             Some(found) => Err(OpenError::VersionMismatch {
@@ -129,11 +128,32 @@ impl Db {
         }
     }
 
-    /// A `meta` value, when present. `top` is only recorded when the export was
-    /// given `--top`, so its absence is ordinary; every other key of the seal is
-    /// required, and a missing one means the file is not what it claims.
+    /// A `db_info` seal value, when present. `top` is only recorded when the
+    /// export was given `--top`, so its absence is ordinary; every other
+    /// column of the seal is required, and a missing one means the file is not
+    /// what it claims.
     pub fn meta(&self, key: &str) -> Option<String> {
-        self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).ok()
+        let column = match key {
+            "schema_version" => "schema_version",
+            "tool" => "tool",
+            "tool_version" => "tool_version",
+            "slang_version" => "slang_version",
+            "producer_revision" => "producer_revision",
+            "top" => "top",
+            "analysis_status" => "analysis_status",
+            "error_count" => "error_count",
+            "unresolved_count" => "unresolved_count",
+            "empty_procedure_count" => "empty_procedure_count",
+            "duplicate_path_count" => "duplicate_path_count",
+            "recursion_count" => "recursion_count",
+            "truncated_call_count" => "truncated_call_count",
+            "checker_inst_count" => "checker_inst_count",
+            "unanalysed_inst_count" => "unanalysed_inst_count",
+            "config_digest" => "config_digest",
+            _ => return None,
+        };
+        let sql = format!("SELECT CAST({column} AS TEXT) FROM db_info WHERE id = 1");
+        self.conn.query_row(&sql, [], |r| r.get::<_, Option<String>>(0)).ok().flatten()
     }
 
     /// Every source file the export read, with its SHA-256, in path order.
@@ -162,34 +182,15 @@ impl Db {
 pub mod fixture {
     use super::*;
 
-    /// The seal a compliant export always writes. Only `top` is optional, so a
-    /// fixture that omitted the rest would be testing a file the kit never
-    /// writes — the same reason the DDL keeps its CHECK clauses.
-    const SEAL: [(&str, &str); 14] = [
-        ("tool", "rtl-designdb"),
-        ("tool_version", "0.1.0"),
-        ("slang_version", "v11.0"),
-        ("producer_revision", "0000000"),
-        ("analysis_status", "complete"),
-        ("error_count", "0"),
-        ("unresolved_count", "0"),
-        ("empty_procedure_count", "0"),
-        ("duplicate_path_count", "0"),
-        ("recursion_count", "0"),
-        ("truncated_call_count", "0"),
-        ("checker_inst_count", "0"),
-        ("unanalysed_inst_count", "0"),
-        ("config_digest", "0000000000000000000000000000000000000000000000000000000000000000"),
-    ];
-
     /// A database with the kit's own DDL, a complete seal claiming `version`,
     /// and whatever `seed` adds.
     ///
     /// The DDL is the kit's, verbatim, so what a test observes of a view is the
     /// view's real behaviour rather than an imitation of it; seeds write base
     /// tables only. Generating the file also keeps a fixture from pinning one
-    /// design's shapes, which a committed `.db` would. Seeds override the seal
-    /// with `INSERT OR REPLACE`, `meta.key` being the primary key.
+    /// design's shapes, which a committed `.db` would. The seal is one
+    /// `db_info` row, and seeds override it with `UPDATE`, `db_info.id` being
+    /// the row key.
     pub fn write_db(path: &Path, version: i64, seed: &[&str]) {
         let c = Connection::open(path).unwrap();
         for ddl in [
@@ -199,10 +200,19 @@ pub mod fixture {
         ] {
             c.execute_batch(ddl).unwrap();
         }
-        c.execute("INSERT INTO meta VALUES ('schema_version', ?1)", [version.to_string()]).unwrap();
-        for (key, value) in SEAL {
-            c.execute("INSERT INTO meta VALUES (?1, ?2)", [key, value]).unwrap();
-        }
+        c.execute(
+            "INSERT INTO db_info \
+                (id, schema_version, tool, tool_version, slang_version, producer_revision, \
+                 top, analysis_status, error_count, unresolved_count, \
+                 empty_procedure_count, duplicate_path_count, recursion_count, \
+                 truncated_call_count, checker_inst_count, unanalysed_inst_count, \
+                 config_digest) \
+             VALUES (1, ?1, 'rtl-designdb', '0.1.0', 'v11.0', '0000000', NULL, \
+                     'complete', 0, 0, 0, 0, 0, 0, 0, 0, \
+                     '0000000000000000000000000000000000000000000000000000000000000000')",
+            [version],
+        )
+        .unwrap();
         for sql in seed {
             c.execute_batch(sql).unwrap();
         }
@@ -228,7 +238,7 @@ mod tests {
     fn opens_a_design_database_read_only() {
         let dir = tmp("open");
         let path = dir.join("design.db");
-        write_db(&path, SCHEMA_VERSION, &["INSERT INTO meta VALUES ('top', 'dut')"]);
+        write_db(&path, SCHEMA_VERSION, &["UPDATE db_info SET top = 'dut'"]);
         let before = std::fs::read(&path).unwrap();
 
         let db = Db::open(&path).unwrap();
@@ -244,7 +254,7 @@ mod tests {
         let dir = tmp("version");
         // Below and above: a newer file is refused too, since a version this
         // reader does not know is one whose rows may claim something else.
-        for bad in [1, 13, 17, 18, 20] {
+        for bad in [1, 13, 17, 18, 19, 21] {
             let path = dir.join(format!("v{bad}.db"));
             write_db(&path, bad, &[]);
             let Err(e) = Db::open(&path) else { panic!("v{bad} was opened, not refused") };

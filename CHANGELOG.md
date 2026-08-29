@@ -4,7 +4,31 @@ All notable changes to this project are documented here. The format is loosely
 based on [Keep a Changelog](https://keepachangelog.com/); this project uses
 [Semantic Versioning](https://semver.org/).
 
-This record starts at 1.0.0, the first release of the Rust rewrite. What came
+This record starts at 1.0.0, the first release of the Rust rewrite.
+
+## [1.1.0] — 2026-08-30
+
+The consumption contract moves to schema v20, aligned with the current
+`RTLDebugDBKit` line.
+
+### Changed
+- **The reader accepts schema v20 and refuses every other version.** The
+  exporter moved the seal from a `meta(key, value)` table to a typed
+  `db_info` row; `Db::open` now reads `schema_version` there, and `Db::meta`
+  reads the same row by column. A database with no seal row is refused at
+  open rather than read as an export with nothing wrong in it.
+- **The bundled DDL fixtures are v20.** `crates/designdb/src/ddl/*.sql` are
+  re-extracted from `RTLDebugDBKit` at the pinned submodule commit, and the
+  fixture builder writes a complete `db_info` row instead of `meta` pairs.
+- **The submodule is pinned to the v20 producer.** `extern/RTLDebugDBKit`
+  now points at the upstream commit that ships schema v20, so `make designdb`
+  and `make sync-ddl` agree with the reader.
+
+### Fixed
+- Tests that seeded the old `meta` table now update `db_info`, and the
+  test for a self-contradicting seal became a test of v20's `CHECK` rule,
+  which makes that state impossible to write.
+ What came
 before it was a Python program, archived at `v0.1.0` through `v0.5.0`.
 
 ## [1.0.2] — 2026-08-27

@@ -1,6 +1,6 @@
 //! Reading an rtl-designdb `design.db`.
 //!
-//! The database is read through its consumption contract: schema v19's `v_*`
+//! The database is read through its consumption contract: schema v20's `v_*`
 //! views, instance-level — every net, statement and dependency row hangs off
 //! the elaborated occurrence, and `v_driver`/`v_load` carry boundary crossings
 //! as rows of their own. Names in a row are relative to the row's instance, so

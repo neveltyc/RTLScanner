@@ -19,7 +19,7 @@ them.
 ## Requires
 
 * Rust 1.90+ (`make check` also needs the `clippy` and `rustfmt` components)
-* `rtl-designdb`, schema **v19** — pinned as a submodule in
+* `rtl-designdb`, schema **v20** — pinned as a submodule in
   `extern/RTLDebugDBKit`. `make designdb` builds it (slow the first time: the
   build fetches and compiles slang).
 
@@ -130,7 +130,7 @@ is a usage error on stderr with exit 2, before any command runs.
 ## Layout
 
 ```
-crates/designdb     the v19 reader: version gate, contract views, digests
+crates/designdb     the v20 reader: version gate, contract views, digests
 crates/rtlscanner   the CLI: envelope, commands
 extern/RTLDebugDBKit  the producer, pinned to the schema version above
 tools/differential  the one-shot gate against the engine this replaced

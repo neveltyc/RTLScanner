@@ -341,7 +341,7 @@ fn sweep(core: &Core, test: &str) {
     // below rests on it. tinyriscv elaborates with errors; what must hold is
     // that the panel says so rather than that it is clean.
     let info = ask(&db, "info", &[]);
-    assert_eq!(info["data"]["schema_version"], 19);
+    assert_eq!(info["data"]["schema_version"], 20);
     assert_eq!(info["data"]["top"], core.top);
 
     let all = nets(&db);
