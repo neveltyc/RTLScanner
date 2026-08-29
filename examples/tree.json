@@ -69,5 +69,5 @@ $ rtlscanner tree --depth 0 --json design.db
     "truncated": false
   },
   "tool": "rtlscanner",
-  "version": "1.0.2"
+  "version": "1.1.0"
 }

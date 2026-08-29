@@ -30,7 +30,7 @@ $ rtlscanner info --json design.db
       "tool": "rtl-designdb",
       "tool_version": "0.1.0"
     },
-    "schema_version": 19,
+    "schema_version": 20,
     "sources": [
       {
         "path": "design.sv",
@@ -44,12 +44,12 @@ $ rtlscanner info --json design.db
   "status": "ok",
   "summary": {
     "analysis_status": "complete",
-    "schema_version": 19,
+    "schema_version": 20,
     "shown_sources": 1,
     "sources": 1,
     "sources_missing": 0,
     "sources_stale": 0
   },
   "tool": "rtlscanner",
-  "version": "1.0.2"
+  "version": "1.1.0"
 }
