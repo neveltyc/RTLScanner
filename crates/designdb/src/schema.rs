@@ -624,48 +624,69 @@ pub fn operands_of(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> 
     rows.collect::<Result<_, _>>().map_err(|e| q(e, "v_stmt_operand"))
 }
 
-/// The nets a statement reads in the conditions that gate it, each tagged with
-/// the level it was read at.
+/// The nets a statement's gating levels read, each tagged with the level it
+/// was read at.
 ///
-/// Two sources, and both are needed for the answer to be the whole one. A
-/// condition naming something in this instance is an `expr_ref` with role
-/// `control`; one reaching outside it — `if (top.dbg_en)` — is a `hier_ref`
-/// carrying the same `branch_id`, and reading only the first would report an
-/// externally gated statement as gated by nothing.
-///
-/// This is the complete answer to "what gates this statement", where its
-/// `control` dependencies are not: a gated statement that drives nothing has
-/// gating and no dependencies at all.
-///
-/// `expr_ref` and `hier_ref` are base tables, both named by the schema
-/// document; there is no view carrying a reference's branch.
+/// v20 keeps a condition's reads on its level: `branch_ref` for a net this
+/// instance names, and a `hier_ref` keyed on the level — `stmt_id` NULL — for
+/// a condition reaching outside it (`if (top.dbg_en)`). Reading only one
+/// would report an externally gated statement as gated by nothing, so both
+/// are fetched and the level's id ties each read to the gate that made it.
 pub fn gating_reads(c: &Connection, stmt_id: i64) -> Result<Vec<RefRow>, String> {
-    let mut stmt = c
-        .prepare(
-            "SELECT e.net_id, n.name, e.lo, e.hi, e.is_exact, e.branch_id, e.ordinal \
-               FROM expr_ref e JOIN net n ON n.id = e.net_id \
-              WHERE e.stmt_id = ?1 AND e.role = 'control' \
-              UNION ALL \
-             SELECT h.resolved_net_id, h.path, h.lo, h.hi, h.is_exact, h.branch_id, h.id \
-               FROM hier_ref h \
-              WHERE h.stmt_id = ?1 AND h.branch_id IS NOT NULL AND h.access = 'read' \
-              ORDER BY 7",
-        )
-        .map_err(|e| q(e, "expr_ref"))?;
+    let Some(stmt) = statement(c, stmt_id)? else { return Ok(Vec::new()) };
+    let Some(branch_id) = stmt.branch_id else { return Ok(Vec::new()) };
+    let chain = branch_chain(c, branch_id)?;
+    let ids: Vec<i64> = chain.iter().map(|b| b.branch_id).collect();
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let places = format!("({})", vec!["?"; ids.len()].join(","));
+
+    let mut out = Vec::new();
+
+    // A net this instance names: branch_ref rows.
+    let sql = format!(
+        "SELECT r.net_id, n.name, r.lo, r.hi, r.is_exact, r.branch_id \
+           FROM branch_ref r JOIN net n ON n.id = r.net_id \
+          WHERE r.branch_id IN {places}"
+    );
+    let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "branch_ref"))?;
     let rows = stmt
-        .query_map([stmt_id], |r| {
+        .query_map(rusqlite::params_from_iter(&ids), |r| {
             Ok(RefRow {
-                // An upward reference resolves to no net of this export; the
-                // path it was written as is the only name there is.
-                net_id: r.get(0)?,
+                net_id: r.get::<_, Option<i64>>(0)?,
                 net_name: r.get(1)?,
                 bits: BitSpan::read(r.get(2)?, r.get(3)?, r.get(4)?),
                 kind: None,
                 branch_id: r.get(5)?,
             })
         })
-        .map_err(|e| q(e, "expr_ref"))?;
-    rows.collect::<Result<_, _>>().map_err(|e| q(e, "expr_ref"))
+        .map_err(|e| q(e, "branch_ref"))?;
+    out.extend(rows.collect::<Result<_, _>>().map_err(|e| q(e, "branch_ref"))?);
+
+    // A condition reaching outside the instance: hier_ref rows keyed on the
+    // level. An upward reference resolves to no net of this export, so the
+    // path it was written as is the only name there is.
+    let sql = format!(
+        "SELECT h.resolved_net_id, h.path, h.lo, h.hi, h.is_exact, h.branch_id \
+           FROM hier_ref h \
+          WHERE h.branch_id IN {places} AND h.access = 'read'"
+    );
+    let mut stmt = c.prepare_cached(&sql).map_err(|e| q(e, "hier_ref"))?;
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(&ids), |r| {
+            Ok(RefRow {
+                net_id: r.get::<_, Option<i64>>(0)?,
+                net_name: r.get(1)?,
+                bits: BitSpan::read(r.get(2)?, r.get(3)?, r.get(4)?),
+                kind: None,
+                branch_id: r.get(5)?,
+            })
+        })
+        .map_err(|e| q(e, "hier_ref"))?;
+    out.extend(rows.collect::<Result<_, _>>().map_err(|e| q(e, "hier_ref"))?);
+
+    Ok(out)
 }
 
 const BRANCH_COLS: &str = "branch_id, parent_branch_id, depth, ordinal, branch_kind, sense, \
